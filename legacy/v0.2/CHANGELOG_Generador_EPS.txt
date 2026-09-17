@@ -1,0 +1,32 @@
+CHANGELOG Generador de informes individuales EPS
+=================================================
+
+v0.1
+----
+- Primera versión funcional.
+- Generación individual por DNI.
+- Una fuente externa de valoraciones.
+- Completa solo 1º bimestre.
+- Salida revisable en Informe_actual.
+
+v0.1.1
+------
+- Corrección de Año y división.
+- EPSI1/EPSI2/EPSI3/EPSI4 se muestran como Informática 1/2/3/4.
+- EPSG1/EPSG2/EPSG3/EPSG4 se muestran como Gastronomía 1/2/3/4.
+- Se conserva el alcance de v0.1: solo 1º bimestre.
+
+v0.2
+----
+- Agrega selector de período en Control.
+- Implementa 1º bimestre y 1º cuatrimestre.
+- Usa hoja origen única: EPSI o EPSG.
+- Usa dos fuentes configurables: 1º bimestre y 1º cuatrimestre.
+- Para 1º cuatrimestre, el archivo del cuatrimestre es fuente principal.
+- Para 1º cuatrimestre, el archivo del bimestre funciona como fuente anterior.
+- Construye la tabla de materias de forma acumulativa.
+- Acepta enteros 1 a 10 y ACREDITÓ en 1º cuatrimestre.
+- Rechaza decimales, texto junto con número y notas escritas como texto.
+- Deja vacías las celdas de períodos sin calificación válida.
+- Mantiene generación individual y revisión manual.
+- No incorpora generación masiva, PDF automático ni otros períodos.

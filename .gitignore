@@ -1,0 +1,10 @@
+# Temporary research and agent-generated artifacts
+tmp/
+
+# Historical copies found outside the packaged releases.
+# They may contain real student data, so keep them out of Git
+# until their contents have been reviewed and sanitized if necessary.
+legacy/observed/
+
+# Microsoft Office temporary files
+~$*
