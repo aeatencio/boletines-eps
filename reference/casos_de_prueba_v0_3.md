@@ -52,12 +52,12 @@ Todos los fixtures utilizan datos ficticios, sin información de estudiantes rea
     - *FGI I*: `ACREDITÓ` (1B) | `ACREDITÓ` (1C) | `ACREDITÓ` (3B).
     - *Lengua y Literatura I*: `En proceso` (1B) | vacío (1C) | `Suficiente` (3B).
 
-### 2. Materia nueva en 3B
-- **Caso**: Carla Cuatro (DNI `99000003`, EPSI), cursa "Taller Nuevo 3B" incorporado únicamente en el 3º bimestre.
+### 2. Materia que aparece por primera vez en 3B
+- **Caso**: Carla Cuatro (DNI `99000003`, EPSI), cursa "Taller C", materia que aparece por primera vez para ella en el 3º bimestre (sin valoraciones en 1B ni 1C).
 - **Resultado esperado**:
   - Generación sin errores.
   - Nivel visual en `E6`: `Informática 1`.
-  - En la fila de *Taller Nuevo 3B*, columnas 1B y 1C vacías, y columna 3B con `Suficiente` (`||Suficiente`).
+  - En la fila de *Taller C*, columnas 1B y 1C vacías, y columna 3B con `Suficiente` (`||Suficiente`).
 
 ### 3. Valoración inválida en 3B (descarte + advertencia + continuidad)
 - **Caso separado**: Camila Uno (DNI `99000001`) procesada con la fuente `3er_bimestre_invalido.tsv`, donde Lengua y Literatura I contiene el valor `"Bueno"` (no admitido para bimestres).

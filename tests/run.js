@@ -257,13 +257,13 @@ let filaFGI = (r.out || []).find(f => f[2] === "FGI I") || [];
 assert("Happy path 3B: FGI I acumula los 3 períodos (ACREDITÓ|ACREDITÓ|ACREDITÓ)", filaFGI.slice(4, 7).join("|") === "ACREDITÓ|ACREDITÓ|ACREDITÓ", filaFGI.slice(4, 7));
 
 // =============================================================================
-// 2. Materia nueva en 3B (Carla Cuatro, DNI 99000003)
+// 2. Materia que aparece por primera vez en 3B (Carla Cuatro, DNI 99000003)
 // =============================================================================
-r = runTest("Materia nueva en 3B", { control: ctl("3º bimestre", "99000003"), sources, templateGrid: tpl03 });
-assert("Materia nueva 3B: sin errores", !r.error, r.error);
-assert("Materia nueva 3B: nivel visual es 'Informática 1'", r.out && r.out[5] && r.out[5][4] === "Informática 1", r.out ? r.out[5][4] : null);
-let filaNueva = (r.out || []).find(f => f[2] === "Taller Nuevo 3B") || [];
-assert("Materia nueva 3B: Taller Nuevo 3B solo tiene valor en 3B (||Suficiente)", filaNueva.slice(4, 7).join("|") === "||Suficiente", filaNueva.slice(4, 7));
+r = runTest("Materia que aparece por primera vez en 3B", { control: ctl("3º bimestre", "99000003"), sources, templateGrid: tpl03 });
+assert("Materia incorporada en 3B: sin errores", !r.error, r.error);
+assert("Materia incorporada en 3B: nivel visual es 'Informática 1'", r.out && r.out[5] && r.out[5][4] === "Informática 1", r.out ? r.out[5][4] : null);
+let filaIncorporada = (r.out || []).find(f => f[2] === "Taller C") || [];
+assert("Materia incorporada en 3B: Taller C solo tiene valor en 3B (||Suficiente)", filaIncorporada.slice(4, 7).join("|") === "||Suficiente", filaIncorporada.slice(4, 7));
 
 // =============================================================================
 // 3. Caso separado: Valoración inválida en 3B (descarte + advertencia + continuidad)
