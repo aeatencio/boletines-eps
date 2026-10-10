@@ -194,6 +194,29 @@ function runTest(testName, { control, sources, templateGrid }) {
   };
 }
 
+// Carga el generador sin ejecutarlo, para probar funciones puras del parser.
+function cargarGenerador() {
+  const ctx = {};
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "src/Codigo_Apps_Script_Generador_EPS_v0_3.gs"), "utf8"), ctx);
+  return ctx;
+}
+
+// Filas de materias impresas en Informe_actual: desde la fila 9 hasta el bloque de observaciones.
+function filasMaterias(out) {
+  const filas = [];
+  for (let i = 8; i < (out || []).length; i++) {
+    if (/^OBSERVACIONES GENERALES/.test(out[i][2])) break;
+    if (out[i][2]) filas.push(out[i]);
+  }
+  return filas;
+}
+
+function textoBajoEtiqueta(out, prefijo) {
+  const i = (out || []).findIndex(f => f[2].startsWith(prefijo));
+  return i >= 0 && out[i + 1] ? out[i + 1][3] : null;
+}
+
 function readTsv(p) {
   const srcPath = path.join(ROOT, p);
   if (!fs.existsSync(srcPath)) {
@@ -210,12 +233,19 @@ const src1B = readXlsx("reference/fixtures/Valoraciones_ficticias_EPS_1er_bimest
 const src1C = readXlsx("reference/fixtures/Valoraciones_ficticias_EPS_1er_cuatrimestre_v0_3.xlsx");
 const src3B = { EPSI: readTsv("reference/fixtures/3er_bimestre.tsv") };
 const src3B_inv = { EPSI: readTsv("reference/fixtures/3er_bimestre_invalido.tsv") };
+const src3B_real = {
+  EPSI: readTsv("reference/fixtures/3er_bimestre_estructura_real_EPSI.tsv"),
+  EPSG: readTsv("reference/fixtures/3er_bimestre_estructura_real_EPSG.tsv")
+};
+const src1C_real = { EPSI: readTsv("reference/fixtures/1er_cuatrimestre_estructura_real_EPSI.tsv") };
 
 const sources = {
   "ID_1B_xxxxxxxxxxxxxxxxxxxxxxxx": src1B,
   "ID_1C_xxxxxxxxxxxxxxxxxxxxxxxx": src1C,
   "ID_3B_xxxxxxxxxxxxxxxxxxxxxxxx": src3B,
-  "ID_3B_INV_xxxxxxxxxxxxxxxxxxxx": src3B_inv
+  "ID_3B_INV_xxxxxxxxxxxxxxxxxxxx": src3B_inv,
+  "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx": src3B_real,
+  "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx": src1C_real
 };
 
 const ctl = (p, d, extra) => Object.assign({
@@ -336,6 +366,183 @@ assert("Regresión 1C Gastronomía: genera sin errores", !rGastro.error && rGast
 assert("Regresión 1C Gastronomía: nivel visual es 'Gastronomía 1'", rGastro.out && rGastro.out[5] && rGastro.out[5][4] === "Gastronomía 1", rGastro.out ? rGastro.out[5][4] : null);
 let fGastroAlim = (rGastro.out || []).find(f => f[2] === "Manipulación de alimentos") || [];
 assert("Regresión 1C Gastronomía: Manipulación de alimentos acumula 1B y 1C (Avanzado|10|)", fGastroAlim.slice(4, 7).join("|") === "Avanzado|10|", fGastroAlim.slice(4, 7));
+
+// =============================================================================
+// 5. Estructura real de las grillas (#10): materias, cola y orden
+// =============================================================================
+const gen = cargarGenerador();
+const P3B = "3º bimestre";
+const nombresMaterias = est => est.materias.map(m => m.nombre).join("|");
+const valoresFila = f => f.slice(4, 7).join("|");
+
+// 5.1. Detección explícita de materias y cola general/operativa
+const estReal = gen.detectarEstructuraFuente_(src3B_real.EPSI, P3B);
+assert("Estructura real: 16 materias de los cuatro niveles en orden de grilla, con Formación Profesional por subencabezado",
+  nombresMaterias(estReal) === [
+    "Matemática I", "Lengua y Literatura I", "Taller Profesional I A", "Taller Profesional I B", "FGI I",
+    "Matemática II", "Inglés I", "Taller Profesional II A", "Taller Profesional II B", "FGI II",
+    "Matemática III", "Taller Profesional III A", "FGI III",
+    "Matemática IV", "Taller Profesional IV A", "FGI IV"
+  ].join("|"), nombresMaterias(estReal));
+assert("Estructura real: cada materia lee la valoración en la columna siguiente a su etiqueta",
+  estReal.materias.every(m => m.columnaValor === m.columnaEtiqueta + 1), JSON.stringify(estReal.materias[0]));
+assert("Estructura real: la cola empieza en ORIENTACIÓN (columna AN)",
+  estReal.inicioCola === 39 && estReal.especiales.orientacion === 39, estReal.inicioCola);
+assert("Estructura real: campos generales detectados dentro de la cola",
+  [estReal.especiales.observacionesGenerales, estReal.especiales.observacionesAsistencia,
+   estReal.especiales.observacionesConvivencia, estReal.especiales.ptf].join(",") === "40,41,42,43",
+  JSON.stringify(estReal.especiales));
+assert("Estructura real: ninguna columna desde ORIENTACIÓN en adelante es materia (LISTO PARA EXPORTAR, EXPORTADO, columnas posteriores)",
+  estReal.materias.every(m => m.columnaEtiqueta < estReal.inicioCola && m.columnaValor < estReal.inicioCola));
+assert("Estructura real: encabezados de grupo y marcadores de nivel no son materias",
+  !estReal.materias.some(m => /^Formación Profesional|^EPS\d/.test(m.nombre)), nombresMaterias(estReal));
+
+const estV03 = gen.detectarEstructuraFuente_(src3B.EPSI, P3B);
+assert("Estructura v0.3: el fixture de 3B anterior conserva sus 6 materias",
+  nombresMaterias(estV03) === "Matemática I|Lengua y Literatura I|Ciencias Sociales I|FGI I|Arquitectura de Sistemas Informáticos|Taller C",
+  nombresMaterias(estV03));
+
+// 5.2. EQUIVALENCIA, CURSA, NO CURSA y vacío
+const clasif = (p, v) => { const c = gen.clasificarValor_(p, v); return c.estado + ":" + c.valor; };
+assert("EQUIVALENCIA es válida en 1B, 1C y 3B y se emite canónicamente",
+  ["1º bimestre", "1º cuatrimestre", P3B].every(p => ["EQUIVALENCIA", "Equivalencia", " equivalencia "].every(v => clasif(p, v) === "valido:EQUIVALENCIA")),
+  clasif("1º cuatrimestre", "Equivalencia"));
+assert("CURSA, NO CURSA y vacío quedan excluidos del boletín",
+  ["CURSA", "NO CURSA", "No cursa", ""].every(v => clasif(P3B, v) === "excluido:"));
+
+// 5.3. Generación con la grilla de forma real (Ana Real, DNI 97000001, EPS2 · 1C + 3B)
+const ctlReal = (d, extra) => ctl(P3B, d, Object.assign({
+  B10: "",
+  B12: "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx",
+  B13: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx"
+}, extra));
+let rReal = runTest("Estructura real 3B", { control: ctlReal("97000001"), sources, templateGrid: tpl03 });
+let matsReal = filasMaterias(rReal.out);
+const filaReal = nombre => matsReal.find(f => f[2] === nombre) || [];
+assert("Estructura real 3B: sin errores", !rReal.error && rReal.out, rReal.error);
+assert("Estructura real 3B: nivel visual es 'Informática 2'", rReal.out && rReal.out[5][4] === "Informática 2", rReal.out ? rReal.out[5][4] : null);
+assert("Estructura real 3B: 13 materias en orden de grilla principal y, al final, la que sólo existe en 1C",
+  matsReal.map(f => f[2]).join("|") === [
+    "Matemática I", "Lengua y Literatura I", "Taller Profesional I A", "Taller Profesional I B", "FGI I",
+    "Matemática II", "Taller Profesional II A", "Taller Profesional II B", "FGI II", "Matemática III",
+    "Matemática IV", "Taller Profesional IV A", "Taller Profesional I C"
+  ].join("|"), matsReal.map(f => f[2]).join("|"));
+assert("Estructura real 3B: EQUIVALENCIA se conserva en 1C y 3B (|EQUIVALENCIA|EQUIVALENCIA)",
+  valoresFila(filaReal("Taller Profesional I B")) === "|EQUIVALENCIA|EQUIVALENCIA", valoresFila(filaReal("Taller Profesional I B")));
+assert("Estructura real 3B: materia sólo en período anterior queda en su lugar de la grilla (Lengua y Literatura I |8|)",
+  valoresFila(filaReal("Lengua y Literatura I")) === "|8|", valoresFila(filaReal("Lengua y Literatura I")));
+assert("Estructura real 3B: materia de otro nivel sólo en período anterior (Matemática III |6|)",
+  valoresFila(filaReal("Matemática III")) === "|6|", valoresFila(filaReal("Matemática III")));
+assert("Estructura real 3B: materia sólo en período actual (Taller Profesional II B ||Avanzado)",
+  valoresFila(filaReal("Taller Profesional II B")) === "||Avanzado", valoresFila(filaReal("Taller Profesional II B")));
+assert("Estructura real 3B: materias de otro nivel acumulan (Matemática I |7|Avanzado, Matemática IV ||En proceso)",
+  valoresFila(filaReal("Matemática I")) === "|7|Avanzado" && valoresFila(filaReal("Matemática IV")) === "||En proceso",
+  valoresFila(filaReal("Matemática I")) + " / " + valoresFila(filaReal("Matemática IV")));
+assert("Estructura real 3B: Formación Profesional se imprime por subencabezado (Taller Profesional I A |6|En proceso)",
+  valoresFila(filaReal("Taller Profesional I A")) === "|6|En proceso", valoresFila(filaReal("Taller Profesional I A")));
+assert("Estructura real 3B: materias sólo con CURSA, NO CURSA o vacío no aparecen",
+  ["Inglés I", "Taller Profesional III A", "FGI III", "FGI IV"].every(n => !matsReal.some(f => f[2] === n)));
+assert("Estructura real 3B: ninguna columna de la cola aparece como materia",
+  !matsReal.some(f => /ORIENTACIÓN|OBSERVACIONES|PLAN DE TRABAJO|LISTO PARA EXPORTAR|EXPORTADO|SEGUIMIENTO INTERNO|VERIFICADO/.test(f[2])));
+assert("Estructura real 3B: con más de ocho materias, las observaciones se desplazan sin pisar materias",
+  textoBajoEtiqueta(rReal.out, "OBSERVACIONES GENERALES") === "Obs 3B Ana", textoBajoEtiqueta(rReal.out, "OBSERVACIONES GENERALES"));
+assert("Estructura real 3B: sin advertencias salvo la falta de fuente de 1B",
+  rReal.advertencias.join("\n") === "No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores de 1º bimestre.",
+  rReal.advertencias.join("; "));
+
+// 5.4. Estudiante nuevo, presente sólo en el período actual (Beto Nuevo, DNI 97000002, EPS1)
+let rNuevo = runTest("Estudiante nuevo 3B", { control: ctlReal("97000002"), sources, templateGrid: tpl03 });
+let matsNuevo = filasMaterias(rNuevo.out);
+assert("Estudiante nuevo: genera sin errores", !rNuevo.error && rNuevo.out, rNuevo.error);
+assert("Estudiante nuevo: nivel visual es 'Informática 1'", rNuevo.out && rNuevo.out[5][4] === "Informática 1", rNuevo.out ? rNuevo.out[5][4] : null);
+assert("Estudiante nuevo: sólo valores de 3B (Matemática I ||Suficiente, Lengua y Literatura I ||En proceso, FGI I ||ACREDITÓ)",
+  matsNuevo.map(f => f[2] + ":" + valoresFila(f)).join(", ") === "Matemática I:||Suficiente, Lengua y Literatura I:||En proceso, FGI I:||ACREDITÓ",
+  matsNuevo.map(f => f[2] + ":" + valoresFila(f)).join(", "));
+assert("Estudiante nuevo: la ausencia en 1C se informa como advertencia no bloqueante",
+  rNuevo.advertencias.some(a => a.startsWith("No se encontró el DNI en la fuente de 1º cuatrimestre.")), rNuevo.advertencias.join("; "));
+
+// 5.5. Hoja EPSG con la forma real (Gael Uno, DNI 96000001)
+let rEpsg = runTest("Estructura real EPSG", {
+  control: ctlReal("96000001", { B6: "EPSG", B12: "" }), sources, templateGrid: tpl03
+});
+assert("Estructura real EPSG: genera sin errores", !rEpsg.error && rEpsg.out, rEpsg.error);
+assert("Estructura real EPSG: nivel visual es 'Gastronomía 1'", rEpsg.out && rEpsg.out[5][4] === "Gastronomía 1", rEpsg.out ? rEpsg.out[5][4] : null);
+assert("Estructura real EPSG: materias y subencabezados de Formación Profesional en orden",
+  filasMaterias(rEpsg.out).map(f => f[2]).join("|") === "Matemática I|Lengua y Literatura I|Taller Gastronómico I A|Taller Gastronómico I B|FGI I",
+  filasMaterias(rEpsg.out).map(f => f[2]).join("|"));
+
+// 5.6. Estructuras que no pueden identificarse de manera segura
+const variante = (grid, cambiar) => { const g = grid.map(f => f.slice()); cambiar(g); return g; };
+const columnaDe = (g, encabezado) => g[0].indexOf(encabezado);
+const filaDni = (g, dni) => g.findIndex(f => f[2] === dni);
+const conVariante = (id, fuente) => Object.assign({}, sources, { [id]: fuente });
+const ID_VAR = "ID_VARIANTE_xxxxxxxxxxxxxxxxx";
+
+let rSinOrient = runTest("Sin ORIENTACIÓN", {
+  control: ctlReal("97000001", { B13: ID_VAR }),
+  sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "ORIENTACIÓN")] = ""; }) }),
+  templateGrid: tpl03
+});
+assert("Sin ORIENTACIÓN en la principal: se informa error y no se genera",
+  rSinOrient.error && rSinOrient.error.includes("No se encontró la columna ORIENTACIÓN") && !rSinOrient.out, rSinOrient.error);
+
+let rOrientDoble = runTest("ORIENTACIÓN repetida", {
+  control: ctlReal("97000001", { B13: ID_VAR }),
+  sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "SEGUIMIENTO INTERNO")] = "Orientación"; }) }),
+  templateGrid: tpl03
+});
+assert("ORIENTACIÓN repetida en la principal: se informa error",
+  rOrientDoble.error && rOrientDoble.error.includes("La columna ORIENTACIÓN aparece más de una vez (columnas AN, AU)"), rOrientDoble.error);
+
+let rRepetida = runTest("Materia repetida en principal", {
+  control: ctlReal("97000001", { B13: ID_VAR }),
+  sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "Matemática IV")] = "Matemática I"; }) }),
+  templateGrid: tpl03
+});
+assert("Materia repetida en la principal: se informa error con ambas columnas, sin elegir una",
+  rRepetida.error && rRepetida.error.includes('Materia repetida en la fuente de 3º bimestre: "Matemática I" (columnas E, AH)') && !rRepetida.out,
+  rRepetida.error);
+
+let rRepetidaHist = runTest("Materia repetida en fuente anterior", {
+  control: ctlReal("97000001", { B12: ID_VAR }),
+  sources: conVariante(ID_VAR, { EPSI: variante(src1C_real.EPSI, g => { g[0][columnaDe(g, "Matemática IV")] = "Matemática I"; }) }),
+  templateGrid: tpl03
+});
+assert("Materia repetida en una fuente anterior: advertencia, se descarta esa fuente y se genera con la principal",
+  !rRepetidaHist.error && rRepetidaHist.advertencias.some(a => a.startsWith("Materia repetida en la fuente de 1º cuatrimestre") && a.endsWith("Se continuará con la fuente principal."))
+    && valoresFila(filasMaterias(rRepetidaHist.out).find(f => f[2] === "Matemática I") || []) === "||Avanzado",
+  rRepetidaHist.error || rRepetidaHist.advertencias.join("; "));
+
+let rParRoto = runTest("Materia sin columna de valoración", {
+  control: ctlReal("97000001", { B13: ID_VAR }),
+  sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "Matemática I") + 1] = "Columna intrusa"; }) }),
+  templateGrid: tpl03
+});
+assert("Materia sin su columna de valoración: se informa error",
+  rParRoto.error && rParRoto.error.includes('La materia "Matemática I" (columna E) no tiene a continuación su columna de valoración'), rParRoto.error);
+
+let rFilaDni = runTest("DNI fuera de la fila Valoración", {
+  control: ctlReal("97000001", { B13: ID_VAR }),
+  sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { const r = filaDni(g, "97000001"); g[r][2] = ""; g[r + 1][2] = "97000001"; }) }),
+  templateGrid: tpl03
+});
+assert("DNI fuera de la fila Valoración del bloque: se informa error en vez de leer otra fila",
+  rFilaDni.error && rFilaDni.error.includes('La fila del DNI no es la fila "Valoración"') && !rFilaDni.out, rFilaDni.error);
+
+// 5.7. Nombre mostrado: el de la grilla principal si la materia existe en ella
+let rNombre = runTest("Nombre de la grilla principal", {
+  control: ctlReal("97000001", { B12: ID_VAR }),
+  sources: conVariante(ID_VAR, { EPSI: variante(src1C_real.EPSI, g => {
+    g[0][columnaDe(g, "Lengua y Literatura I")] = "LENGUA Y LITERATURA I";
+    g[1][g[1].indexOf("Taller Profesional I C")] = "TALLER PROFESIONAL I C";
+  }) }),
+  templateGrid: tpl03
+});
+let matsNombre = filasMaterias(rNombre.out).map(f => f[2] + ":" + valoresFila(f));
+assert("Nombre mostrado: materia de la grilla principal valorada sólo en 1C usa el nombre de la principal",
+  matsNombre.includes("Lengua y Literatura I:|8|") && !matsNombre.some(m => m.startsWith("LENGUA")), matsNombre.join(", "));
+assert("Nombre mostrado: materia que no existe en la grilla principal conserva el nombre de la fuente anterior, al final",
+  matsNombre[matsNombre.length - 1] === "TALLER PROFESIONAL I C:|8|", matsNombre.join(", "));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

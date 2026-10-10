@@ -177,14 +177,21 @@ function leerFuente_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, esPrincip
     if (!hoja) throw new Error('No se encontró la hoja ' + hojaOrigen + ' en la fuente de ' + periodo + '.');
 
     const valores = hoja.getDataRange().getDisplayValues();
-    const estructura = detectarEstructuraFuente_(valores);
+    const estructura = detectarEstructuraFuente_(valores, periodo);
     const filas = buscarFilasPorDni_(valores, dniBuscado);
 
     if (filas.length === 0) throw new Error('No se encontró el DNI en la fuente de ' + periodo + '.');
     if (filas.length > 1) throw new Error('El DNI aparece más de una vez en la fuente de ' + periodo + '.');
 
     const estudiante = construirRegistroEstudiante_(valores, filas[0], estructura, hojaOrigen, periodo, advertencias);
-    return { periodo, estudiante, materiasPorClave: estudiante.materiasPorClave, ordenMaterias: estudiante.ordenMaterias };
+    return {
+      periodo,
+      estudiante,
+      materiasPorClave: estudiante.materiasPorClave,
+      ordenMaterias: estudiante.ordenMaterias,
+      ordenGrilla: estructura.materias.map(m => m.clave),
+      nombresGrilla: Object.fromEntries(estructura.materias.map(m => [m.clave, m.nombre]))
+    };
   } catch (err) {
     if (esPrincipal) throw err;
     advertencias.push(err.message + ' Se continuará con la fuente principal.');
@@ -192,40 +199,67 @@ function leerFuente_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, esPrincip
   }
 }
 
-function detectarEstructuraFuente_(valores) {
+/**
+ * La columna ORIENTACIÓN separa las dos zonas de la grilla:
+ * - materias: desde la columna D hasta antes de ORIENTACIÓN, como pares etiqueta/valoración;
+ * - campos generales y operativos: desde ORIENTACIÓN en adelante, nunca materias.
+ * Si la estructura no puede identificarse de manera segura, se informa con un error.
+ */
+function detectarEstructuraFuente_(valores, periodo) {
   const encabezado1 = valores[0] || [];
   const encabezado2 = valores[1] || [];
-  const materias = [];
-  const especiales = {};
   const maxCols = Math.max(encabezado1.length, encabezado2.length);
+  const enFuente = ' en la fuente de ' + periodo + '.';
 
-  for (let c = 0; c < maxCols; c++) {
-    const h1 = texto_(encabezado1[c]);
-    const h2 = texto_(encabezado2[c]);
-    const combinado = normalizarTexto_([h1, h2].filter(Boolean).join(' '));
+  const columnasOrientacion = [];
+  for (let c = 3; c < maxCols; c++) {
+    if (normalizarTexto_(encabezado1[c]) === 'ORIENTACION' || normalizarTexto_(encabezado2[c]) === 'ORIENTACION') {
+      columnasOrientacion.push(c);
+    }
+  }
+  if (columnasOrientacion.length === 0) {
+    throw new Error('No se encontró la columna ORIENTACIÓN que separa las materias de los campos generales' + enFuente);
+  }
+  if (columnasOrientacion.length > 1) {
+    throw new Error('La columna ORIENTACIÓN aparece más de una vez (columnas ' + columnasOrientacion.map(letraColumna_).join(', ') + ')' + enFuente);
+  }
+  const inicioCola = columnasOrientacion[0];
 
-    if (combinado.includes('ORIENTACION')) especiales.orientacion = c;
+  const especiales = { orientacion: inicioCola };
+  for (let c = inicioCola + 1; c < maxCols; c++) {
+    const combinado = normalizarTexto_([texto_(encabezado1[c]), texto_(encabezado2[c])].filter(Boolean).join(' '));
     if (combinado.includes('OBSERVACIONES GENERALES')) especiales.observacionesGenerales = c;
     if (combinado.includes('ASISTENCIA')) especiales.observacionesAsistencia = c;
     if (combinado.includes('CONVIVENCIA')) especiales.observacionesConvivencia = c;
     if (combinado.includes('PLAN DE TRABAJO') || combinado.includes('PTF')) especiales.ptf = c;
   }
 
-  for (let c = 3; c < maxCols - 1; c++) {
-    const h1 = texto_(encabezado1[c]);
-    const h2 = texto_(encabezado2[c]);
-    const nombre = h2 || h1;
-    const nombreNorm = normalizarTexto_(nombre);
+  // Formación Profesional: el encabezado de grupo está en fila 1 y cada materia en fila 2.
+  const materias = [];
+  const columnasPorClave = {};
+  for (let c = 3; c < inicioCola; c++) {
+    const nombre = texto_(encabezado2[c]) || texto_(encabezado1[c]);
     if (!nombre) continue;
-    if (/^EPS\d+$/.test(nombreNorm)) continue;
-    if (nombreNorm.includes('ORIENTACION') || nombreNorm.includes('OBSERVACIONES') || nombreNorm.includes('ASISTENCIA') || nombreNorm.includes('CONVIVENCIA') || nombreNorm.includes('PLAN DE TRABAJO') || nombreNorm.includes('PTF')) continue;
-    if (normalizarTexto_(h1).includes('FORMACION PROFESIONAL') && h2) {
-      // h1 is a group header; h2 is the actual subject.
+    if (/^EPS\d+$/.test(normalizarTexto_(nombre))) continue;
+    if (c + 1 >= inicioCola || texto_(encabezado1[c + 1]) || texto_(encabezado2[c + 1])) {
+      throw new Error('La materia "' + nombre + '" (columna ' + letraColumna_(c) + ') no tiene a continuación su columna de valoración' + enFuente);
     }
-    materias.push({ nombre: texto_(nombre), clave: claveMateria_(nombre), columnaEtiqueta: c, columnaValor: c + 1 });
+    const clave = claveMateria_(nombre);
+    if (!columnasPorClave[clave]) columnasPorClave[clave] = [];
+    columnasPorClave[clave].push(c);
+    materias.push({ nombre, clave, columnaEtiqueta: c, columnaValor: c + 1 });
   }
 
-  return { materias, especiales };
+  const duplicadas = Object.keys(columnasPorClave).filter(clave => columnasPorClave[clave].length > 1);
+  if (duplicadas.length) {
+    const detalle = duplicadas.map(clave => {
+      const nombre = materias.find(m => m.clave === clave).nombre;
+      return '"' + nombre + '" (columnas ' + columnasPorClave[clave].map(letraColumna_).join(', ') + ')';
+    });
+    throw new Error('Materia repetida en la fuente de ' + periodo + ': ' + detalle.join('; ') + '. No se puede determinar cuál columna contiene la valoración correcta.');
+  }
+
+  return { materias, especiales, inicioCola };
 }
 
 function buscarFilasPorDni_(valores, dniBuscado) {
@@ -244,13 +278,20 @@ function construirRegistroEstudiante_(valores, fila, estructura, hojaOrigen, per
   const nivel = detectarNivelPorFila_(valores, fila);
   const orientacion = obtenerValor_(valores, fila, estructura.especiales.orientacion);
 
+  // Cada estudiante ocupa un bloque de cuatro filas; la del DNI debe ser la fila "Valoración".
+  // Se controla por fila y no por celda: en las grillas reales algunas etiquetas quedan vacías.
+  const esFilaValoracion = estructura.materias.some(m =>
+    normalizarTexto_(obtenerValor_(valores, fila, m.columnaEtiqueta)).replace(/:$/, '') === 'VALORACION');
+  if (!esFilaValoracion) {
+    throw new Error('La fila del DNI no es la fila "Valoración" del bloque del estudiante en la fuente de ' + periodo + '.');
+  }
+
   const materiasPorClave = {};
   const ordenMaterias = [];
 
   estructura.materias.forEach(m => {
-    const etiqueta = normalizarTexto_(obtenerValor_(valores, fila, m.columnaEtiqueta));
     const valorCrudo = obtenerValor_(valores, fila, m.columnaValor);
-    if (!valorCrudo && etiqueta !== 'VALORACION') return;
+    if (!valorCrudo) return;
     const clasificacion = clasificarValor_(periodo, valorCrudo);
     if (clasificacion.estado === 'valido') {
       materiasPorClave[m.clave] = { nombre: m.nombre, clave: m.clave, valores: { [periodo]: clasificacion.valor } };
@@ -277,32 +318,28 @@ function construirRegistroEstudiante_(valores, fila, estructura, hojaOrigen, per
 
 function construirMateriasAcumuladas_(fuentes, ordenPeriodos, advertencias) {
   const acumuladas = {};
-  const orden = [];
 
-  // 1. Primero el orden de la fuente principal.
-  const principal = fuentes[0];
-  principal.ordenMaterias.forEach(clave => {
-    const mat = principal.materiasPorClave[clave];
-    if (!mat) return;
-    if (!acumuladas[clave]) {
-      acumuladas[clave] = { nombre: mat.nombre, valores: {} };
-      orden.push(clave);
-    }
-    Object.assign(acumuladas[clave].valores, mat.valores);
+  fuentes.forEach(fuente => {
+    if (!fuente) return;
+    fuente.ordenMaterias.forEach(clave => {
+      const mat = fuente.materiasPorClave[clave];
+      if (!mat) return;
+      if (!acumuladas[clave]) acumuladas[clave] = { nombre: mat.nombre, valores: {} };
+      Object.assign(acumuladas[clave].valores, mat.valores);
+    });
   });
 
-  // 2. Después agregamos materias válidas que solo estén en fuentes anteriores.
+  // 1. Orden y nombre de la grilla principal, aunque la valoración venga de una fuente anterior.
+  const principal = fuentes[0];
+  const orden = principal.ordenGrilla.filter(clave => acumuladas[clave]);
+  orden.forEach(clave => { acumuladas[clave].nombre = principal.nombresGrilla[clave]; });
+
+  // 2. Al final, con el nombre de su fuente, materias que no existen en la grilla principal.
   for (let i = 1; i < fuentes.length; i++) {
     const fuente = fuentes[i];
     if (!fuente) continue;
     fuente.ordenMaterias.forEach(clave => {
-      const mat = fuente.materiasPorClave[clave];
-      if (!mat) return;
-      if (!acumuladas[clave]) {
-        acumuladas[clave] = { nombre: mat.nombre, valores: {} };
-        orden.push(clave);
-      }
-      Object.assign(acumuladas[clave].valores, mat.valores);
+      if (!orden.includes(clave)) orden.push(clave);
     });
   }
 
@@ -375,6 +412,7 @@ function clasificarValor_(periodo, valor) {
   const crudo = texto_(valor);
   const norm = normalizarTexto_(crudo);
   if (!norm || norm === 'NO CURSA' || norm === 'CURSA') return { estado: 'excluido', valor: '' };
+  if (norm === 'EQUIVALENCIA') return { estado: 'valido', valor: 'EQUIVALENCIA' };
 
   if (periodo === CONFIG_EPS.PERIODOS.BIMESTRE_1 || periodo === CONFIG_EPS.PERIODOS.BIMESTRE_3) {
     const mapa = {
@@ -442,6 +480,14 @@ function extraerSpreadsheetId_(entrada) {
 function obtenerValor_(valores, fila, columna) {
   if (columna === undefined || columna === null || columna < 0) return '';
   return texto_((valores[fila] || [])[columna]);
+}
+
+function letraColumna_(indice) {
+  let letras = '';
+  for (let n = indice + 1; n > 0; n = Math.floor((n - 1) / 26)) {
+    letras = String.fromCharCode(65 + (n - 1) % 26) + letras;
+  }
+  return letras;
 }
 
 function claveMateria_(nombre) {
