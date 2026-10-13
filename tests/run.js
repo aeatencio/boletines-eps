@@ -199,12 +199,14 @@ function runTest(testName, { control, sources, templateGrid }) {
     }
   }
   const estadoAdvertencias = ctrl.get(4, 6); // Celda F4 de Control
+  const estadoResultado = ctrl.get(3, 6); // Celda F3 de Control
 
   return {
     error,
     rawAlerts,
     advertencias,
     estadoAdvertencias,
+    estadoResultado,
     out: out ? rect(out.grid) : null
   };
 }
@@ -764,6 +766,43 @@ assert("Encabezados generales vacíos: se genera con las cajas vacías, mismas m
     && JSON.stringify(filasMaterias(rColaSinEnc.out)) === JSON.stringify(filasMaterias(rReal.out))
     && operativos(dColaSinEnc) === OP_SI_NO,
   rColaSinEnc.error || cajas(rColaSinEnc.out));
+
+// =============================================================================
+// 7. Smoke test real: estudiante sólo en 3B con las tres fuentes cargadas (#10)
+// =============================================================================
+// Reproduce el flujo completo de generarInformeActual() con 1B, 1C y 3B indicadas en Control
+// (Beto Nuevo, DNI 97000002, sólo existe en 3B).
+const ctlSmoke = periodo => ctl(periodo, "97000002", {
+  B10: "ID_1B_xxxxxxxxxxxxxxxxxxxxxxxx",
+  B12: "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx",
+  B13: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx"
+});
+const advDniHistorico = periodo => "No se encontró el DNI en la fuente de " + periodo + ". Se continuará con la fuente principal.";
+let rSmoke = runTest("Smoke: estudiante sólo en 3B", { control: ctlSmoke(P3B), sources, templateGrid: tpl03 });
+let matsSmoke = filasMaterias(rSmoke.out);
+assert("Smoke 3B, estudiante sólo en 3B: generarInformeActual termina con éxito y lo registra en Control",
+  !rSmoke.error && rSmoke.out && rSmoke.rawAlerts.length === 1 && rSmoke.rawAlerts[0].startsWith("Informe generado correctamente.")
+    && rSmoke.estadoResultado === "Generado: Ficticio, Beto Nuevo",
+  rSmoke.error || rSmoke.rawAlerts.join(" / "));
+assert("Smoke 3B: la ausencia del DNI en 1C y en 1B se advierte sin bloquear (diálogo y Control)",
+  rSmoke.advertencias.join("\n") === [advDniHistorico(P1C), advDniHistorico("1º bimestre")].join("\n")
+    && rSmoke.estadoAdvertencias === rSmoke.advertencias.join("\n"),
+  rSmoke.advertencias.join("; "));
+assert("Smoke 3B: las columnas de 1B y 1C quedan vacías y 3B conserva sus valoraciones",
+  matsSmoke.map(f => f[2] + ":" + valoresFila(f)).join(", ") === "Matemática I:||Suficiente, Lengua y Literatura I:||En proceso, FGI I:||ACREDITÓ",
+  matsSmoke.map(f => f[2] + ":" + valoresFila(f)).join(", "));
+assert("Smoke 3B: estudiante y campos generales salen de 3B",
+  rSmoke.out && rSmoke.out[3][4] === "Ficticio, Beto Nuevo" && cajas(rSmoke.out) === "Obs 3B Beto|Asist 3B Beto|Conv 3B Beto|PTF 3B Beto",
+  rSmoke.out && cajas(rSmoke.out));
+
+// Mismo Control con el período en 1º cuatrimestre: 1C pasa a ser la principal y el DNI ausente bloquea.
+let rSmoke1C = runTest("Smoke: mismo estudiante generando 1C", { control: ctlSmoke(P1C), sources, templateGrid: tpl03 });
+const errDniPrincipal1C = "No se encontró el DNI en la fuente de 1º cuatrimestre. Es la fuente principal del período a generar (1º cuatrimestre), por eso no se puede continuar.";
+assert("Smoke con período 1º cuatrimestre: DNI ausente en la principal bloquea e identifica la fuente principal y el período",
+  rSmoke1C.error === errDniPrincipal1C && !rSmoke1C.out
+    && rSmoke1C.rawAlerts[0] === "No se pudo generar el informe.\n\n" + errDniPrincipal1C
+    && rSmoke1C.estadoResultado === "Error: " + errDniPrincipal1C,
+  rSmoke1C.error);
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

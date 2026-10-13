@@ -192,7 +192,13 @@ function generarDatosBimestre3_(config, advertencias) {
  * Es la única lectura que interpreta la cola de la grilla (campos generales y operativos).
  */
 function leerFuentePrincipal_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias) {
-  const grilla = leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias);
+  let grilla;
+  try {
+    grilla = leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias);
+  } catch (err) {
+    // Distingue este error del de una fuente anterior, que sólo genera una advertencia.
+    throw new Error(err.message + ' Es la fuente principal del período a generar (' + periodo + '), por eso no se puede continuar.');
+  }
   const valores = grilla.valores;
   const fila = grilla.fila;
   const cola = detectarCamposCola_(valores, grilla.estructura, periodo, advertencias);

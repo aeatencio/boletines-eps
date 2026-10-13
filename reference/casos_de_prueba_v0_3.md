@@ -97,7 +97,7 @@ Con los fixtures `*_estructura_real_*.tsv`:
 - **Valores**: `EQUIVALENCIA` se imprime literalmente; `CURSA`, `NO CURSA` y celdas vacías no se imprimen.
 - **Acumulación**: toda materia con una valoración válida en algún período aparece, aunque sea de otro nivel o no tenga valor en el período principal. Orden: el de la grilla principal y, al final, las materias que sólo existen en una fuente anterior.
 - **Más de ocho materias**: las cajas de observaciones se desplazan sin pisar materias.
-- **Estudiante nuevo** (Beto Nuevo, DNI `97000002`): sólo presente en 3B; la ausencia en 1C es una advertencia no bloqueante.
+- **Estudiante nuevo** (Beto Nuevo, DNI `97000002`): sólo presente en 3B; la ausencia en 1C es una advertencia no bloqueante. Con 1B, 1C y 3B indicadas en Control y el flujo completo de `generarInformeActual()`, el informe se genera con una advertencia por cada fuente anterior y las columnas de 1B y 1C vacías. Si el período elegido es 1º cuatrimestre, 1C es la principal y el DNI ausente bloquea con un error que identifica la fuente principal y el período.
 - **EPSG** (Gael Uno, DNI `96000001`): nivel visual `Gastronomía 1`.
 - **Estructuras ambiguas**: falta o repetición de `ORIENTACIÓN`, materia repetida, materia sin columna de valoración y DNI fuera de la fila "Valoración" son errores en la fuente principal; en una fuente anterior, esa fuente se descarta con advertencia.
 
