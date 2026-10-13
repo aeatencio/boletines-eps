@@ -39,6 +39,19 @@ const CONFIG_EPS = {
     '1º bimestre': 5,      // E
     '1º cuatrimestre': 6,  // F
     '3º bimestre': 7       // G
+  },
+
+  // Encabezados que identifican cada campo de la cola (después de ORIENTACIÓN).
+  // Se comparan normalizados (sin tildes ni diferencias de mayúsculas o espacios), nunca por posición.
+  ENCABEZADOS_GENERALES: {
+    observacionesGenerales: 'OBSERVACIONES GENERALES SOBRE DESEMPEÑO ACADÉMICO',
+    observacionesAsistencia: 'OBSERVACIONES SOBRE ASISTENCIA',
+    observacionesConvivencia: 'OBSERVACIONES SOBRE CONVIVENCIA ESCOLAR',
+    ptf: 'PLAN DE TRABAJO FORMATIVO (PTF)'
+  },
+  ENCABEZADOS_OPERATIVOS: {
+    listoParaExportar: 'LISTO PARA EXPORTAR',
+    exportado: 'EXPORTADO'
   }
 };
 
@@ -59,17 +72,7 @@ function generarInformeActual() {
 
     const config = leerConfiguracion_(control);
     const advertencias = [];
-
-    let informe;
-    if (config.periodo === CONFIG_EPS.PERIODOS.BIMESTRE_1) {
-      informe = generarDatosBimestre_(config, advertencias);
-    } else if (config.periodo === CONFIG_EPS.PERIODOS.CUATRIMESTRE_1) {
-      informe = generarDatosCuatrimestre_(config, advertencias);
-    } else if (config.periodo === CONFIG_EPS.PERIODOS.BIMESTRE_3) {
-      informe = generarDatosBimestre3_(config, advertencias);
-    } else {
-      throw new Error('Período no implementado: ' + config.periodo);
-    }
+    const informe = generarDatosInforme_(config, advertencias);
 
     crearInforme_(ss, informe.estudiante, informe.materias, config.periodo, config.cicloLectivo, advertencias);
     registrarEstado_(control, 'Generado: ' + informe.estudiante.nombreCompleto, advertencias);
@@ -109,21 +112,34 @@ function leerConfiguracion_(control) {
   return { periodo, hojaOrigen, dni, cicloLectivo, fuente1B, fuente1C, fuente3B };
 }
 
+function generarDatosInforme_(config, advertencias) {
+  if (config.periodo === CONFIG_EPS.PERIODOS.BIMESTRE_1) return generarDatosBimestre_(config, advertencias);
+  if (config.periodo === CONFIG_EPS.PERIODOS.CUATRIMESTRE_1) return generarDatosCuatrimestre_(config, advertencias);
+  if (config.periodo === CONFIG_EPS.PERIODOS.BIMESTRE_3) return generarDatosBimestre3_(config, advertencias);
+  throw new Error('Período no implementado: ' + config.periodo);
+}
+
+/**
+ * Cada generación tiene una única fuente principal: la del período solicitado.
+ * De ella salen el estudiante, los campos generales (orientación, observaciones, PTF)
+ * y los campos operativos. Las fuentes anteriores sólo aportan materias y valoraciones.
+ */
 function generarDatosBimestre_(config, advertencias) {
-  const fuente1B = leerFuente_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, true, advertencias);
+  const fuente1B = leerFuentePrincipal_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, advertencias);
   return {
     estudiante: fuente1B.estudiante,
+    camposOperativos: fuente1B.camposOperativos,
     materias: construirMateriasAcumuladas_([fuente1B], [CONFIG_EPS.PERIODOS.BIMESTRE_1], advertencias)
   };
 }
 
 function generarDatosCuatrimestre_(config, advertencias) {
-  const fuente1C = leerFuente_(config.fuente1C, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, true, advertencias);
+  const fuente1C = leerFuentePrincipal_(config.fuente1C, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, advertencias);
   let fuentes = [fuente1C];
   let ordenPeriodos = [CONFIG_EPS.PERIODOS.CUATRIMESTRE_1];
 
   if (config.fuente1B) {
-    const fuente1B = leerFuente_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, false, advertencias);
+    const fuente1B = leerFuenteHistorica_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, advertencias);
     if (fuente1B) {
       fuentes = [fuente1C, fuente1B];
       ordenPeriodos = [CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, CONFIG_EPS.PERIODOS.BIMESTRE_1];
@@ -134,17 +150,18 @@ function generarDatosCuatrimestre_(config, advertencias) {
 
   return {
     estudiante: fuente1C.estudiante,
+    camposOperativos: fuente1C.camposOperativos,
     materias: construirMateriasAcumuladas_(fuentes, ordenPeriodos, advertencias)
   };
 }
 
 function generarDatosBimestre3_(config, advertencias) {
-  const fuente3B = leerFuente_(config.fuente3B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_3, true, advertencias);
+  const fuente3B = leerFuentePrincipal_(config.fuente3B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_3, advertencias);
   let fuentes = [fuente3B];
   let ordenPeriodos = [CONFIG_EPS.PERIODOS.BIMESTRE_3];
 
   if (config.fuente1C) {
-    const fuente1C = leerFuente_(config.fuente1C, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, false, advertencias);
+    const fuente1C = leerFuenteHistorica_(config.fuente1C, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, advertencias);
     if (fuente1C) {
       fuentes.push(fuente1C);
       ordenPeriodos.push(CONFIG_EPS.PERIODOS.CUATRIMESTRE_1);
@@ -154,7 +171,7 @@ function generarDatosBimestre3_(config, advertencias) {
   }
 
   if (config.fuente1B) {
-    const fuente1B = leerFuente_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, false, advertencias);
+    const fuente1B = leerFuenteHistorica_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, advertencias);
     if (fuente1B) {
       fuentes.push(fuente1B);
       ordenPeriodos.push(CONFIG_EPS.PERIODOS.BIMESTRE_1);
@@ -165,38 +182,94 @@ function generarDatosBimestre3_(config, advertencias) {
 
   return {
     estudiante: fuente3B.estudiante,
+    camposOperativos: fuente3B.camposOperativos,
     materias: construirMateriasAcumuladas_(fuentes, ordenPeriodos, advertencias)
   };
 }
 
-function leerFuente_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, esPrincipal, advertencias) {
+/**
+ * Fuente del período solicitado. Cualquier problema estructural interrumpe la generación.
+ * Es la única lectura que interpreta la cola de la grilla (campos generales y operativos).
+ */
+function leerFuentePrincipal_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias) {
+  const grilla = leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias);
+  const valores = grilla.valores;
+  const fila = grilla.fila;
+  const cola = detectarCamposCola_(valores, grilla.estructura, periodo, advertencias);
+  const row = valores[fila] || [];
+  const apellido = texto_(row[0]);
+  const nombres = texto_(row[1]);
+  const orientacion = obtenerValor_(valores, fila, cola.orientacion);
+
+  return {
+    periodo,
+    estudiante: {
+      apellido,
+      nombres,
+      dni: normalizarDni_(row[2]),
+      nombreCompleto: [apellido, nombres].filter(Boolean).join(', ') || '(sin nombre en la fuente)',
+      orientacion,
+      nivelVisual: construirNivelVisual_(hojaOrigen, detectarNivelPorFila_(valores, fila), orientacion),
+      observacionesGenerales: obtenerValor_(valores, fila, cola.observacionesGenerales),
+      observacionesAsistencia: obtenerValor_(valores, fila, cola.observacionesAsistencia),
+      observacionesConvivencia: obtenerValor_(valores, fila, cola.observacionesConvivencia),
+      ptf: obtenerValor_(valores, fila, cola.ptf)
+    },
+    materiasPorClave: grilla.materiasPorClave,
+    ordenMaterias: grilla.ordenMaterias,
+    ordenGrilla: grilla.ordenGrilla,
+    nombresGrilla: grilla.nombresGrilla,
+    // Se leen y validan, pero en esta versión no seleccionan estudiantes ni se escriben en la fuente.
+    camposOperativos: {
+      listoParaExportar: leerEstadoOperativo_(valores, fila, cola.listoParaExportar, CONFIG_EPS.ENCABEZADOS_OPERATIVOS.listoParaExportar, periodo, advertencias),
+      exportado: leerEstadoOperativo_(valores, fila, cola.exportado, CONFIG_EPS.ENCABEZADOS_OPERATIVOS.exportado, periodo, advertencias)
+    }
+  };
+}
+
+/**
+ * Fuente de un período anterior: sólo aporta materias y valoraciones.
+ * No lee la cola de la grilla. Si no puede leerse, se advierte y se continúa con la principal.
+ */
+function leerFuenteHistorica_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias) {
   try {
-    const idFuente = extraerSpreadsheetId_(fuenteIngresada);
-    const libroFuente = SpreadsheetApp.openById(idFuente);
-    const hoja = libroFuente.getSheetByName(hojaOrigen);
-    if (!hoja) throw new Error('No se encontró la hoja ' + hojaOrigen + ' en la fuente de ' + periodo + '.');
-
-    const valores = hoja.getDataRange().getDisplayValues();
-    const estructura = detectarEstructuraFuente_(valores, periodo);
-    const filas = buscarFilasPorDni_(valores, dniBuscado);
-
-    if (filas.length === 0) throw new Error('No se encontró el DNI en la fuente de ' + periodo + '.');
-    if (filas.length > 1) throw new Error('El DNI aparece más de una vez en la fuente de ' + periodo + '.');
-
-    const estudiante = construirRegistroEstudiante_(valores, filas[0], estructura, hojaOrigen, periodo, advertencias);
+    const grilla = leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias);
     return {
       periodo,
-      estudiante,
-      materiasPorClave: estudiante.materiasPorClave,
-      ordenMaterias: estudiante.ordenMaterias,
-      ordenGrilla: estructura.materias.map(m => m.clave),
-      nombresGrilla: Object.fromEntries(estructura.materias.map(m => [m.clave, m.nombre]))
+      materiasPorClave: grilla.materiasPorClave,
+      ordenMaterias: grilla.ordenMaterias,
+      ordenGrilla: grilla.ordenGrilla,
+      nombresGrilla: grilla.nombresGrilla
     };
   } catch (err) {
-    if (esPrincipal) throw err;
     advertencias.push(err.message + ' Se continuará con la fuente principal.');
     return null;
   }
+}
+
+function leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias) {
+  const idFuente = extraerSpreadsheetId_(fuenteIngresada);
+  const libroFuente = SpreadsheetApp.openById(idFuente);
+  const hoja = libroFuente.getSheetByName(hojaOrigen);
+  if (!hoja) throw new Error('No se encontró la hoja ' + hojaOrigen + ' en la fuente de ' + periodo + '.');
+
+  const valores = hoja.getDataRange().getDisplayValues();
+  const estructura = detectarEstructuraFuente_(valores, periodo);
+  const filas = buscarFilasPorDni_(valores, dniBuscado);
+
+  if (filas.length === 0) throw new Error('No se encontró el DNI en la fuente de ' + periodo + '.');
+  if (filas.length > 1) throw new Error('El DNI aparece más de una vez en la fuente de ' + periodo + '.');
+
+  const materias = leerMateriasEstudiante_(valores, filas[0], estructura, periodo, advertencias);
+  return {
+    valores,
+    estructura,
+    fila: filas[0],
+    materiasPorClave: materias.materiasPorClave,
+    ordenMaterias: materias.ordenMaterias,
+    ordenGrilla: estructura.materias.map(m => m.clave),
+    nombresGrilla: Object.fromEntries(estructura.materias.map(m => [m.clave, m.nombre]))
+  };
 }
 
 /**
@@ -225,14 +298,10 @@ function detectarEstructuraFuente_(valores, periodo) {
   }
   const inicioCola = columnasOrientacion[0];
 
-  const especiales = { orientacion: inicioCola };
-  for (let c = inicioCola + 1; c < maxCols; c++) {
-    const combinado = normalizarTexto_([texto_(encabezado1[c]), texto_(encabezado2[c])].filter(Boolean).join(' '));
-    if (combinado.includes('OBSERVACIONES GENERALES')) especiales.observacionesGenerales = c;
-    if (combinado.includes('ASISTENCIA')) especiales.observacionesAsistencia = c;
-    if (combinado.includes('CONVIVENCIA')) especiales.observacionesConvivencia = c;
-    if (combinado.includes('PLAN DE TRABAJO') || combinado.includes('PTF')) especiales.ptf = c;
-  }
+  // Los encabezados de la cola nunca son materias, aunque aparezcan antes de ORIENTACIÓN.
+  const encabezadosCola = Object.values(CONFIG_EPS.ENCABEZADOS_GENERALES)
+    .concat(Object.values(CONFIG_EPS.ENCABEZADOS_OPERATIVOS))
+    .map(normalizarTexto_);
 
   // Formación Profesional: el encabezado de grupo está en fila 1 y cada materia en fila 2.
   const materias = [];
@@ -241,6 +310,9 @@ function detectarEstructuraFuente_(valores, periodo) {
     const nombre = texto_(encabezado2[c]) || texto_(encabezado1[c]);
     if (!nombre) continue;
     if (/^EPS\d+$/.test(normalizarTexto_(nombre))) continue;
+    if (encabezadosCola.includes(normalizarTexto_(nombre))) {
+      throw new Error('El encabezado "' + nombre + '" (columna ' + letraColumna_(c) + ') es un campo general u operativo y está antes de ORIENTACIÓN' + enFuente);
+    }
     if (c + 1 >= inicioCola || texto_(encabezado1[c + 1]) || texto_(encabezado2[c + 1])) {
       throw new Error('La materia "' + nombre + '" (columna ' + letraColumna_(c) + ') no tiene a continuación su columna de valoración' + enFuente);
     }
@@ -259,7 +331,69 @@ function detectarEstructuraFuente_(valores, periodo) {
     throw new Error('Materia repetida en la fuente de ' + periodo + ': ' + detalle.join('; ') + '. No se puede determinar cuál columna contiene la valoración correcta.');
   }
 
-  return { materias, especiales, inicioCola };
+  return { materias, inicioCola };
+}
+
+/**
+ * Columnas de la cola de la fuente principal, identificadas por encabezado exacto.
+ * Un campo general sin encabezado identificable se advierte y queda vacío: no se deduce por posición.
+ * Las columnas operativas pueden faltar en grillas anteriores a su estandarización, sin advertencia.
+ */
+function detectarCamposCola_(valores, estructura, periodo, advertencias) {
+  const encabezado1 = valores[0] || [];
+  const encabezado2 = valores[1] || [];
+  const maxCols = Math.max(encabezado1.length, encabezado2.length);
+  const enFuente = ' en la fuente de ' + periodo + '.';
+
+  const buscar = (encabezado, advertirAusencia) => {
+    const buscado = normalizarTexto_(encabezado);
+    const columnas = [];
+    for (let c = estructura.inicioCola + 1; c < maxCols; c++) {
+      if (normalizarTexto_(encabezado1[c]) === buscado || normalizarTexto_(encabezado2[c]) === buscado) columnas.push(c);
+    }
+    if (columnas.length > 1) {
+      advertencias.push('El encabezado "' + encabezado + '" aparece más de una vez (columnas ' + columnas.map(letraColumna_).join(', ') + ')' + enFuente + ' No se leerá ese campo.');
+      return undefined;
+    }
+    if (columnas.length === 0 && advertirAusencia) {
+      advertencias.push('No se encontró el encabezado "' + encabezado + '" después de ORIENTACIÓN' + enFuente + ' Ese campo quedará vacío en el informe.');
+    }
+    return columnas[0];
+  };
+
+  const cola = { orientacion: estructura.inicioCola };
+  Object.keys(CONFIG_EPS.ENCABEZADOS_GENERALES).forEach(campo => {
+    cola[campo] = buscar(CONFIG_EPS.ENCABEZADOS_GENERALES[campo], true);
+  });
+  Object.keys(CONFIG_EPS.ENCABEZADOS_OPERATIVOS).forEach(campo => {
+    cola[campo] = buscar(CONFIG_EPS.ENCABEZADOS_OPERATIVOS[campo], false);
+  });
+  return cola;
+}
+
+/**
+ * LISTO PARA EXPORTAR y EXPORTADO: valores canónicos SÍ / NO.
+ * Devuelve 'SÍ', 'NO' o null (columna ausente, celda vacía o valor no admitido).
+ */
+function leerEstadoOperativo_(valores, fila, columna, encabezado, periodo, advertencias) {
+  if (columna === undefined) return null;
+  const enFuente = ' en la fuente de ' + periodo + '.';
+  const crudo = obtenerValor_(valores, fila, columna);
+  if (!crudo) {
+    advertencias.push(encabezado + ' está vacío' + enFuente + ' Se esperaba SÍ o NO.');
+    return null;
+  }
+  const canonico = crudo.normalize('NFC');
+  if (canonico === 'SÍ' || canonico === 'NO') return canonico;
+
+  const norm = normalizarTexto_(crudo);
+  if (norm === 'SI' || norm === 'NO') {
+    const estado = norm === 'SI' ? 'SÍ' : 'NO';
+    advertencias.push(encabezado + ' tiene "' + crudo + '"' + enFuente + ' Se interpretó como ' + estado + ', pero la forma canónica es "' + estado + '".');
+    return estado;
+  }
+  advertencias.push(encabezado + ' tiene un valor no admitido' + enFuente + ' Valor: "' + crudo + '". Se esperaba SÍ o NO; el estado queda sin determinar.');
+  return null;
 }
 
 function buscarFilasPorDni_(valores, dniBuscado) {
@@ -270,14 +404,7 @@ function buscarFilasPorDni_(valores, dniBuscado) {
   return filas;
 }
 
-function construirRegistroEstudiante_(valores, fila, estructura, hojaOrigen, periodo, advertencias) {
-  const row = valores[fila] || [];
-  const apellido = texto_(row[0]);
-  const nombres = texto_(row[1]);
-  const dni = normalizarDni_(row[2]);
-  const nivel = detectarNivelPorFila_(valores, fila);
-  const orientacion = obtenerValor_(valores, fila, estructura.especiales.orientacion);
-
+function leerMateriasEstudiante_(valores, fila, estructura, periodo, advertencias) {
   // Cada estudiante ocupa un bloque de cuatro filas; la del DNI debe ser la fila "Valoración".
   // Se controla por fila y no por celda: en las grillas reales algunas etiquetas quedan vacías.
   const esFilaValoracion = estructura.materias.some(m =>
@@ -301,19 +428,7 @@ function construirRegistroEstudiante_(valores, fila, estructura, hojaOrigen, per
     }
   });
 
-  return {
-    apellido,
-    nombres,
-    dni,
-    nombreCompleto: [apellido, nombres].filter(Boolean).join(', ') || '(sin nombre en la fuente)',
-    nivelVisual: construirNivelVisual_(hojaOrigen, nivel, orientacion),
-    observacionesGenerales: obtenerValor_(valores, fila, estructura.especiales.observacionesGenerales),
-    observacionesAsistencia: obtenerValor_(valores, fila, estructura.especiales.observacionesAsistencia),
-    observacionesConvivencia: obtenerValor_(valores, fila, estructura.especiales.observacionesConvivencia),
-    ptf: obtenerValor_(valores, fila, estructura.especiales.ptf),
-    materiasPorClave,
-    ordenMaterias
-  };
+  return { materiasPorClave, ordenMaterias };
 }
 
 function construirMateriasAcumuladas_(fuentes, ordenPeriodos, advertencias) {

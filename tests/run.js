@@ -143,26 +143,41 @@ class MockSS {
   setActiveSheet() {}
 }
 
-function runTest(testName, { control, sources, templateGrid }) {
-  const code = fs.readFileSync(path.join(ROOT, "src/Codigo_Apps_Script_Generador_EPS_v0_3.gs"), "utf8");
-  const plantilla = new MockSheet("Plantilla", templateGrid);
+function hojaControl(control) {
   const ctrlGrid = [];
   for (const [a1, v] of Object.entries(control)) {
     const [r, c] = a1ToRC(a1);
     while (ctrlGrid.length < r) ctrlGrid.push([]);
     ctrlGrid[r - 1][c - 1] = v;
   }
-  const ctrl = new MockSheet("Control", ctrlGrid);
+  return new MockSheet("Control", ctrlGrid);
+}
+
+// Las grillas fuente son de sólo lectura para el generador: el mock no expone escritura.
+function abrirFuenteMock(sources) {
+  return id => {
+    if (!sources[id]) throw new Error("mock: id inexistente " + id);
+    return {
+      getSheetByName: n => {
+        if (!sources[id][n]) return null;
+        const hoja = new MockSheet(id + "/" + n, sources[id][n]);
+        return { getName: () => hoja.getName(), getDataRange: () => hoja.getDataRange() };
+      }
+    };
+  };
+}
+
+function runTest(testName, { control, sources, templateGrid }) {
+  const code = fs.readFileSync(path.join(ROOT, "src/Codigo_Apps_Script_Generador_EPS_v0_3.gs"), "utf8");
+  const plantilla = new MockSheet("Plantilla", templateGrid);
+  const ctrl = hojaControl(control);
   const ss = new MockSS([plantilla, ctrl]);
   const rawAlerts = [];
   const ctx = {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
       getUi: () => ({ alert: m => rawAlerts.push(m), createMenu: () => ({ addItem() { return this; }, addToUi() {} }) }),
-      openById: id => {
-        if (!sources[id]) throw new Error("mock: id inexistente " + id);
-        return { getSheetByName: n => sources[id][n] ? new MockSheet(id + "/" + n, sources[id][n]) : null };
-      }
+      openById: abrirFuenteMock(sources)
     }
   };
   vm.createContext(ctx);
@@ -195,11 +210,24 @@ function runTest(testName, { control, sources, templateGrid }) {
 }
 
 // Carga el generador sin ejecutarlo, para probar funciones puras del parser.
-function cargarGenerador() {
-  const ctx = {};
+// Con fuentes, también puede abrirlas (sin hoja activa ni UI).
+function cargarGenerador(sources) {
+  const ctx = sources ? { SpreadsheetApp: { openById: abrirFuenteMock(sources) } } : {};
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(ROOT, "src/Codigo_Apps_Script_Generador_EPS_v0_3.gs"), "utf8"), ctx);
   return ctx;
+}
+
+// Etapa de datos de la generación, sin crear Informe_actual: expone el resultado interno.
+function generarDatos(control, sources) {
+  const gen = cargarGenerador(sources);
+  const advertencias = [];
+  try {
+    const informe = gen.generarDatosInforme_(gen.leerConfiguracion_(hojaControl(control)), advertencias);
+    return { error: null, informe: JSON.parse(JSON.stringify(informe)), advertencias: advertencias.slice() };
+  } catch (e) {
+    return { error: e.message, informe: null, advertencias: advertencias.slice() };
+  }
 }
 
 // Filas de materias impresas en Informe_actual: desde la fila 9 hasta el bloque de observaciones.
@@ -386,12 +414,13 @@ assert("Estructura real: 16 materias de los cuatro niveles en orden de grilla, c
   ].join("|"), nombresMaterias(estReal));
 assert("Estructura real: cada materia lee la valoración en la columna siguiente a su etiqueta",
   estReal.materias.every(m => m.columnaValor === m.columnaEtiqueta + 1), JSON.stringify(estReal.materias[0]));
+const colaReal = gen.detectarCamposCola_(src3B_real.EPSI, estReal, P3B, []);
 assert("Estructura real: la cola empieza en ORIENTACIÓN (columna AN)",
-  estReal.inicioCola === 39 && estReal.especiales.orientacion === 39, estReal.inicioCola);
+  estReal.inicioCola === 39 && colaReal.orientacion === 39, estReal.inicioCola);
 assert("Estructura real: campos generales detectados dentro de la cola",
-  [estReal.especiales.observacionesGenerales, estReal.especiales.observacionesAsistencia,
-   estReal.especiales.observacionesConvivencia, estReal.especiales.ptf].join(",") === "40,41,42,43",
-  JSON.stringify(estReal.especiales));
+  [colaReal.observacionesGenerales, colaReal.observacionesAsistencia,
+   colaReal.observacionesConvivencia, colaReal.ptf].join(",") === "40,41,42,43",
+  JSON.stringify(colaReal));
 assert("Estructura real: ninguna columna desde ORIENTACIÓN en adelante es materia (LISTO PARA EXPORTAR, EXPORTADO, columnas posteriores)",
   estReal.materias.every(m => m.columnaEtiqueta < estReal.inicioCola && m.columnaValor < estReal.inicioCola));
 assert("Estructura real: encabezados de grupo y marcadores de nivel no son materias",
@@ -543,6 +572,198 @@ assert("Nombre mostrado: materia de la grilla principal valorada sólo en 1C usa
   matsNombre.includes("Lengua y Literatura I:|8|") && !matsNombre.some(m => m.startsWith("LENGUA")), matsNombre.join(", "));
 assert("Nombre mostrado: materia que no existe en la grilla principal conserva el nombre de la fuente anterior, al final",
   matsNombre[matsNombre.length - 1] === "TALLER PROFESIONAL I C:|8|", matsNombre.join(", "));
+
+// =============================================================================
+// 6. Campos generales y operativos: sólo desde la fuente principal (#10)
+// =============================================================================
+const P1C = "1º cuatrimestre";
+const ID_VAR_1C = "ID_VARIANTE_1C_xxxxxxxxxxxxxx";
+const ADV_SIN_1B = "No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores de 1º bimestre.";
+const colDe = (g, encabezado) => {
+  const c = columnaDe(g, encabezado);
+  if (c < 0) throw new Error("El fixture no tiene el encabezado " + encabezado);
+  return c;
+};
+const conCeldas = (dni, valoresPorEncabezado) => g => {
+  const r = filaDni(g, dni);
+  Object.entries(valoresPorEncabezado).forEach(([encabezado, v]) => { g[r][colDe(g, encabezado)] = v; });
+};
+const conEncabezados = reemplazos => g => {
+  Object.entries(reemplazos).forEach(([encabezado, nuevo]) => { g[0][colDe(g, encabezado)] = nuevo; });
+};
+const variante3B = cambiar => conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, cambiar) });
+const ctlAna3B = ctlReal("97000001", { B13: ID_VAR });
+const cajas = out => ["OBSERVACIONES GENERALES", "OBSERVACIONES SOBRE ASISTENCIA", "OBSERVACIONES SOBRE CONVIVENCIA", "PLAN DE TRABAJO FORMATIVO"]
+  .map(prefijo => textoBajoEtiqueta(out, prefijo)).join("|");
+const operativos = d => d.informe ? JSON.stringify(d.informe.camposOperativos) : d.error;
+const mismoInforme = (a, b) => !!a.out && JSON.stringify(a.out) === JSON.stringify(b.out);
+const OP_SI_NO = '{"listoParaExportar":"SÍ","exportado":"NO"}';
+
+// 6.1. Lectura desde la principal (Ana Real en 3B: LISTO PARA EXPORTAR = SÍ, EXPORTADO = NO)
+let dAna = generarDatos(ctlReal("97000001"), sources);
+assert("Campos operativos: LISTO PARA EXPORTAR = SÍ y EXPORTADO = NO quedan disponibles en camposOperativos",
+  !dAna.error && operativos(dAna) === OP_SI_NO, operativos(dAna));
+assert("Campos operativos: no forman parte de estudiante",
+  dAna.informe && !("listoParaExportar" in dAna.informe.estudiante) && !("exportado" in dAna.informe.estudiante),
+  dAna.informe && Object.keys(dAna.informe.estudiante).join(","));
+assert("Campos operativos: valores canónicos no generan advertencias",
+  dAna.advertencias.join("\n") === ADV_SIN_1B, dAna.advertencias.join("; "));
+assert("Campos operativos: ausentes en la principal (grilla anterior a #10) quedan nulos, sin advertencia",
+  (d => operativos(d) === '{"listoParaExportar":null,"exportado":null}' && d.advertencias.length === 0)(generarDatos(ctl(P3B, "99000001"), sources)));
+
+// 6.2. Validación SÍ / NO
+const estadoOp = v => { const adv = []; return { estado: gen.leerEstadoOperativo_([[v]], 0, 0, "LISTO PARA EXPORTAR", P3B, adv), adv }; };
+assert("Campos operativos: SÍ y NO canónicos (también SÍ con tilde combinada) se aceptan sin advertencia",
+  [["SÍ", "SÍ"], ["NO", "NO"], ["SÍ", "SÍ"]].every(([v, e]) => { const x = estadoOp(v); return x.estado === e && x.adv.length === 0; }));
+assert("Campos operativos: Si, si, sí, Sí y SI se interpretan como SÍ con advertencia de forma no canónica",
+  ["Si", "si", "sí", "Sí", "SI"].every(v => { const x = estadoOp(v); return x.estado === "SÍ" && x.adv.length === 1 && x.adv[0].includes('"' + v + '"') && x.adv[0].includes('la forma canónica es "SÍ"'); }));
+assert("Campos operativos: No y no se interpretan como NO con advertencia de forma no canónica",
+  ["No", "no"].every(v => { const x = estadoOp(v); return x.estado === "NO" && x.adv.length === 1 && x.adv[0].includes('la forma canónica es "NO"'); }));
+
+let srcNoCanon = variante3B(conCeldas("97000001", { "LISTO PARA EXPORTAR": "Si", "EXPORTADO": "no" }));
+let dNoCanon = generarDatos(ctlAna3B, srcNoCanon);
+assert("Campos operativos: en la generación, 'Si' y 'no' quedan como SÍ y NO y cada uno advierte",
+  operativos(dNoCanon) === OP_SI_NO
+    && dNoCanon.advertencias.includes('LISTO PARA EXPORTAR tiene "Si" en la fuente de 3º bimestre. Se interpretó como SÍ, pero la forma canónica es "SÍ".')
+    && dNoCanon.advertencias.includes('EXPORTADO tiene "no" en la fuente de 3º bimestre. Se interpretó como NO, pero la forma canónica es "NO".'),
+  operativos(dNoCanon) + " / " + dNoCanon.advertencias.join("; "));
+
+let srcOpVacio = variante3B(conCeldas("97000001", { "LISTO PARA EXPORTAR": "" }));
+let rOpVacio = runTest("LISTO PARA EXPORTAR vacío", { control: ctlAna3B, sources: srcOpVacio, templateGrid: tpl03 });
+let dOpVacio = generarDatos(ctlAna3B, srcOpVacio);
+assert("Celda operativa vacía: advertencia no bloqueante y mismo informe",
+  !rOpVacio.error && mismoInforme(rOpVacio, rReal)
+    && rOpVacio.advertencias.includes("LISTO PARA EXPORTAR está vacío en la fuente de 3º bimestre. Se esperaba SÍ o NO."),
+  rOpVacio.error || rOpVacio.advertencias.join("; "));
+assert("Celda operativa vacía: el estado queda nulo",
+  operativos(dOpVacio) === '{"listoParaExportar":null,"exportado":"NO"}', operativos(dOpVacio));
+
+let srcOpInvalido = variante3B(conCeldas("97000001", { "EXPORTADO": "Tal vez" }));
+let rOpInvalido = runTest("EXPORTADO inválido", { control: ctlAna3B, sources: srcOpInvalido, templateGrid: tpl03 });
+let dOpInvalido = generarDatos(ctlAna3B, srcOpInvalido);
+assert("Valor operativo inválido: advertencia no bloqueante y mismo informe",
+  !rOpInvalido.error && mismoInforme(rOpInvalido, rReal)
+    && rOpInvalido.advertencias.includes('EXPORTADO tiene un valor no admitido en la fuente de 3º bimestre. Valor: "Tal vez". Se esperaba SÍ o NO; el estado queda sin determinar.'),
+  rOpInvalido.error || rOpInvalido.advertencias.join("; "));
+assert("Valor operativo inválido: el estado queda nulo",
+  operativos(dOpInvalido) === '{"listoParaExportar":"SÍ","exportado":null}', operativos(dOpInvalido));
+
+let rOpDoble = runTest("EXPORTADO repetido", {
+  control: ctlAna3B, sources: variante3B(conEncabezados({ "SEGUIMIENTO INTERNO": "Exportado" })), templateGrid: tpl03
+});
+assert("Encabezado operativo repetido: advertencia, no se elige una columna y se genera igual",
+  !rOpDoble.error && mismoInforme(rOpDoble, rReal)
+    && rOpDoble.advertencias.includes('El encabezado "EXPORTADO" aparece más de una vez (columnas AT, AU) en la fuente de 3º bimestre. No se leerá ese campo.'),
+  rOpDoble.error || rOpDoble.advertencias.join("; "));
+
+// 6.3. LISTO PARA EXPORTAR y EXPORTADO todavía no seleccionan ni alteran la generación individual
+let rNoListo = runTest("LISTO PARA EXPORTAR = NO", {
+  control: ctlAna3B, sources: variante3B(conCeldas("97000001", { "LISTO PARA EXPORTAR": "NO", "EXPORTADO": "SÍ" })), templateGrid: tpl03
+});
+assert("LISTO PARA EXPORTAR = NO: el boletín individual se genera igual que con SÍ",
+  !rNoListo.error && mismoInforme(rNoListo, rReal) && rNoListo.advertencias.join("\n") === ADV_SIN_1B,
+  rNoListo.error || rNoListo.advertencias.join("; "));
+let dBeto = generarDatos(ctlReal("97000002"), sources);
+assert("Estado inicial NO / NO (Beto Nuevo): se genera y el estado queda disponible sin advertencias operativas",
+  !rNuevo.error && rNuevo.out && operativos(dBeto) === '{"listoParaExportar":"NO","exportado":"NO"}'
+    && !rNuevo.advertencias.some(a => /LISTO PARA EXPORTAR|EXPORTADO/.test(a)),
+  operativos(dBeto) + " / " + rNuevo.advertencias.join("; "));
+
+// 6.4. Nunca son materias
+assert("LISTO PARA EXPORTAR y EXPORTADO nunca son materias (estructura ni resultado)",
+  !estReal.materias.some(m => ["LISTOPARAEXPORTAR", "EXPORTADO"].includes(m.clave))
+    && dAna.informe && dAna.informe.materias.every(m => !/LISTO PARA EXPORTAR|EXPORTADO/i.test(m.nombre)));
+let rOpEnMaterias = runTest("LISTO PARA EXPORTAR en la zona de materias", {
+  control: ctlAna3B, sources: variante3B(conEncabezados({ "Matemática IV": "LISTO PARA EXPORTAR" })), templateGrid: tpl03
+});
+assert("LISTO PARA EXPORTAR antes de ORIENTACIÓN: error en vez de leerlo como materia",
+  rOpEnMaterias.error && rOpEnMaterias.error.includes('El encabezado "LISTO PARA EXPORTAR" (columna AH) es un campo general u operativo y está antes de ORIENTACIÓN')
+    && !rOpEnMaterias.out, rOpEnMaterias.error);
+
+// 6.5. Las fuentes históricas no leen, validan ni aportan campos generales u operativos
+const genFuentes = cargarGenerador(sources);
+const histAna = genFuentes.leerFuenteHistorica_("ID_1C_REAL_xxxxxxxxxxxxxxxxxxx", "EPSI", "97000001", P1C, []);
+assert("Fuente histórica: su resultado sólo contiene materias (sin estudiante, campos generales ni camposOperativos)",
+  Object.keys(histAna).sort().join(",") === "materiasPorClave,nombresGrilla,ordenGrilla,ordenMaterias,periodo", Object.keys(histAna).join(","));
+
+const srcHistIntrusa = Object.assign({}, sources, { [ID_VAR_1C]: { EPSI: variante(src1C_real.EPSI, g => {
+  conCeldas("97000001", {
+    "ORIENTACIÓN": "Gastronomía",
+    "OBSERVACIONES GENERALES SOBRE DESEMPEÑO ACADÉMICO": "INTRUSO obs",
+    "OBSERVACIONES SOBRE ASISTENCIA": "INTRUSO asistencia",
+    "OBSERVACIONES SOBRE CONVIVENCIA ESCOLAR": "",
+    "LISTO PARA EXPORTAR": "Tal vez",
+    "EXPORTADO": ""
+  })(g);
+  conEncabezados({ "PLAN DE TRABAJO FORMATIVO (PTF)": "", "EXPORTADO": "LISTO PARA EXPORTAR" })(g);
+}) } });
+const ctlHistIntrusa = ctlReal("97000001", { B12: ID_VAR_1C });
+let rHistIntrusa = runTest("Fuente histórica con cola distinta e inválida", { control: ctlHistIntrusa, sources: srcHistIntrusa, templateGrid: tpl03 });
+let dHistIntrusa = generarDatos(ctlHistIntrusa, srcHistIntrusa);
+assert("Fuente histórica con orientación, observaciones, PTF y operativos distintos o inválidos: el informe no cambia",
+  !rHistIntrusa.error && mismoInforme(rHistIntrusa, rReal) && !JSON.stringify(rHistIntrusa.out).includes("INTRUSO"),
+  rHistIntrusa.error);
+assert("Fuente histórica con cola distinta e inválida: no produce advertencias",
+  rHistIntrusa.advertencias.join("\n") === ADV_SIN_1B, rHistIntrusa.advertencias.join("; "));
+assert("Fuente histórica con cola distinta e inválida: estudiante y camposOperativos idénticos a los de la principal",
+  dHistIntrusa.informe && dAna.informe
+    && JSON.stringify(dHistIntrusa.informe.estudiante) === JSON.stringify(dAna.informe.estudiante)
+    && operativos(dHistIntrusa) === OP_SI_NO && dHistIntrusa.informe.estudiante.orientacion === "Informática",
+  dHistIntrusa.informe && JSON.stringify(dHistIntrusa.informe.estudiante));
+
+// 6.6. Generación de 3B: campos generales de 3B, jamás de 1C
+assert("Generación 3B: observaciones y PTF salen de 3B",
+  cajas(rReal.out) === "Obs 3B Ana|Asist 3B Ana|Conv 3B Ana|PTF 3B Ana" && !JSON.stringify(rReal.out).includes("1C Ana"), cajas(rReal.out));
+const srcHuecos3B = variante3B(conCeldas("97000001", { "ORIENTACIÓN": "", "OBSERVACIONES SOBRE ASISTENCIA": "", "PLAN DE TRABAJO FORMATIVO (PTF)": "" }));
+let rHuecos3B = runTest("Campos generales vacíos en 3B", { control: ctlAna3B, sources: srcHuecos3B, templateGrid: tpl03 });
+let dHuecos3B = generarDatos(ctlAna3B, srcHuecos3B);
+assert("Generación 3B: un campo general vacío en 3B queda vacío y nunca se completa con 1C",
+  !rHuecos3B.error && cajas(rHuecos3B.out) === "Obs 3B Ana||Conv 3B Ana|" && !JSON.stringify(rHuecos3B.out).includes("1C Ana")
+    && dHuecos3B.informe.estudiante.orientacion === "",
+  rHuecos3B.error || cajas(rHuecos3B.out));
+
+// 6.7. Generación de 1C: ahora 1C es la principal y sus campos generales y operativos sí se usan
+const ctl1CReal = ctl(P1C, "97000001", { B10: "", B12: "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx", B13: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx" });
+let r1CReal = runTest("Generación 1C con 1C como principal", { control: ctl1CReal, sources, templateGrid: tpl03 });
+let d1CReal = generarDatos(ctl1CReal, sources);
+assert("Generación 1C: observaciones y PTF salen de 1C",
+  !r1CReal.error && cajas(r1CReal.out) === "Obs 1C Ana|Asist 1C Ana|Conv 1C Ana|PTF 1C Ana" && !JSON.stringify(r1CReal.out).includes("3B Ana"),
+  r1CReal.error || cajas(r1CReal.out));
+assert("Generación 1C: orientación y camposOperativos salen de 1C (SÍ / SÍ)",
+  operativos(d1CReal) === '{"listoParaExportar":"SÍ","exportado":"SÍ"}' && d1CReal.informe.estudiante.orientacion === "Informática",
+  operativos(d1CReal));
+assert("Generación 1C: sólo advierte la falta de 1B",
+  r1CReal.advertencias.join("\n") === "No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores.", r1CReal.advertencias.join("; "));
+
+// 6.8. Encabezado general esperado que no puede identificarse en la principal
+let rSinAsist = runTest("Encabezado de asistencia no identificable", {
+  control: ctlAna3B, sources: variante3B(conEncabezados({ "OBSERVACIONES SOBRE ASISTENCIA": "ASISTENCIA" })), templateGrid: tpl03
+});
+assert("Encabezado general no identificable: advertencia clara",
+  rSinAsist.advertencias.includes('No se encontró el encabezado "OBSERVACIONES SOBRE ASISTENCIA" después de ORIENTACIÓN en la fuente de 3º bimestre. Ese campo quedará vacío en el informe.'),
+  rSinAsist.advertencias.join("; "));
+assert("Encabezado general no identificable: se genera, el campo queda vacío y su columna no se lee por posición ni desde 1C",
+  !rSinAsist.error && cajas(rSinAsist.out) === "Obs 3B Ana||Conv 3B Ana|PTF 3B Ana"
+    && !/Asist (3B|1C) Ana/.test(JSON.stringify(rSinAsist.out))
+    && JSON.stringify(filasMaterias(rSinAsist.out)) === JSON.stringify(filasMaterias(rReal.out)),
+  rSinAsist.error || cajas(rSinAsist.out));
+
+const encabezadosGenerales = [
+  "OBSERVACIONES GENERALES SOBRE DESEMPEÑO ACADÉMICO", "OBSERVACIONES SOBRE ASISTENCIA",
+  "OBSERVACIONES SOBRE CONVIVENCIA ESCOLAR", "PLAN DE TRABAJO FORMATIVO (PTF)"
+];
+const srcColaSinEnc = variante3B(conEncabezados(Object.fromEntries(encabezadosGenerales.map(e => [e, ""]))));
+let rColaSinEnc = runTest("Cola con encabezados generales vacíos", { control: ctlAna3B, sources: srcColaSinEnc, templateGrid: tpl03 });
+let dColaSinEnc = generarDatos(ctlAna3B, srcColaSinEnc);
+assert("Encabezados generales vacíos (forma observada en EPSG): una advertencia por campo, sin adivinar columnas",
+  encabezadosGenerales.every(e => rColaSinEnc.advertencias.includes('No se encontró el encabezado "' + e + '" después de ORIENTACIÓN en la fuente de 3º bimestre. Ese campo quedará vacío en el informe.'))
+    && rColaSinEnc.advertencias.length === 5,
+  rColaSinEnc.advertencias.join("; "));
+assert("Encabezados generales vacíos: se genera con las cajas vacías, mismas materias y mismos camposOperativos",
+  !rColaSinEnc.error && cajas(rColaSinEnc.out) === "|||"
+    && JSON.stringify(filasMaterias(rColaSinEnc.out)) === JSON.stringify(filasMaterias(rReal.out))
+    && operativos(dColaSinEnc) === OP_SI_NO,
+  rColaSinEnc.error || cajas(rColaSinEnc.out));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);
