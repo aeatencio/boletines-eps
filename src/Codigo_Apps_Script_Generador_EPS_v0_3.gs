@@ -1,19 +1,22 @@
 /**
  * Generador de informes individuales EPS v0.3
- * 1º bimestre + 1º cuatrimestre + 3º bimestre · generación individual
+ * 1º bimestre + 1º cuatrimestre + 3º bimestre · generación individual y por curso
  *
  * La app no modifica los archivos fuente ni la hoja Plantilla.
- * La salida se genera en una hoja revisable llamada Informe_actual.
+ * La salida individual se genera en una hoja revisable llamada Informe_actual;
+ * la generación por curso crea un libro nuevo con una hoja por estudiante y una hoja Resumen.
  */
 const CONFIG_EPS = {
   HOJA_CONTROL: 'Control',
   HOJA_PLANTILLA: 'Plantilla',
   HOJA_SALIDA: 'Informe_actual',
+  HOJA_RESUMEN: 'Resumen',
 
   CELDA_PERIODO: 'B5',
   CELDA_HOJA_ORIGEN: 'B6',
   CELDA_DNI: 'B7',
   CELDA_CICLO: 'B8',
+  CELDA_NIVEL: 'B9',
   CELDA_FUENTE_1B: 'B10',
   CELDA_FUENTE_1C: 'B12',
   CELDA_FUENTE_3B: 'B13',
@@ -59,6 +62,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Informes EPS')
     .addItem('Generar informe actual', 'generarInformeActual')
+    .addItem('Generar boletines por curso', 'generarBoletinesPorCurso')
     .addToUi();
 }
 
@@ -84,10 +88,226 @@ function generarInformeActual() {
   }
 }
 
-function leerConfiguracion_(control) {
+/**
+ * Generación por curso: un libro nuevo con una hoja por estudiante del nivel indicado
+ * cuya fila en la fuente principal tiene LISTO PARA EXPORTAR = SÍ.
+ * Cada fuente se lee una sola vez; las fuentes no se modifican.
+ */
+function generarBoletinesPorCurso() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const control = ss.getSheetByName(CONFIG_EPS.HOJA_CONTROL);
+
+  try {
+    if (!control) throw new Error('No se encontró la hoja Control.');
+
+    const config = leerConfiguracion_(control, true);
+    const tanda = generarTandaCurso_(ss, config);
+    const conteo = 'Generados: ' + tanda.contar('Generado') + ' · Omitidos: ' + tanda.contar('Omitido') + ' · Con error: ' + tanda.contar('Error') + '.';
+
+    if (!tanda.libro) {
+      // Sin libro no hay hoja Resumen: el detalle por estudiante queda en Control y en el diálogo.
+      const detalle = tanda.advertencias.concat(tanda.estudiantes.map(e => e.estado + ' · fila ' + (e.fila + 1) + ' · ' + e.nombre + ': ' + e.detalle));
+      registrarEstado_(control, 'Sin libro: ' + tanda.motivo + ' ' + conteo, detalle);
+      ui.alert('No se creó ningún libro.\n\n' + tanda.motivo + '\n' + conteo + (detalle.length ? '\n\n- ' + detalle.join('\n- ') : ''));
+      return;
+    }
+
+    registrarEstado_(control, 'Libro creado: ' + tanda.libro.getName() + ' · ' + conteo + ' ' + tanda.libro.getUrl(), tanda.advertencias);
+    ui.alert('Libro creado: ' + tanda.libro.getName() + '\n' + tanda.libro.getUrl() + '\n\n' + conteo +
+      '\nEl detalle por estudiante está en la hoja ' + CONFIG_EPS.HOJA_RESUMEN + ' del libro' +
+      (tanda.contar('Generado') ? ', oculta para que no se imprima ni se exporte.' : '.') +
+      (tanda.advertencias.length ? '\n\nAdvertencias generales:\n- ' + tanda.advertencias.join('\n- ') : ''));
+  } catch (err) {
+    if (control) registrarEstado_(control, 'Error: ' + err.message, []);
+    ui.alert('No se pudo generar el libro del curso.\n\n' + err.message);
+    throw err;
+  }
+}
+
+/**
+ * Errores globales (configuración, estructura de la fuente principal, falta de LISTO PARA EXPORTAR)
+ * interrumpen la tanda antes de crear el libro. El error de un estudiante sólo afecta su hoja.
+ * Si ningún estudiante puede generarse, no se crea el libro.
+ */
+function generarTandaCurso_(ss, config) {
+  const plantilla = ss.getSheetByName(CONFIG_EPS.HOJA_PLANTILLA);
+  if (!plantilla) throw new Error('No se encontró la hoja Plantilla.');
+
+  const advertencias = [];
+  const fuentes = leerFuentes_(config, advertencias);
+  const estudiantes = seleccionarEstudiantesCurso_(fuentes.principal, config.nivel);
+  const tanda = {
+    libro: null,
+    motivo: '',
+    advertencias,
+    estudiantes,
+    contar: estado => estudiantes.filter(e => e.estado === estado).length
+  };
+
+  estudiantes.filter(e => e.estado === 'Seleccionado').forEach(e => {
+    try {
+      e.informe = construirDatosEstudiante_(fuentes, config.hojaOrigen, e.dni, e.advertencias);
+    } catch (err) {
+      e.estado = 'Error';
+      e.detalle = err.message;
+    }
+  });
+
+  const preparados = estudiantes.filter(e => e.informe);
+  if (!preparados.length) {
+    const curso = config.hojaOrigen + ' ' + config.nivel + ' (' + config.periodo + ')';
+    tanda.motivo = tanda.contar('Error')
+      ? 'Ningún estudiante seleccionado de ' + curso + ' pudo prepararse.'
+      : 'No hay estudiantes con LISTO PARA EXPORTAR = SÍ en ' + curso + '.';
+    return tanda;
+  }
+
+  const libro = SpreadsheetApp.create(nombreLibroCurso_(ss, config));
+  const resumen = libro.getSheets()[0];
+  resumen.setName(CONFIG_EPS.HOJA_RESUMEN);
+  asignarNombresHojas_(preparados);
+
+  preparados.forEach(e => {
+    let hoja = null;
+    try {
+      hoja = plantilla.copyTo(libro);
+      hoja.setName(e.hoja);
+      completarInforme_(hoja, e.informe.estudiante, e.informe.materias, config.cicloLectivo, e.advertencias);
+      e.estado = 'Generado';
+    } catch (err) {
+      if (hoja) {
+        try { libro.deleteSheet(hoja); } catch (errBorrado) { /* la hoja incompleta queda señalada en el Resumen */ }
+      }
+      e.estado = 'Error';
+      e.detalle = 'No se pudo crear la hoja: ' + err.message;
+    }
+  });
+
+  escribirResumen_(resumen, config, estudiantes, advertencias);
+  // Oculta para que no se imprima ni se exporte con el libro completo.
+  // Google Sheets exige una hoja visible: si no se generó ningún boletín, Resumen queda visible.
+  if (tanda.contar('Generado')) resumen.hideSheet();
+  tanda.libro = libro;
+  return tanda;
+}
+
+/**
+ * Estudiantes del nivel según la fuente principal, en el orden de la grilla.
+ * Sólo LISTO PARA EXPORTAR = SÍ queda seleccionado (con la interpretación de leerEstadoOperativo_);
+ * NO, vacío o inválido se omite. EXPORTADO se lee para informarlo, nunca para seleccionar.
+ */
+function seleccionarEstudiantesCurso_(principal, nivel) {
+  const valores = principal.valores;
+  const cola = principal.cola;
+  const periodo = principal.periodo;
+  const encabezados = CONFIG_EPS.ENCABEZADOS_OPERATIVOS;
+
+  if (cola.listoParaExportar === undefined) {
+    throw new Error('No se encontró una única columna "' + encabezados.listoParaExportar + '" después de ORIENTACIÓN en la hoja ' +
+      principal.hojaOrigen + ' de la fuente de ' + periodo + '. La generación por curso la necesita para seleccionar estudiantes y no usa otra columna en su lugar.');
+  }
+
+  const estudiantes = [];
+  let nivelFila = '';
+  let nivelEncontrado = false;
+  // Las dos primeras filas son encabezados; el nivel de cada fila es el último marcador EPSn de la columna A.
+  for (let r = 2; r < valores.length; r++) {
+    const marca = normalizarTexto_(valores[r][0]);
+    if (/^EPS\d+$/.test(marca)) {
+      nivelFila = marca;
+      if (marca === nivel) nivelEncontrado = true;
+    }
+    if (nivelFila !== nivel) continue;
+
+    const dni = normalizarDni_(valores[r][2]);
+    const nombre = [texto_(valores[r][0]), texto_(valores[r][1])].filter(Boolean).join(', ') || '(sin nombre en la fuente)';
+    const avisos = [];
+    const listo = leerEstadoOperativo_(valores, r, cola.listoParaExportar, encabezados.listoParaExportar, periodo, avisos);
+    const exportado = leerEstadoOperativo_(valores, r, cola.exportado, encabezados.exportado, periodo, []);
+    const estudiante = { fila: r, dni, nombre, exportado: exportado || '', estado: '', detalle: '', hoja: '', advertencias: [] };
+
+    if (!dni) {
+      if (listo !== 'SÍ') continue;
+      estudiante.estado = 'Error';
+      estudiante.detalle = 'La fila tiene LISTO PARA EXPORTAR = SÍ pero no tiene DNI.';
+    } else if (listo === 'SÍ') {
+      // Las advertencias del estudiante, incluida una forma no canónica de SÍ, salen de su generación.
+      estudiante.estado = 'Seleccionado';
+    } else {
+      estudiante.estado = 'Omitido';
+      estudiante.detalle = listo === 'NO' ? 'LISTO PARA EXPORTAR = NO.' : avisos.join(' ');
+    }
+    estudiantes.push(estudiante);
+  }
+
+  if (!nivelEncontrado) {
+    throw new Error('No se encontró el nivel ' + nivel + ' (marcador en la columna A) en la hoja ' + principal.hojaOrigen + ' de la fuente de ' + periodo + '.');
+  }
+  return estudiantes;
+}
+
+function nombreLibroCurso_(ss, config) {
+  const fecha = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd HH:mm');
+  return ['Boletines EPS', config.hojaOrigen, config.nivel, config.periodo + ' ' + config.cicloLectivo, fecha].join(' - ');
+}
+
+/**
+ * Nombre de hoja: "Apellido, Nombres". Si varios estudiantes producen el mismo nombre
+ * (sin distinguir mayúsculas, como Google Sheets), todos llevan además su DNI.
+ */
+function asignarNombresHojas_(estudiantes) {
+  const clave = nombre => nombre.toLowerCase();
+  const bases = estudiantes.map(e => limpiarNombreHoja_(e.informe.estudiante.nombreCompleto) || 'Estudiante');
+  const repeticiones = {};
+  bases.forEach(base => { repeticiones[clave(base)] = (repeticiones[clave(base)] || 0) + 1; });
+
+  const usados = new Set([clave(CONFIG_EPS.HOJA_RESUMEN)]);
+  estudiantes.forEach((e, i) => {
+    const base = repeticiones[clave(bases[i])] > 1 ? bases[i] + ' (' + e.dni + ')' : bases[i];
+    let nombre = base;
+    for (let n = 2; usados.has(clave(nombre)); n++) nombre = base + ' (' + n + ')';
+    usados.add(clave(nombre));
+    e.hoja = nombre;
+  });
+}
+
+function limpiarNombreHoja_(nombre) {
+  return texto_(nombre)
+    .replace(/[\[\]*?\/\\:]/g, ' ')
+    .replace(/^'+|'+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+    .trim();
+}
+
+function escribirResumen_(hoja, config, estudiantes, advertencias) {
+  const columnas = 7;
+  const filas = [
+    ['Boletines EPS por curso'],
+    ['Hoja origen', config.hojaOrigen],
+    ['Nivel', config.nivel],
+    ['Período', config.periodo],
+    ['Ciclo lectivo', config.cicloLectivo],
+    ['Fecha de generación', new Date()],
+    ['Advertencias generales', advertencias.length ? advertencias.join('\n') : 'Sin advertencias'],
+    [],
+    ['Estado', 'Hoja', 'Estudiante', 'DNI', 'Fila en la fuente', 'EXPORTADO en la grilla', 'Motivo o advertencias']
+  ].concat(estudiantes.map(e => [
+    e.estado, e.hoja, e.nombre, e.dni, e.fila + 1, e.exportado,
+    [e.detalle].concat(e.advertencias).filter(Boolean).join('\n')
+  ])).map(fila => fila.concat(Array(columnas - fila.length).fill('')));
+
+  hoja.getRange(1, 1, filas.length, columnas).setValues(filas);
+  hoja.getRange(1, 1, filas.length, columnas).setWrap(true);
+}
+
+function leerConfiguracion_(control, porCurso) {
   const periodo = normalizarPeriodo_(control.getRange(CONFIG_EPS.CELDA_PERIODO).getDisplayValue());
   const hojaOrigen = normalizarHojaOrigen_(control.getRange(CONFIG_EPS.CELDA_HOJA_ORIGEN).getDisplayValue());
-  const dni = normalizarDni_(control.getRange(CONFIG_EPS.CELDA_DNI).getDisplayValue());
+  const dni = porCurso ? '' : normalizarDni_(control.getRange(CONFIG_EPS.CELDA_DNI).getDisplayValue());
+  const nivel = porCurso ? normalizarNivel_(control.getRange(CONFIG_EPS.CELDA_NIVEL).getDisplayValue()) : '';
   const cicloLectivo = texto_(control.getRange(CONFIG_EPS.CELDA_CICLO).getDisplayValue()) || '2026';
   const fuente1B = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_1B).getDisplayValue());
   const fuente1C = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_1C).getDisplayValue());
@@ -98,7 +318,8 @@ function leerConfiguracion_(control) {
     throw new Error('El período indicado no está implementado en esta versión: ' + periodo);
   }
   if (!hojaOrigen) throw new Error('La hoja origen debe ser EPSI o EPSG.');
-  if (!dni) throw new Error('Falta completar el DNI del estudiante.');
+  if (porCurso && !nivel) throw new Error('Falta indicar el nivel / curso en la celda ' + CONFIG_EPS.CELDA_NIVEL + ' de Control (EPS1, EPS2, EPS3 o EPS4).');
+  if (!porCurso && !dni) throw new Error('Falta completar el DNI del estudiante.');
   if (periodo === CONFIG_EPS.PERIODOS.BIMESTRE_1 && !fuente1B) {
     throw new Error('Falta la URL o ID del archivo de valoraciones del 1º bimestre.');
   }
@@ -109,99 +330,111 @@ function leerConfiguracion_(control) {
     throw new Error('Falta la URL o ID del archivo de valoraciones del 3º bimestre.');
   }
 
-  return { periodo, hojaOrigen, dni, cicloLectivo, fuente1B, fuente1C, fuente3B };
+  return { periodo, hojaOrigen, dni, nivel, cicloLectivo, fuente1B, fuente1C, fuente3B };
 }
 
+/**
+ * La generación individual y la generación por curso comparten las dos etapas:
+ * leer cada fuente una vez (leerFuentes_) y construir los datos de un estudiante (construirDatosEstudiante_).
+ */
 function generarDatosInforme_(config, advertencias) {
-  if (config.periodo === CONFIG_EPS.PERIODOS.BIMESTRE_1) return generarDatosBimestre_(config, advertencias);
-  if (config.periodo === CONFIG_EPS.PERIODOS.CUATRIMESTRE_1) return generarDatosCuatrimestre_(config, advertencias);
-  if (config.periodo === CONFIG_EPS.PERIODOS.BIMESTRE_3) return generarDatosBimestre3_(config, advertencias);
-  throw new Error('Período no implementado: ' + config.periodo);
+  return construirDatosEstudiante_(leerFuentes_(config, advertencias), config.hojaOrigen, config.dni, advertencias);
 }
 
 /**
  * Cada generación tiene una única fuente principal: la del período solicitado.
  * De ella salen el estudiante, los campos generales (orientación, observaciones, PTF)
  * y los campos operativos. Las fuentes anteriores sólo aportan materias y valoraciones.
+ * Una fuente anterior que no se indicó o no puede leerse se advierte y se omite.
  */
-function generarDatosBimestre_(config, advertencias) {
-  const fuente1B = leerFuentePrincipal_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, advertencias);
+function leerFuentes_(config, advertencias) {
+  const P = CONFIG_EPS.PERIODOS;
+  const fuentePorPeriodo = { [P.BIMESTRE_1]: config.fuente1B, [P.CUATRIMESTRE_1]: config.fuente1C, [P.BIMESTRE_3]: config.fuente3B };
+  // Fuentes anteriores de cada período, en orden de acumulación, con la advertencia si no se indicaron.
+  const anterioresPorPeriodo = {
+    [P.BIMESTRE_1]: [],
+    [P.CUATRIMESTRE_1]: [
+      [P.BIMESTRE_1, 'No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores.']
+    ],
+    [P.BIMESTRE_3]: [
+      [P.CUATRIMESTRE_1, 'No se indicó archivo de 1º cuatrimestre. El informe se generó sin valores anteriores de 1º cuatrimestre.'],
+      [P.BIMESTRE_1, 'No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores de 1º bimestre.']
+    ]
+  };
+  if (!anterioresPorPeriodo[config.periodo]) throw new Error('Período no implementado: ' + config.periodo);
+
+  const principal = abrirFuentePrincipal_(fuentePorPeriodo[config.periodo], config.hojaOrigen, config.periodo, advertencias);
+  const anteriores = [];
+  anterioresPorPeriodo[config.periodo].forEach(([periodo, advertenciaSinFuente]) => {
+    if (!fuentePorPeriodo[periodo]) {
+      advertencias.push(advertenciaSinFuente);
+      return;
+    }
+    const fuente = abrirFuenteAnterior_(fuentePorPeriodo[periodo], config.hojaOrigen, periodo, advertencias);
+    if (fuente) anteriores.push(fuente);
+  });
+  return { principal, anteriores };
+}
+
+function construirDatosEstudiante_(fuentes, hojaOrigen, dniBuscado, advertencias) {
+  const principal = leerFuentePrincipal_(fuentes.principal, hojaOrigen, dniBuscado, advertencias);
+  const leidas = [principal];
+  fuentes.anteriores.forEach(fuente => {
+    const anterior = leerFuenteHistorica_(fuente, dniBuscado, advertencias);
+    if (anterior) leidas.push(anterior);
+  });
+
   return {
-    estudiante: fuente1B.estudiante,
-    camposOperativos: fuente1B.camposOperativos,
-    materias: construirMateriasAcumuladas_([fuente1B], [CONFIG_EPS.PERIODOS.BIMESTRE_1], advertencias)
+    estudiante: principal.estudiante,
+    camposOperativos: principal.camposOperativos,
+    materias: construirMateriasAcumuladas_(leidas, leidas.map(f => f.periodo), advertencias)
   };
 }
 
-function generarDatosCuatrimestre_(config, advertencias) {
-  const fuente1C = leerFuentePrincipal_(config.fuente1C, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, advertencias);
-  let fuentes = [fuente1C];
-  let ordenPeriodos = [CONFIG_EPS.PERIODOS.CUATRIMESTRE_1];
-
-  if (config.fuente1B) {
-    const fuente1B = leerFuenteHistorica_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, advertencias);
-    if (fuente1B) {
-      fuentes = [fuente1C, fuente1B];
-      ordenPeriodos = [CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, CONFIG_EPS.PERIODOS.BIMESTRE_1];
-    }
-  } else {
-    advertencias.push('No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores.');
-  }
-
-  return {
-    estudiante: fuente1C.estudiante,
-    camposOperativos: fuente1C.camposOperativos,
-    materias: construirMateriasAcumuladas_(fuentes, ordenPeriodos, advertencias)
-  };
-}
-
-function generarDatosBimestre3_(config, advertencias) {
-  const fuente3B = leerFuentePrincipal_(config.fuente3B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_3, advertencias);
-  let fuentes = [fuente3B];
-  let ordenPeriodos = [CONFIG_EPS.PERIODOS.BIMESTRE_3];
-
-  if (config.fuente1C) {
-    const fuente1C = leerFuenteHistorica_(config.fuente1C, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, advertencias);
-    if (fuente1C) {
-      fuentes.push(fuente1C);
-      ordenPeriodos.push(CONFIG_EPS.PERIODOS.CUATRIMESTRE_1);
-    }
-  } else {
-    advertencias.push('No se indicó archivo de 1º cuatrimestre. El informe se generó sin valores anteriores de 1º cuatrimestre.');
-  }
-
-  if (config.fuente1B) {
-    const fuente1B = leerFuenteHistorica_(config.fuente1B, config.hojaOrigen, config.dni, CONFIG_EPS.PERIODOS.BIMESTRE_1, advertencias);
-    if (fuente1B) {
-      fuentes.push(fuente1B);
-      ordenPeriodos.push(CONFIG_EPS.PERIODOS.BIMESTRE_1);
-    }
-  } else {
-    advertencias.push('No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores de 1º bimestre.');
-  }
-
-  return {
-    estudiante: fuente3B.estudiante,
-    camposOperativos: fuente3B.camposOperativos,
-    materias: construirMateriasAcumuladas_(fuentes, ordenPeriodos, advertencias)
-  };
+function errorFuentePrincipal_(err, periodo) {
+  // Distingue este error del de una fuente anterior, que sólo genera una advertencia.
+  return new Error(err.message + ' Es la fuente principal del período a generar (' + periodo + '), por eso no se puede continuar.');
 }
 
 /**
  * Fuente del período solicitado. Cualquier problema estructural interrumpe la generación.
  * Es la única lectura que interpreta la cola de la grilla (campos generales y operativos).
  */
-function leerFuentePrincipal_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias) {
+function abrirFuentePrincipal_(fuenteIngresada, hojaOrigen, periodo, advertencias) {
+  let fuente;
+  try {
+    fuente = abrirGrillaFuente_(fuenteIngresada, hojaOrigen, periodo);
+  } catch (err) {
+    throw errorFuentePrincipal_(err, periodo);
+  }
+  fuente.cola = detectarCamposCola_(fuente.valores, fuente.estructura, periodo, advertencias);
+  return fuente;
+}
+
+/**
+ * Fuente de un período anterior: sólo aporta materias y valoraciones.
+ * No lee la cola de la grilla. Si no puede leerse, se advierte y se continúa con la principal.
+ */
+function abrirFuenteAnterior_(fuenteIngresada, hojaOrigen, periodo, advertencias) {
+  try {
+    return abrirGrillaFuente_(fuenteIngresada, hojaOrigen, periodo);
+  } catch (err) {
+    advertencias.push(err.message + ' Se continuará con la fuente principal.');
+    return null;
+  }
+}
+
+function leerFuentePrincipal_(fuente, hojaOrigen, dniBuscado, advertencias) {
+  const periodo = fuente.periodo;
   let grilla;
   try {
-    grilla = leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias);
+    grilla = leerGrillaEstudiante_(fuente, dniBuscado, advertencias);
   } catch (err) {
-    // Distingue este error del de una fuente anterior, que sólo genera una advertencia.
-    throw new Error(err.message + ' Es la fuente principal del período a generar (' + periodo + '), por eso no se puede continuar.');
+    throw errorFuentePrincipal_(err, periodo);
   }
   const valores = grilla.valores;
   const fila = grilla.fila;
-  const cola = detectarCamposCola_(valores, grilla.estructura, periodo, advertencias);
+  const cola = fuente.cola;
   const row = valores[fila] || [];
   const apellido = texto_(row[0]);
   const nombres = texto_(row[1]);
@@ -225,7 +458,7 @@ function leerFuentePrincipal_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, 
     ordenMaterias: grilla.ordenMaterias,
     ordenGrilla: grilla.ordenGrilla,
     nombresGrilla: grilla.nombresGrilla,
-    // Se leen y validan, pero en esta versión no seleccionan estudiantes ni se escriben en la fuente.
+    // Se leen y validan; nunca se escriben en la fuente. La selección por curso los lee en seleccionarEstudiantesCurso_.
     camposOperativos: {
       listoParaExportar: leerEstadoOperativo_(valores, fila, cola.listoParaExportar, CONFIG_EPS.ENCABEZADOS_OPERATIVOS.listoParaExportar, periodo, advertencias),
       exportado: leerEstadoOperativo_(valores, fila, cola.exportado, CONFIG_EPS.ENCABEZADOS_OPERATIVOS.exportado, periodo, advertencias)
@@ -234,14 +467,14 @@ function leerFuentePrincipal_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, 
 }
 
 /**
- * Fuente de un período anterior: sólo aporta materias y valoraciones.
- * No lee la cola de la grilla. Si no puede leerse, se advierte y se continúa con la principal.
+ * Estudiante en una fuente anterior ya leída: sólo materias y valoraciones.
+ * Si el DNI no puede ubicarse, se advierte y se continúa con la principal.
  */
-function leerFuenteHistorica_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias) {
+function leerFuenteHistorica_(fuente, dniBuscado, advertencias) {
   try {
-    const grilla = leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias);
+    const grilla = leerGrillaEstudiante_(fuente, dniBuscado, advertencias);
     return {
-      periodo,
+      periodo: fuente.periodo,
       materiasPorClave: grilla.materiasPorClave,
       ordenMaterias: grilla.ordenMaterias,
       ordenGrilla: grilla.ordenGrilla,
@@ -253,14 +486,21 @@ function leerFuenteHistorica_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, 
   }
 }
 
-function leerGrillaEstudiante_(fuenteIngresada, hojaOrigen, dniBuscado, periodo, advertencias) {
+// Única lectura de una grilla fuente: sólo se consultan valores, nunca se escribe.
+function abrirGrillaFuente_(fuenteIngresada, hojaOrigen, periodo) {
   const idFuente = extraerSpreadsheetId_(fuenteIngresada);
   const libroFuente = SpreadsheetApp.openById(idFuente);
   const hoja = libroFuente.getSheetByName(hojaOrigen);
   if (!hoja) throw new Error('No se encontró la hoja ' + hojaOrigen + ' en la fuente de ' + periodo + '.');
 
   const valores = hoja.getDataRange().getDisplayValues();
-  const estructura = detectarEstructuraFuente_(valores, periodo);
+  return { periodo, hojaOrigen, valores, estructura: detectarEstructuraFuente_(valores, periodo) };
+}
+
+function leerGrillaEstudiante_(fuente, dniBuscado, advertencias) {
+  const valores = fuente.valores;
+  const estructura = fuente.estructura;
+  const periodo = fuente.periodo;
   const filas = buscarFilasPorDni_(valores, dniBuscado);
 
   if (filas.length === 0) throw new Error('No se encontró el DNI en la fuente de ' + periodo + '.');
@@ -477,7 +717,11 @@ function crearInforme_(ss, estudiante, materias, periodoGenerado, cicloLectivo, 
   const salida = plantilla.copyTo(ss);
   salida.setName(CONFIG_EPS.HOJA_SALIDA);
   ss.setActiveSheet(salida);
+  completarInforme_(salida, estudiante, materias, cicloLectivo, advertencias);
+}
 
+// Completa una copia de Plantilla: la usan la generación individual y cada hoja de la generación por curso.
+function completarInforme_(salida, estudiante, materias, cicloLectivo, advertencias) {
   salida.getRange('A1:A3').clearContent();
   salida.getRange('J3').setValue('CICLO LECTIVO: ' + cicloLectivo);
   salida.getRange('E4').setValue(estudiante.nombreCompleto);
@@ -587,6 +831,12 @@ function normalizarPeriodo_(valor) {
 function normalizarHojaOrigen_(valor) {
   const hoja = normalizarTexto_(valor).replace(/\s+/g, '');
   return ['EPSI', 'EPSG'].includes(hoja) ? hoja : '';
+}
+
+// Nivel / curso como marcador de la grilla: "EPS2" o "2" → "EPS2".
+function normalizarNivel_(valor) {
+  const match = normalizarTexto_(valor).replace(/\s+/g, '').match(/^(?:EPS)?(\d+)$/);
+  return match ? 'EPS' + Number(match[1]) : '';
 }
 
 function extraerSpreadsheetId_(entrada) {

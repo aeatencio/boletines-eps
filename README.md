@@ -16,6 +16,7 @@ El proyecto está en desarrollo activo. La versión actual es v0.3, y el trabajo
 2. En *Extensiones > Apps Script*, pegar `src/Codigo_Apps_Script_Generador_EPS_v0_3.gs`, guardar y recargar.
 3. Completar la hoja `Control` con el período, el estudiante y las grillas de origen.
 4. Ejecutar *Informes EPS > Generar informe actual* y revisar el resultado antes de exportar o imprimir.
+5. Para un curso completo, elegir el nivel / curso (`EPS1`…`EPS4`) en `Control` y ejecutar *Informes EPS > Generar boletines por curso*. Se crea un libro nuevo con una hoja por estudiante con `LISTO PARA EXPORTAR = SÍ` en la grilla del período. La hoja `Resumen`, con generados, omitidos, advertencias y errores, queda oculta para que no se imprima ni se exporte con el libro.
 
 ## Organización
 

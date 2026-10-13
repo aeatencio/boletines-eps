@@ -88,7 +88,13 @@ class MockSheet {
     this.grid = grid.map(r => r.slice());
   }
   getName() { return this.name; }
-  setName(n) { this.name = n; }
+  // Como Google Sheets: el nombre no puede repetirse en el libro, sin distinguir mayúsculas.
+  setName(n) {
+    if (this.ss && this.ss.sheets.some(s => s !== this && s.name.toLowerCase() === String(n).toLowerCase())) {
+      throw new Error("mock: ya existe una hoja llamada " + n);
+    }
+    this.name = n;
+  }
   get(r, c) { return ((this.grid[r - 1] || [])[c - 1]) ?? ""; }
   set(r, c, v) {
     while (this.grid.length < r) this.grid.push([]);
@@ -105,6 +111,10 @@ class MockSheet {
             sh.set(r + i, c + j, v instanceof Date ? "<fecha>" : v);
           }
         }
+      },
+      setValues: filas => {
+        if (filas.length !== h || filas.some(f => f.length !== w)) throw new Error("mock: setValues con dimensiones distintas del rango");
+        filas.forEach((f, i) => f.forEach((v, j) => sh.set(r + i, c + j, v instanceof Date ? "<fecha>" : v)));
       },
       clearContent: () => {
         for (let i = 0; i < h; i++) {
@@ -129,15 +139,30 @@ class MockSheet {
     this.grid.splice(row - 1, n);
   }
   setRowHeight() {}
+  // Como Google Sheets: no se puede ocultar la última hoja visible.
+  hideSheet() {
+    if (this.ss && this.ss.sheets.every(s => s === this || s.hidden)) throw new Error("mock: no se pueden ocultar todas las hojas");
+    this.hidden = true;
+  }
+  isSheetHidden() { return !!this.hidden; }
   copyTo(ss) {
     const s = new MockSheet("Copia de " + this.name, this.grid);
+    s.ss = ss;
     ss.sheets.push(s);
     return s;
   }
 }
 
 class MockSS {
-  constructor(sheets) { this.sheets = sheets; }
+  constructor(sheets, name) {
+    this.sheets = sheets;
+    this.name = name || "Generador";
+    sheets.forEach(s => { s.ss = this; });
+  }
+  getName() { return this.name; }
+  getUrl() { return "https://docs.google.com/spreadsheets/d/MOCK/" + encodeURIComponent(this.name); }
+  getSpreadsheetTimeZone() { return "America/Argentina/Buenos_Aires"; }
+  getSheets() { return this.sheets.slice(); }
   getSheetByName(n) { return this.sheets.find(s => s.name === n) || null; }
   deleteSheet(s) { this.sheets = this.sheets.filter(x => x !== s); }
   setActiveSheet() {}
@@ -154,37 +179,59 @@ function hojaControl(control) {
 }
 
 // Las grillas fuente son de sólo lectura para el generador: el mock no expone escritura.
-function abrirFuenteMock(sources) {
+// El registro anota cada apertura y lectura, y cualquier acceso a algo distinto de la lectura permitida.
+function abrirFuenteMock(sources, registro = { aperturas: [], lecturas: [], indebidos: [] }) {
+  const soloLectura = (obj, nombre) => new Proxy(obj, {
+    get(t, p) {
+      if (!(p in t)) registro.indebidos.push(nombre + "." + String(p));
+      return t[p];
+    }
+  });
   return id => {
     if (!sources[id]) throw new Error("mock: id inexistente " + id);
-    return {
+    registro.aperturas.push(id);
+    return soloLectura({
       getSheetByName: n => {
         if (!sources[id][n]) return null;
         const hoja = new MockSheet(id + "/" + n, sources[id][n]);
-        return { getName: () => hoja.getName(), getDataRange: () => hoja.getDataRange() };
+        return soloLectura({
+          getName: () => hoja.getName(),
+          getDataRange: () => {
+            registro.lecturas.push(id + "/" + n);
+            return soloLectura(hoja.getDataRange(), id + "/" + n + " (rango)");
+          }
+        }, id + "/" + n);
       }
-    };
+    }, id);
   };
 }
 
-function runTest(testName, { control, sources, templateGrid }) {
+function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()" }) {
   const code = fs.readFileSync(path.join(ROOT, "src/Codigo_Apps_Script_Generador_EPS_v0_3.gs"), "utf8");
   const plantilla = new MockSheet("Plantilla", templateGrid);
   const ctrl = hojaControl(control);
   const ss = new MockSS([plantilla, ctrl]);
   const rawAlerts = [];
+  const creados = [];
+  const registro = { aperturas: [], lecturas: [], indebidos: [] };
   const ctx = {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
       getUi: () => ({ alert: m => rawAlerts.push(m), createMenu: () => ({ addItem() { return this; }, addToUi() {} }) }),
-      openById: abrirFuenteMock(sources)
-    }
+      openById: abrirFuenteMock(sources, registro),
+      create: nombre => {
+        const libro = new MockSS([new MockSheet("Hoja 1", [])], nombre);
+        creados.push(libro);
+        return libro;
+      }
+    },
+    Utilities: { formatDate: () => "<fecha>" }
   };
   vm.createContext(ctx);
   vm.runInContext(code, ctx);
   let error = null;
   try {
-    vm.runInContext("generarInformeActual()", ctx);
+    vm.runInContext(ejecutar, ctx);
   } catch (e) {
     error = e.message;
   }
@@ -207,7 +254,10 @@ function runTest(testName, { control, sources, templateGrid }) {
     advertencias,
     estadoAdvertencias,
     estadoResultado,
-    out: out ? rect(out.grid) : null
+    out: out ? rect(out.grid) : null,
+    ss,
+    creados,
+    registro
   };
 }
 
@@ -684,7 +734,7 @@ assert("LISTO PARA EXPORTAR antes de ORIENTACIÓN: error en vez de leerlo como m
 
 // 6.5. Las fuentes históricas no leen, validan ni aportan campos generales u operativos
 const genFuentes = cargarGenerador(sources);
-const histAna = genFuentes.leerFuenteHistorica_("ID_1C_REAL_xxxxxxxxxxxxxxxxxxx", "EPSI", "97000001", P1C, []);
+const histAna = genFuentes.leerFuenteHistorica_(genFuentes.abrirFuenteAnterior_("ID_1C_REAL_xxxxxxxxxxxxxxxxxxx", "EPSI", P1C, []), "97000001", []);
 assert("Fuente histórica: su resultado sólo contiene materias (sin estudiante, campos generales ni camposOperativos)",
   Object.keys(histAna).sort().join(",") === "materiasPorClave,nombresGrilla,ordenGrilla,ordenMaterias,periodo", Object.keys(histAna).join(","));
 
@@ -803,6 +853,282 @@ assert("Smoke con período 1º cuatrimestre: DNI ausente en la principal bloquea
     && rSmoke1C.rawAlerts[0] === "No se pudo generar el informe.\n\n" + errDniPrincipal1C
     && rSmoke1C.estadoResultado === "Error: " + errDniPrincipal1C,
   rSmoke1C.error);
+
+// =============================================================================
+// 8. Generación por curso (#12)
+// =============================================================================
+// Copia el bloque de cuatro filas de un estudiante con otra identidad y otros estados operativos,
+// a continuación del bloque de otro estudiante: queda en su mismo nivel. Cada copia sigue a la anterior.
+const conBloques = (modelo, despuesDe, nuevos) => g => {
+  let anterior = despuesDe;
+  nuevos.forEach(n => {
+    const bloque = g.slice(filaDni(g, modelo), filaDni(g, modelo) + 4).map(f => f.slice());
+    [bloque[0][0], bloque[0][1], bloque[0][2]] = [n.apellido, n.nombres, n.dni];
+    if ("listo" in n) bloque[0][colDe(g, "LISTO PARA EXPORTAR")] = n.listo;
+    if ("exportado" in n) bloque[0][colDe(g, "EXPORTADO")] = n.exportado;
+    g.splice(filaDni(g, anterior) + 4, 0, ...bloque);
+    anterior = n.dni;
+  });
+};
+const aplicar = (...cambios) => g => cambios.forEach(c => c(g));
+const ID_CURSO_3B = "ID_CURSO_3B_xxxxxxxxxxxxxxxxx";
+const ID_CURSO_1C = "ID_CURSO_1C_xxxxxxxxxxxxxxxxx";
+const conCurso = (cambiar3B, cambiar1C) => Object.assign({}, sources, {
+  [ID_CURSO_3B]: { EPSI: variante(src3B_real.EPSI, cambiar3B || (() => {})) },
+  [ID_CURSO_1C]: { EPSI: variante(src1C_real.EPSI, cambiar1C || (() => {})) }
+});
+const fuentesCurso = { B10: "", B12: ID_CURSO_1C, B13: ID_CURSO_3B };
+const ctlCurso = (nivel, extra) => ctl(P3B, "", Object.assign({ B9: nivel }, fuentesCurso, extra));
+const ctlIndividual = dni => ctl(P3B, dni, fuentesCurso);
+const runCurso = (nombre, control, srcs) => runTest(nombre, { control, sources: srcs, templateGrid: tpl03, ejecutar: "generarBoletinesPorCurso()" });
+const libroDe = r => r.creados[0] || null;
+const hojasDe = r => libroDe(r) ? libroDe(r).getSheets().map(s => s.getName()) : [];
+const gridHoja = (r, nombre) => { const h = libroDe(r) && libroDe(r).getSheetByName(nombre); return h ? rect(h.grid) : null; };
+const resumenDe = r => {
+  const g = gridHoja(r, "Resumen") || [];
+  const i = g.findIndex(f => f[0] === "Estado");
+  return {
+    generales: (g.find(f => f[0] === "Advertencias generales") || [])[1],
+    filas: i < 0 ? [] : g.slice(i + 1).filter(f => f[0]).map(f => ({
+      estado: f[0], hoja: f[1], nombre: f[2], dni: f[3], fila: f[4], exportado: f[5], detalle: f[6]
+    }))
+  };
+};
+const enResumen = (r, dni) => resumenDe(r).filas.find(f => f.dni === dni) || {};
+const advertenciasTanda = (r, dni) => [resumenDe(r).generales].concat(enResumen(r, dni).detalle.split("\n"))
+  .filter(a => a && a !== "Sin advertencias");
+
+// 8.1. Curso EPS2 con estados variados en 3B (principal); en 1C (anterior) los estados operativos son otros.
+const srcCurso = conCurso(
+  aplicar(
+    conCeldas("97000002", { "LISTO PARA EXPORTAR": "SÍ" }), // Beto, EPS1: listo, pero de otro nivel
+    conBloques("97000001", "97000001", [
+      { apellido: "Ficticio", nombres: "Caro No", dni: "97000012", listo: "NO", exportado: "SÍ" },
+      { apellido: "Ficticia", nombres: "Ana Real", dni: "97000011", listo: "SÍ", exportado: "NO" },
+      { apellido: "Ficticio", nombres: "Dani Vacio", dni: "97000013", listo: "" },
+      { apellido: "Ficticio", nombres: "Eli Invalido", dni: "97000014", listo: "Tal vez" },
+      { apellido: "Ficticio", nombres: "Fede Exportado", dni: "97000015", listo: "SÍ", exportado: "SÍ" },
+      { apellido: "Ficticio", nombres: "Gabi Si", dni: "97000016", listo: "Si" }
+    ])
+  ),
+  aplicar(
+    conCeldas("97000001", { "LISTO PARA EXPORTAR": "Tal vez", "EXPORTADO": "" }),
+    conBloques("97000001", "97000001", [
+      { apellido: "Ficticio", nombres: "Caro No", dni: "97000012", listo: "SÍ", exportado: "NO" },
+      { apellido: "Ficticio", nombres: "Solo Anterior", dni: "97000018", listo: "SÍ", exportado: "NO" }
+    ])
+  )
+);
+const fotoFuentes = JSON.stringify(srcCurso);
+let rCurso = runCurso("Curso EPS2", ctlCurso("EPS2"), srcCurso);
+const resCurso = resumenDe(rCurso);
+const estadosCurso = resCurso.filas.map(f => f.estado + ":" + f.dni).join(", ");
+const HOJAS_EPS2 = ["Resumen", "Ficticia, Ana Real (97000001)", "Ficticia, Ana Real (97000011)", "Ficticio, Fede Exportado", "Ficticio, Gabi Si"];
+const NOMBRE_LIBRO_EPS2 = "Boletines EPS - EPSI - EPS2 - 3º bimestre 2026 - <fecha>";
+
+assert("Por curso: termina sin error y crea un único libro nuevo con el nombre del curso",
+  !rCurso.error && rCurso.creados.length === 1 && libroDe(rCurso).getName() === NOMBRE_LIBRO_EPS2,
+  rCurso.error || rCurso.creados.map(l => l.getName()).join(", "));
+assert("Por curso: una hoja por estudiante seleccionado, después de Resumen y en el orden de la grilla",
+  JSON.stringify(hojasDe(rCurso)) === JSON.stringify(HOJAS_EPS2), hojasDe(rCurso).join(" | "));
+assert("Por curso: el Resumen lista sólo estudiantes de EPS2 de la principal, en orden de grilla, con su estado",
+  estadosCurso === "Generado:97000001, Omitido:97000012, Generado:97000011, Omitido:97000013, Omitido:97000014, Generado:97000015, Generado:97000016",
+  estadosCurso);
+assert("Por curso: no se seleccionan estudiantes de otro nivel aunque estén listos (Beto, EPS1)",
+  !resCurso.filas.some(f => f.dni === "97000002") && !hojasDe(rCurso).some(h => /Beto/.test(h)));
+assert("Por curso: un estudiante que sólo existe en una fuente anterior, aunque esté listo allí, no aparece",
+  !resCurso.filas.some(f => f.dni === "97000018") && !hojasDe(rCurso).some(h => /Solo Anterior/.test(h)));
+assert("Por curso: LISTO PARA EXPORTAR = NO se omite aunque la fuente anterior diga SÍ y EXPORTADO = SÍ",
+  enResumen(rCurso, "97000012").estado === "Omitido" && enResumen(rCurso, "97000012").detalle === "LISTO PARA EXPORTAR = NO."
+    && enResumen(rCurso, "97000012").exportado === "SÍ",
+  JSON.stringify(enResumen(rCurso, "97000012")));
+assert("Por curso: LISTO PARA EXPORTAR vacío o inválido se omite con el motivo",
+  enResumen(rCurso, "97000013").estado === "Omitido" && enResumen(rCurso, "97000013").detalle === "LISTO PARA EXPORTAR está vacío en la fuente de 3º bimestre. Se esperaba SÍ o NO."
+    && enResumen(rCurso, "97000014").estado === "Omitido" && enResumen(rCurso, "97000014").detalle.includes('Valor: "Tal vez"'),
+  JSON.stringify([enResumen(rCurso, "97000013"), enResumen(rCurso, "97000014")]));
+assert("Por curso: EXPORTADO no filtra (SÍ / SÍ se genera) y se informa en el Resumen",
+  enResumen(rCurso, "97000015").estado === "Generado" && enResumen(rCurso, "97000015").exportado === "SÍ"
+    && enResumen(rCurso, "97000001").exportado === "NO",
+  JSON.stringify(enResumen(rCurso, "97000015")));
+assert("Por curso: 'Si' se interpreta como SÍ (contrato de #10) y la forma no canónica queda advertida",
+  enResumen(rCurso, "97000016").estado === "Generado"
+    && enResumen(rCurso, "97000016").detalle.includes('LISTO PARA EXPORTAR tiene "Si" en la fuente de 3º bimestre. Se interpretó como SÍ'),
+  JSON.stringify(enResumen(rCurso, "97000016")));
+assert("Por curso: estados operativos de la fuente anterior no se consultan ni se advierten",
+  ![resCurso.generales].concat(resCurso.filas.map(f => f.detalle)).join("\n").split("\n")
+    .some(a => /LISTO PARA EXPORTAR|EXPORTADO/.test(a) && a.includes("1º cuatrimestre")),
+  JSON.stringify(resCurso));
+assert("Por curso: nombres de hoja en conflicto se distinguen con el DNI, de forma determinista",
+  enResumen(rCurso, "97000001").hoja === "Ficticia, Ana Real (97000001)" && enResumen(rCurso, "97000011").hoja === "Ficticia, Ana Real (97000011)",
+  JSON.stringify([enResumen(rCurso, "97000001"), enResumen(rCurso, "97000011")]));
+assert("Por curso: el Resumen informa la fila de la fuente y las advertencias generales una sola vez",
+  enResumen(rCurso, "97000001").fila === "9" && resCurso.generales === ADV_SIN_1B
+    && !resCurso.filas.some(f => f.detalle.includes(ADV_SIN_1B)),
+  JSON.stringify(enResumen(rCurso, "97000001")) + " / " + resCurso.generales);
+
+// Equivalencia con la generación individual (mismas fuentes y mismo Control, con el DNI del estudiante)
+["97000001", "97000015", "97000016"].forEach(dni => {
+  const ind = runTest("Individual " + dni, { control: ctlIndividual(dni), sources: srcCurso, templateGrid: tpl03 });
+  const hoja = gridHoja(rCurso, enResumen(rCurso, dni).hoja);
+  assert("Por curso: la hoja de " + dni + " es idéntica al Informe_actual de la generación individual",
+    !ind.error && hoja && JSON.stringify(hoja) === JSON.stringify(ind.out), ind.error || "hojas distintas");
+  assert("Por curso: las advertencias de " + dni + " (generales + propias) son las de la generación individual",
+    JSON.stringify(advertenciasTanda(rCurso, dni).sort()) === JSON.stringify(ind.advertencias.slice().sort()),
+    advertenciasTanda(rCurso, dni).join("; ") + " ≠ " + ind.advertencias.join("; "));
+});
+assert("Por curso: la hoja conserva estudiante, nivel visual, materias acumuladas y observaciones",
+  (g => g && g[3][4] === "Ficticia, Ana Real" && g[5][4] === "Informática 2" && cajas(g) === "Obs 3B Ana|Asist 3B Ana|Conv 3B Ana|PTF 3B Ana"
+    && valoresFila(filasMaterias(g).find(f => f[2] === "Matemática I") || []) === "|7|Avanzado")(gridHoja(rCurso, "Ficticia, Ana Real (97000001)")));
+
+// Lectura única y fuentes de sólo lectura
+assert("Por curso: cada fuente se abre y se lee una sola vez para toda la tanda",
+  JSON.stringify(rCurso.registro.aperturas.slice().sort()) === JSON.stringify([ID_CURSO_1C, ID_CURSO_3B])
+    && rCurso.registro.lecturas.length === 2,
+  JSON.stringify(rCurso.registro));
+assert("Por curso: ningún acceso a las fuentes fuera de la lectura de valores, y las fuentes quedan intactas",
+  rCurso.registro.indebidos.length === 0 && JSON.stringify(srcCurso) === fotoFuentes, rCurso.registro.indebidos.join(", "));
+assert("Por curso: el generador no crea Informe_actual ni modifica Plantilla",
+  rCurso.ss.getSheets().map(s => s.getName()).join("|") === "Plantilla|Control"
+    && JSON.stringify(rect(rCurso.ss.getSheetByName("Plantilla").grid)) === JSON.stringify(rect(tpl03)));
+assert("Por curso: Control registra el libro, los conteos y las advertencias generales",
+  rCurso.estadoResultado.startsWith("Libro creado: " + NOMBRE_LIBRO_EPS2 + " · Generados: 4 · Omitidos: 3 · Con error: 0.")
+    && rCurso.estadoAdvertencias === ADV_SIN_1B && rCurso.rawAlerts.length === 1 && rCurso.rawAlerts[0].startsWith("Libro creado: "),
+  rCurso.estadoResultado + " / " + rCurso.estadoAdvertencias);
+
+// 8.2. Otro nivel del mismo Control (nivel indicado como "1")
+let rCurso1 = runCurso("Curso EPS1", ctlCurso("1"), srcCurso);
+let indBeto = runTest("Individual Beto", { control: ctlIndividual("97000002"), sources: srcCurso, templateGrid: tpl03 });
+assert("Por curso EPS1 (nivel '1'): sólo Beto, idéntico a su generación individual",
+  !rCurso1.error && hojasDe(rCurso1).join("|") === "Resumen|Ficticio, Beto Nuevo"
+    && libroDe(rCurso1).getName() === "Boletines EPS - EPSI - EPS1 - 3º bimestre 2026 - <fecha>"
+    && JSON.stringify(gridHoja(rCurso1, "Ficticio, Beto Nuevo")) === JSON.stringify(indBeto.out),
+  rCurso1.error || hojasDe(rCurso1).join("|"));
+
+// 8.3. Falla de un estudiante: DNI repetido en la principal (también en EPS1); el resto se genera
+const srcDuplicado = conCurso(aplicar(
+  conBloques("97000001", "97000001", [{ apellido: "Ficticio", nombres: "Ivan Duplicado", dni: "97000017", listo: "SÍ" }]),
+  conBloques("97000002", "97000002", [{ apellido: "Ficticio", nombres: "Ivan Duplicado", dni: "97000017", listo: "NO" }])
+));
+let rDuplicado = runCurso("Curso con un estudiante fallido", ctlCurso("EPS2"), srcDuplicado);
+assert("Falla individual: el estudiante con DNI repetido queda con error y su motivo, sin hoja",
+  !rDuplicado.error && enResumen(rDuplicado, "97000017").estado === "Error"
+    && enResumen(rDuplicado, "97000017").detalle.startsWith("El DNI aparece más de una vez en la fuente de 3º bimestre.")
+    && !hojasDe(rDuplicado).some(h => /Ivan/.test(h)),
+  rDuplicado.error || JSON.stringify(enResumen(rDuplicado, "97000017")));
+assert("Falla individual: el resto de la tanda se genera y Control cuenta el error",
+  hojasDe(rDuplicado).join("|") === "Resumen|Ficticia, Ana Real"
+    && rDuplicado.estadoResultado.includes("Generados: 1 · Omitidos: 0 · Con error: 1."),
+  hojasDe(rDuplicado).join("|") + " / " + rDuplicado.estadoResultado);
+
+// 8.4. Errores globales: sin LISTO PARA EXPORTAR identificable en la principal, o nivel inexistente
+const errSinListo = 'No se encontró una única columna "LISTO PARA EXPORTAR" después de ORIENTACIÓN en la hoja EPSI de la fuente de 3º bimestre.';
+let rSinListo = runCurso("Sin LISTO PARA EXPORTAR", ctlCurso("EPS2"), conCurso(conEncabezados({ "LISTO PARA EXPORTAR": "LISTO PARA IMPRIMIR" })));
+assert("Sin columna LISTO PARA EXPORTAR (ni se acepta LISTO PARA IMPRIMIR): error claro, sin libro",
+  rSinListo.error && rSinListo.error.startsWith(errSinListo) && rSinListo.creados.length === 0
+    && rSinListo.estadoResultado === "Error: " + rSinListo.error && rSinListo.rawAlerts[0].startsWith("No se pudo generar el libro del curso."),
+  rSinListo.error);
+let rListoDoble = runCurso("LISTO PARA EXPORTAR repetido", ctlCurso("EPS2"), conCurso(conEncabezados({ "SEGUIMIENTO INTERNO": "LISTO PARA EXPORTAR" })));
+assert("LISTO PARA EXPORTAR repetido: error claro, sin elegir columna ni crear libro",
+  rListoDoble.error && rListoDoble.error.startsWith(errSinListo) && rListoDoble.creados.length === 0, rListoDoble.error);
+let rSinListoV03 = runCurso("Grilla v0.3 sin columnas operativas", ctl(P3B, "", { B9: "EPS1", B12: "", B13: "ID_3B_xxxxxxxxxxxxxxxxxxxxxxxx" }), sources);
+assert("Grilla sin columnas operativas (v0.3): la generación por curso no adivina y falla",
+  rSinListoV03.error && rSinListoV03.error.startsWith(errSinListo) && rSinListoV03.creados.length === 0, rSinListoV03.error);
+let rNivelInexistente = runCurso("Nivel inexistente", ctlCurso("EPS5"), srcCurso);
+assert("Nivel sin marcador en la grilla: error claro, sin libro",
+  rNivelInexistente.error === "No se encontró el nivel EPS5 (marcador en la columna A) en la hoja EPSI de la fuente de 3º bimestre."
+    && rNivelInexistente.creados.length === 0, rNivelInexistente.error);
+let rSinNivel = runCurso("Sin nivel", ctlCurso(""), srcCurso);
+assert("Sin nivel en Control: error claro antes de leer fuentes",
+  rSinNivel.error && rSinNivel.error.startsWith("Falta indicar el nivel / curso en la celda B9") && rSinNivel.registro.aperturas.length === 0,
+  rSinNivel.error);
+
+// 8.5. Tanda sin estudiantes listos: en 3B Ana está en NO (en 1C, fuente anterior, está en SÍ)
+let rNadieListo = runCurso("Sin estudiantes listos", ctlCurso("EPS2"),
+  conCurso(conCeldas("97000001", { "LISTO PARA EXPORTAR": "NO" }), conCeldas("97000001", { "LISTO PARA EXPORTAR": "SÍ" })));
+assert("Sin estudiantes listos: no se crea ningún libro y el resultado lo explica",
+  !rNadieListo.error && rNadieListo.creados.length === 0
+    && rNadieListo.rawAlerts[0].startsWith("No se creó ningún libro.\n\nNo hay estudiantes con LISTO PARA EXPORTAR = SÍ en EPSI EPS2 (3º bimestre).")
+    && rNadieListo.estadoResultado === "Sin libro: No hay estudiantes con LISTO PARA EXPORTAR = SÍ en EPSI EPS2 (3º bimestre). Generados: 0 · Omitidos: 1 · Con error: 0.",
+  rNadieListo.error || rNadieListo.rawAlerts.join(" / "));
+assert("Sin estudiantes listos: Control conserva el detalle de los omitidos y las advertencias generales",
+  rNadieListo.estadoAdvertencias === ADV_SIN_1B + "\nOmitido · fila 9 · Ficticia, Ana Real: LISTO PARA EXPORTAR = NO.",
+  rNadieListo.estadoAdvertencias);
+
+// 8.6. Menú: la generación por curso es una acción separada y la individual se conserva
+const menu = [];
+const genMenu = cargarGenerador();
+genMenu.SpreadsheetApp = { getUi: () => ({ createMenu: () => ({ addItem(t, f) { menu.push(t + "→" + f); return this; }, addToUi() {} }) }) };
+genMenu.onOpen();
+assert("Menú: conserva 'Generar informe actual' y agrega 'Generar boletines por curso'",
+  menu.join(", ") === "Generar informe actual→generarInformeActual, Generar boletines por curso→generarBoletinesPorCurso", menu.join(", "));
+
+// 8.7. Resumen oculto: existe y conserva el detalle, pero no se imprime ni se exporta con el libro
+const visibilidad = r => libroDe(r) ? libroDe(r).getSheets().map(s => s.getName() + (s.isSheetHidden() ? ":oculta" : ":visible")).join(" | ") : "";
+assert("Resumen oculto: queda oculta y todos los boletines quedan visibles",
+  visibilidad(rCurso) === HOJAS_EPS2.map((h, i) => h + (i === 0 ? ":oculta" : ":visible")).join(" | ") && resCurso.filas.length === 7,
+  visibilidad(rCurso));
+assert("Resumen oculto: también cuando hay errores, sin perder el detalle del estudiante fallido",
+  visibilidad(rDuplicado) === "Resumen:oculta | Ficticia, Ana Real:visible" && enResumen(rDuplicado, "97000017").estado === "Error",
+  visibilidad(rDuplicado));
+let rSinHojas = runTest("Ninguna hoja pudo crearse", {
+  control: ctlCurso("EPS2"), sources: srcCurso, templateGrid: tpl03,
+  ejecutar: "SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Plantilla').copyTo = () => { throw new Error('copia rechazada'); }; generarBoletinesPorCurso()"
+});
+assert("Resumen oculto: si no se generó ningún boletín, Resumen queda visible (única hoja) con los errores",
+  !rSinHojas.error && visibilidad(rSinHojas) === "Resumen:visible"
+    && resumenDe(rSinHojas).filas.filter(f => f.estado === "Error").every(f => f.detalle.startsWith("No se pudo crear la hoja: copia rechazada"))
+    && resumenDe(rSinHojas).filas.filter(f => f.estado === "Error").length === 4,
+  rSinHojas.error || visibilidad(rSinHojas));
+
+// =============================================================================
+// 9. Control del workbook versionado: selector de nivel para la generación por curso (#12)
+// =============================================================================
+const XLSX_GENERADOR = "src/Generador_informes_individuales_EPS_v0_3.xlsx";
+const controlXlsx = readXlsx(XLSX_GENERADOR).Control;
+// XML de una hoja del último xlsx extraído, ubicada por nombre como en readXlsx.
+const xmlHoja = (rel, nombre) => {
+  const dir = path.join(WORK, path.basename(rel, ".xlsx"));
+  const rd = p => fs.readFileSync(path.join(dir, p), "utf8");
+  const rid = rd("xl/workbook.xml").match(new RegExp("<(?:\\w+:)?sheet [^>]*name=\"" + nombre + "\"[^>]*r:id=\"([^\"]+)\""))[1];
+  const rels = rd("xl/_rels/workbook.xml.rels");
+  const t = rels.match(new RegExp("Target=\"([^\"]+)\"[^>]*Id=\"" + rid + "\"")) || rels.match(new RegExp("Id=\"" + rid + "\"[^>]*Target=\"([^\"]+)\""));
+  let p = t[1].replace(/^\//, "");
+  if (!p.startsWith("xl/")) p = "xl/" + p;
+  return rd(p);
+};
+const validacionB9 = (xmlHoja(XLSX_GENERADOR, "Control").match(/<(?:\w+:)?dataValidation [^>]*sqref="B9"[^>]*>([\s\S]*?)<\/(?:\w+:)?dataValidation>/) || [])[0] || "";
+assert("Control (xlsx): A9 rotula el nivel / curso y B9 queda vacío para elegir",
+  (controlXlsx[8] || [])[0] === "Nivel / curso" && !(controlXlsx[8] || [])[1], JSON.stringify(controlXlsx[8]));
+assert("Control (xlsx): B9 tiene un selector de lista con EPS1, EPS2, EPS3 y EPS4",
+  /type="list"/.test(validacionB9) && /<(?:\w+:)?formula1>"EPS1,EPS2,EPS3,EPS4"<\/(?:\w+:)?formula1>/.test(validacionB9), validacionB9);
+
+// Control real del workbook (con sus rótulos y valores por defecto), completado como lo haría el usuario
+const letras = c => { let s = ""; for (let n = c + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s; return s; };
+const ctlDesdeXlsx = extra => {
+  const celdas = {};
+  controlXlsx.forEach((fila, r) => (fila || []).forEach((v, c) => { if (v !== undefined) celdas[letras(c) + (r + 1)] = v; }));
+  return Object.assign(celdas, extra);
+};
+const datosCursoXlsx = Object.assign({ B5: P3B, B6: "EPSI" }, fuentesCurso);
+let rXlsxEps1 = runCurso("Curso con Control del xlsx (EPS1)", ctlDesdeXlsx(Object.assign({ B9: "EPS1" }, datosCursoXlsx)), srcCurso);
+let rXlsxEps2 = runCurso("Curso con Control del xlsx (EPS2)", ctlDesdeXlsx(Object.assign({ B9: "EPS2" }, datosCursoXlsx)), srcCurso);
+assert("Control (xlsx): la generación por curso usa el nivel elegido en B9",
+  !rXlsxEps1.error && !rXlsxEps2.error
+    && hojasDe(rXlsxEps1).join("|") === "Resumen|Ficticio, Beto Nuevo" && libroDe(rXlsxEps1).getName().includes(" - EPS1 - ")
+    && JSON.stringify(hojasDe(rXlsxEps2)) === JSON.stringify(HOJAS_EPS2) && libroDe(rXlsxEps2).getName().includes(" - EPS2 - "),
+  (rXlsxEps1.error || hojasDe(rXlsxEps1).join("|")) + " / " + (rXlsxEps2.error || hojasDe(rXlsxEps2).join("|")));
+let rXlsxSinNivel = runCurso("Curso con Control del xlsx sin nivel", ctlDesdeXlsx(datosCursoXlsx), srcCurso);
+assert("Control (xlsx): con B9 sin elegir, la generación por curso lo pide y no crea libro",
+  rXlsxSinNivel.error && rXlsxSinNivel.error.startsWith("Falta indicar el nivel / curso en la celda B9") && rXlsxSinNivel.creados.length === 0,
+  rXlsxSinNivel.error);
+let rXlsxIndividual = runTest("Individual con Control del xlsx y B9 de otro nivel", {
+  control: ctlDesdeXlsx({ B5: P3B, B6: "EPSI", B7: "97000001", B9: "EPS1", B10: "", B12: "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx", B13: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx" }),
+  sources, templateGrid: tpl03
+});
+assert("Control (xlsx): la generación individual ignora B9 (Ana, EPS2, con B9 = EPS1: mismo informe y sin libro nuevo)",
+  !rXlsxIndividual.error && mismoInforme(rXlsxIndividual, rReal) && rXlsxIndividual.creados.length === 0
+    && rXlsxIndividual.advertencias.join("\n") === ADV_SIN_1B,
+  rXlsxIndividual.error || rXlsxIndividual.advertencias.join("; "));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

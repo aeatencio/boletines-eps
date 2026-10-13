@@ -9,7 +9,7 @@ Para facilitar la reproducibilidad sin requerir interacción manual con Google S
 ### Características y funcionamiento del arnés
 
 - **Ejecución de código real**: `tests/run.js` carga y ejecuta el archivo de código fuente real `src/Codigo_Apps_Script_Generador_EPS_v0_3.gs` dentro de un contexto aislado (`node:vm`).
-- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`).
+- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`).
 - **Consumo directo de fixtures vigentes**: En cada ejecución se vacía el directorio de trabajo temporal `tmp/unzipped/` y se extraen directamente los archivos XLSX y TSV que existen en `reference/fixtures/`. Si falta algún fixture o se modifica, el runner valida estrictamente el estado actual del disco y no reutiliza extracciones de corridas previas.
 - **Requisito de plataforma y shell**: El runner debe ejecutarse en un entorno **Windows** desde **PowerShell** o **`cmd`**, dependiendo exclusivamente del comando `tar.exe` provisto por el sistema operativo en `%SystemRoot%\System32` (bsdtar nativo de Windows). **No debe asumirse que funciona desde Git Bash**, ya que en dicho entorno `tar.exe` puede resolverse al binario provisto por MSYS y fallar al abrir los archivos XLSX empaquetados.
 
@@ -128,7 +128,7 @@ Cada campo de la cola se identifica por su encabezado exacto (normalizado sin ti
 | Cualquier otro valor | nulo | sí |
 | Encabezado repetido | nulo | sí; no se elige columna |
 
-En esta versión estos estados se leen y quedan en el resultado interno (`camposOperativos`, separado de `estudiante`), pero no seleccionan estudiantes, no alteran el boletín individual y no se escriben en la fuente.
+Estos estados se leen y quedan en el resultado interno (`camposOperativos`, separado de `estudiante`). No alteran el boletín individual y nunca se escriben en la fuente. Sólo `LISTO PARA EXPORTAR` de la fuente principal selecciona estudiantes, y únicamente en la generación por curso (sección 7).
 
 Casos automatizados (Ana Real, DNI `97000001`, salvo indicación):
 - **Lectura**: en 3B, `LISTO PARA EXPORTAR = SÍ` y `EXPORTADO = NO` quedan en `camposOperativos`, sin advertencias. Con la grilla v0.3 de 3B (sin columnas operativas) ambos quedan nulos, sin advertencia.
@@ -140,4 +140,35 @@ Casos automatizados (Ana Real, DNI `97000001`, salvo indicación):
 - **Generación de 1C**: con 1C como principal, esos mismos campos y `camposOperativos` (`SÍ` / `SÍ`) salen de 1C, y no se lee 3B.
 - **Encabezado general no identificable en la principal**: un encabezado distinto del esperado (por ejemplo `ASISTENCIA`) o vacío —forma observada en la cola de una copia anonimizada de EPSG— produce una advertencia por campo; el informe se genera con esa caja vacía, sin leer la columna por posición ni desde otra fuente.
 
-El mock de fuentes del arnés sólo expone lectura (`getDataRange().getDisplayValues()`): cualquier intento de escribir en una grilla fuente hace fallar la suite.
+El mock de fuentes del arnés sólo expone lectura (`getDataRange().getDisplayValues()`): cualquier intento de escribir en una grilla fuente hace fallar la suite. Además registra cada apertura, cada lectura y cualquier acceso a algo distinto de esa lectura, aunque el generador capture el error.
+
+### 7. Generación por curso (#12)
+
+**Uso**: en `Control`, además del período, la hoja origen, el ciclo lectivo y las fuentes, se elige el nivel en `B9` (*Nivel / curso*, selector `EPS1`…`EPS4` incluido en el workbook versionado; también se acepta sólo el número). *Informes EPS > Generar boletines por curso* crea un libro nuevo `Boletines EPS - <hoja origen> - <nivel> - <período> <ciclo> - <fecha y hora>` con la hoja `Resumen` y una hoja por estudiante generado. El DNI de `B7` no se usa. La generación individual ignora `B9` y no cambia.
+
+**Selección**: sólo desde la fuente principal ya leída. El nivel de cada fila es el último marcador `EPSn` de la columna A. Se selecciona una fila del nivel con DNI cuyo `LISTO PARA EXPORTAR` resulta `SÍ` según la tabla de la sección 6 (una forma no canónica como `Si` cuenta como `SÍ` y queda advertida). `NO`, vacío o inválido se omite con su motivo. `EXPORTADO` se informa en el `Resumen` pero no selecciona. Una fila del nivel con `LISTO PARA EXPORTAR = SÍ` y sin DNI se informa como error.
+
+**Lectura única**: cada fuente se abre, se lee y se valida una vez por tanda (`leerFuentes_`). Después, para cada estudiante, se construyen los datos con la misma función que usa la generación individual (`construirDatosEstudiante_`) y cada hoja se completa con la misma lógica que `Informe_actual` (`completarInforme_` sobre una copia de `Plantilla`).
+
+**Errores**:
+- Globales, sin libro: configuración incompleta, error estructural de la fuente principal, falta de una única columna `LISTO PARA EXPORTAR` después de `ORIENTACIÓN` (no se usa `LISTO PARA IMPRIMIR` ni ninguna otra columna en su lugar) y nivel sin marcador en la grilla.
+- Por estudiante: su error (por ejemplo, DNI repetido) queda en el `Resumen` con el motivo; el resto se genera.
+- Si ningún estudiante puede generarse, no se crea el libro y el detalle queda en el diálogo y en `Control`.
+
+**Resumen**: advertencias generales una sola vez (falta de una fuente anterior, encabezados de la cola) y, por estudiante del nivel en orden de grilla: estado (`Generado`, `Omitido`, `Error`), hoja, nombre, DNI, fila en la fuente, `EXPORTADO` y motivo o advertencias propias. Si varios estudiantes producirían el mismo nombre de hoja (sin distinguir mayúsculas), todos llevan su DNI entre paréntesis. Al terminar, `Resumen` se oculta para que no entre en la impresión ni en el PDF del libro completo. Si no se generó ningún boletín, queda visible porque Google Sheets exige una hoja visible.
+
+Casos automatizados (grillas reales sintéticas con bloques agregados en el test):
+- Curso EPS2 con `SÍ`, `NO` (con `EXPORTADO = SÍ`), vacío, `Tal vez`, `SÍ` con `EXPORTADO = SÍ`, `Si` y dos estudiantes con el mismo nombre. En 1C (fuente anterior), otros estados operativos y un estudiante listo que no existe en 3B, sin efecto.
+- Un estudiante de EPS1 listo no entra en EPS2; con nivel `1` se genera sólo él.
+- Equivalencia: cada hoja es idéntica al `Informe_actual` individual del mismo estudiante, y sus advertencias (generales + propias) coinciden con las de la generación individual.
+- Cada fuente se abre y se lee una sola vez; no hay accesos fuera de la lectura de valores; las fuentes, `Plantilla` y las hojas del generador (salvo el estado en `Control`) quedan intactas.
+- DNI repetido en la principal: error de ese estudiante, el resto se genera.
+- Sin columna `LISTO PARA EXPORTAR` (renombrada `LISTO PARA IMPRIMIR`, repetida o ausente en la grilla v0.3), nivel inexistente o sin nivel: error claro y ningún libro.
+- Sin estudiantes listos: ningún libro; el diálogo y `Control` lo explican.
+- Menú: conserva *Generar informe actual* y agrega *Generar boletines por curso*.
+- `Resumen` oculta y boletines visibles, también con un estudiante fallido. Si ninguna hoja pudo crearse, `Resumen` queda visible con los errores (el mock rechaza ocultar la última hoja visible, como Google Sheets).
+- `Control` del xlsx versionado: `A9` = *Nivel / curso*, `B9` vacío con selector `EPS1,EPS2,EPS3,EPS4`. Con esa hoja, la generación por curso usa el nivel elegido, pide `B9` si no se eligió, y la generación individual lo ignora.
+
+**Cambio en la generación individual**: el contenido del informe no cambia. Las advertencias de las fuentes (falta de una fuente anterior, fuente anterior ilegible, encabezados de la cola) ahora aparecen antes que las del estudiante.
+
+**No cubierto por el arnés** (queda para la validación manual de #11): copia real de `Plantilla` a otro libro (imágenes, celdas combinadas, formato condicional, anchos y altos), permisos de creación en Drive, tiempos y límites de Apps Script con un curso completo, y PDF e impresión del libro.
