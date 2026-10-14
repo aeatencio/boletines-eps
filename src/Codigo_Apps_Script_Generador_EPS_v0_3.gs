@@ -18,8 +18,8 @@ const CONFIG_EPS = {
   CELDA_CICLO: 'B8',
   CELDA_NIVEL: 'B9',
   CELDA_FUENTE_1B: 'B10',
-  CELDA_FUENTE_1C: 'B12',
-  CELDA_FUENTE_3B: 'B13',
+  CELDA_FUENTE_1C: 'B11',
+  CELDA_FUENTE_3B: 'B12',
 
   ESTADO_FECHA: 'F2',
   ESTADO_RESULTADO: 'F3',
@@ -205,7 +205,9 @@ function seleccionarEstudiantesCurso_(principal, nivel) {
 
   if (cola.listoParaExportar === undefined) {
     throw new Error('No se encontró una única columna "' + encabezados.listoParaExportar + '" después de ORIENTACIÓN en la hoja ' +
-      principal.hojaOrigen + ' de la fuente de ' + periodo + '. La generación por curso la necesita para seleccionar estudiantes y no usa otra columna en su lugar.');
+      principal.hojaOrigen + ' de la fuente de ' + periodo + '. Es la fuente principal del período a generar (' + periodo + ', elegido en ' +
+      CONFIG_EPS.HOJA_CONTROL + '!' + CONFIG_EPS.CELDA_PERIODO + '): la generación por curso la necesita para seleccionar estudiantes y no usa otra columna en su lugar. ' +
+      'Las fuentes anteriores no la necesitan.');
   }
 
   const estudiantes = [];

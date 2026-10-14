@@ -151,7 +151,7 @@ El mock de fuentes del arnés sólo expone lectura (`getDataRange().getDisplayVa
 **Lectura única**: cada fuente se abre, se lee y se valida una vez por tanda (`leerFuentes_`). Después, para cada estudiante, se construyen los datos con la misma función que usa la generación individual (`construirDatosEstudiante_`) y cada hoja se completa con la misma lógica que `Informe_actual` (`completarInforme_` sobre una copia de `Plantilla`).
 
 **Errores**:
-- Globales, sin libro: configuración incompleta, error estructural de la fuente principal, falta de una única columna `LISTO PARA EXPORTAR` después de `ORIENTACIÓN` (no se usa `LISTO PARA IMPRIMIR` ni ninguna otra columna en su lugar) y nivel sin marcador en la grilla.
+- Globales, sin libro: configuración incompleta, error estructural de la fuente principal, falta de una única columna `LISTO PARA EXPORTAR` después de `ORIENTACIÓN` en la fuente principal (no se usa `LISTO PARA IMPRIMIR` ni ninguna otra columna en su lugar) y nivel sin marcador en la grilla. El mensaje nombra el período elegido en `Control!B5`, porque ese período decide cuál fuente es la principal. Las fuentes anteriores no necesitan columnas operativas y nunca se inspeccionan.
 - Por estudiante: su error (por ejemplo, DNI repetido) queda en el `Resumen` con el motivo; el resto se genera.
 - Si ningún estudiante puede generarse, no se crea el libro y el detalle queda en el diálogo y en `Control`.
 
@@ -167,7 +167,9 @@ Casos automatizados (grillas reales sintéticas con bloques agregados en el test
 - Sin estudiantes listos: ningún libro; el diálogo y `Control` lo explican.
 - Menú: conserva *Generar informe actual* y agrega *Generar boletines por curso*.
 - `Resumen` oculta y boletines visibles, también con un estudiante fallido. Si ninguna hoja pudo crearse, `Resumen` queda visible con los errores (el mock rechaza ocultar la última hoja visible, como Google Sheets).
-- `Control` del xlsx versionado: `A9` = *Nivel / curso*, `B9` vacío con selector `EPS1,EPS2,EPS3,EPS4`. Con esa hoja, la generación por curso usa el nivel elegido, pide `B9` si no se eligió, y la generación individual lo ignora.
+- `Control` del xlsx versionado: `A9` = *Nivel / curso*, `B9` vacío con selector `EPS1,EPS2,EPS3,EPS4`. Con esa hoja, la generación por curso usa el nivel elegido, pide `B9` si no se eligió, y la generación individual lo ignora (aunque tenga un valor no válido).
+- Coordenadas de `Control`: las fuentes de 1º bimestre, 1º cuatrimestre y 3º bimestre están en `B10`, `B11` y `B12`, sin fila vacía intermedia. Los tests toman todas las coordenadas de `CONFIG_EPS` y comprueban en el xlsx que cada una esté junto a su rótulo, junto con los valores por defecto y las validaciones de `B5`, `B6` y `B9`.
+- Columnas operativas sólo en la principal: en 3B, 1C y 1B sin columnas operativas son válidas. En 1C, 1B sin ellas es válida. En 1B, la principal 1B las exige. Una histórica con `LISTO PARA EXPORTAR` duplicada, `EXPORTADO` inválido o encabezados operativos malformados produce la misma tanda que una histórica limpia. La misma grilla 1C sin `LISTO PARA EXPORTAR` es válida como histórica de 3B y es un error sólo como principal (período 1º cuatrimestre). La principal con la columna duplicada también es un error.
 
 **Cambio en la generación individual**: el contenido del informe no cambia. Las advertencias de las fuentes (falta de una fuente anterior, fuente anterior ilegible, encabezados de la cola) ahora aparecen antes que las del estudiante.
 
