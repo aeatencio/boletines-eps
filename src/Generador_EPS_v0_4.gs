@@ -1,5 +1,5 @@
 /**
- * Generador de informes individuales EPS v0.3
+ * Generador de boletines EPS v0.4
  * 1º bimestre + 1º cuatrimestre + 3º bimestre · generación individual y por curso
  *
  * La app no modifica los archivos fuente ni la hoja Plantilla.
@@ -11,6 +11,9 @@ const CONFIG_EPS = {
   HOJA_PLANTILLA: 'Plantilla',
   HOJA_SALIDA: 'Informe_actual',
   HOJA_RESUMEN: 'Resumen',
+
+  // Hora local del nombre de los libros de la generación por curso.
+  ZONA_HORARIA: 'America/Argentina/Buenos_Aires',
 
   CELDA_PERIODO: 'B5',
   CELDA_HOJA_ORIGEN: 'B6',
@@ -37,6 +40,9 @@ const CONFIG_EPS = {
     CUATRIMESTRE_1: '1º cuatrimestre',
     BIMESTRE_3: '3º bimestre'
   },
+
+  // Hojas de cada grilla, una por orientación. Control!B6 elige la del período a generar.
+  HOJAS_ORIGEN: ['EPSI', 'EPSG'],
 
   COLUMNAS_INFORME: {
     '1º bimestre': 5,      // E
@@ -163,7 +169,7 @@ function generarTandaCurso_(ss, config) {
     return tanda;
   }
 
-  const libro = SpreadsheetApp.create(nombreLibroCurso_(ss, config));
+  const libro = SpreadsheetApp.create(nombreLibroCurso_(config));
   const resumen = libro.getSheets()[0];
   resumen.setName(CONFIG_EPS.HOJA_RESUMEN);
   asignarNombresHojas_(preparados);
@@ -249,10 +255,12 @@ function seleccionarEstudiantesCurso_(principal, nivel) {
   return estudiantes;
 }
 
-function nombreLibroCurso_(ss, config) {
-  const fecha = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd HH:mm');
+// La hora del nombre es siempre la de Buenos Aires, sin depender de la zona del libro, del proyecto ni de la cuenta.
+function nombreLibroCurso_(config) {
+  const fecha = Utilities.formatDate(new Date(), CONFIG_EPS.ZONA_HORARIA, 'yyyy-MM-dd HH:mm');
   return ['Boletines EPS', config.hojaOrigen, config.nivel, config.periodo + ' ' + config.cicloLectivo, fecha].join(' - ');
 }
+
 
 /**
  * Nombre de hoja: "Apellido, Nombres". Si varios estudiantes producen el mismo nombre
@@ -405,7 +413,12 @@ function errorFuentePrincipal_(err, periodo) {
 function abrirFuentePrincipal_(fuenteIngresada, hojaOrigen, periodo, advertencias) {
   let fuente;
   try {
-    fuente = abrirGrillaFuente_(fuenteIngresada, hojaOrigen, periodo);
+    const libroFuente = abrirLibroFuente_(fuenteIngresada);
+    fuente = leerHojaFuente_(libroFuente, hojaOrigen, periodo);
+    if (!fuente) throw new Error('No se encontró la hoja ' + hojaOrigen + ' en la fuente de ' + periodo + '.');
+    fuente.estructura = detectarEstructuraFuente_(fuente.valores, periodo);
+    // Las otras orientaciones del período sólo se consultan para detectar un DNI que figure en más de una.
+    fuente.otrasHojas = otrasHojasOrigen_(hojaOrigen).map(nombre => leerHojaFuente_(libroFuente, nombre, periodo)).filter(Boolean);
   } catch (err) {
     throw errorFuentePrincipal_(err, periodo);
   }
@@ -414,22 +427,54 @@ function abrirFuentePrincipal_(fuenteIngresada, hojaOrigen, periodo, advertencia
 }
 
 /**
- * Fuente de un período anterior: sólo aporta materias y valoraciones.
- * No lee la cola de la grilla. Si no puede leerse, se advierte y se continúa con la principal.
+ * Fuente de un período anterior: sólo aporta materias y valoraciones, y no lee la cola de la grilla.
+ * La orientación es por período: se leen todas las hojas de orientación, empezando por la actual,
+ * y cada estudiante se busca en todas (leerFuenteHistorica_).
+ * Si la fuente o una hoja no pueden leerse, se advierte y se continúa sin ellas.
  */
 function abrirFuenteAnterior_(fuenteIngresada, hojaOrigen, periodo, advertencias) {
+  let libroFuente;
   try {
-    return abrirGrillaFuente_(fuenteIngresada, hojaOrigen, periodo);
+    libroFuente = abrirLibroFuente_(fuenteIngresada);
   } catch (err) {
     advertencias.push(err.message + ' Se continuará con la fuente principal.');
     return null;
   }
+
+  const hojas = [];
+  const errores = [];
+  [hojaOrigen].concat(otrasHojasOrigen_(hojaOrigen)).forEach(nombre => {
+    const hoja = leerHojaFuente_(libroFuente, nombre, periodo);
+    if (!hoja) return;
+    try {
+      hoja.estructura = detectarEstructuraFuente_(hoja.valores, periodo);
+    } catch (err) {
+      // Se conservan sus valores para no elegir otra hoja en silencio si el DNI también figura en ésta.
+      hoja.estructura = null;
+      errores.push([nombre, err.message]);
+    }
+    hojas.push(hoja);
+  });
+  const hayHojaLegible = hojas.some(hoja => hoja.estructura);
+  errores.forEach(([nombre, mensaje]) => advertencias.push(mensaje +
+    (hayHojaLegible ? ' No se usará la hoja ' + nombre + ' de esa fuente.' : ' Se continuará con la fuente principal.')));
+
+  if (!hojas.length) {
+    advertencias.push('No se encontraron las hojas ' + CONFIG_EPS.HOJAS_ORIGEN.join(' ni ') + ' en la fuente de ' + periodo + '. Se continuará con la fuente principal.');
+    return null;
+  }
+  return { periodo, hojaActual: hojaOrigen, hojas };
 }
 
 function leerFuentePrincipal_(fuente, hojaOrigen, dniBuscado, advertencias) {
   const periodo = fuente.periodo;
   let grilla;
   try {
+    const otra = fuente.otrasHojas.find(hoja => buscarFilasPorDni_(hoja.valores, dniBuscado).length);
+    if (otra && buscarFilasPorDni_(fuente.valores, dniBuscado).length) {
+      throw new Error('El DNI aparece en las hojas ' + hojaOrigen + ' y ' + otra.hojaOrigen + ' de la fuente de ' + periodo +
+        '. No se puede decidir en qué orientación cursa este período.');
+    }
     grilla = leerGrillaEstudiante_(fuente, dniBuscado, advertencias);
   } catch (err) {
     throw errorFuentePrincipal_(err, periodo);
@@ -470,11 +515,30 @@ function leerFuentePrincipal_(fuente, hojaOrigen, dniBuscado, advertencias) {
 
 /**
  * Estudiante en una fuente anterior ya leída: sólo materias y valoraciones.
- * Si el DNI no puede ubicarse, se advierte y se continúa con la principal.
+ * Se busca en todas sus hojas de orientación:
+ * - en ninguna: se advierte y se continúa con la principal;
+ * - en una: se usa, y si no es la orientación actual se advierte de cuál se tomó;
+ * - en más de una: error del estudiante, porque no se puede elegir una ni combinarlas.
  */
 function leerFuenteHistorica_(fuente, dniBuscado, advertencias) {
+  const periodo = fuente.periodo;
+  const hojas = fuente.hojas.filter(hoja => buscarFilasPorDni_(hoja.valores, dniBuscado).length);
+  if (hojas.length > 1) {
+    throw new Error('El DNI aparece en las hojas ' + hojas.map(hoja => hoja.hojaOrigen).join(' y ') + ' de la fuente de ' + periodo +
+      '. No se puede decidir cuál corresponde a ese período ni combinarlas, por eso no se puede continuar.');
+  }
+  if (!hojas.length) {
+    advertencias.push('No se encontró el DNI en la fuente de ' + periodo + '. Se continuará con la fuente principal.');
+    return null;
+  }
+
+  const hoja = hojas[0];
+  if (!hoja.estructura) return null; // su error de estructura ya se advirtió al leerla
   try {
-    const grilla = leerGrillaEstudiante_(fuente, dniBuscado, advertencias);
+    const grilla = leerGrillaEstudiante_(hoja, dniBuscado, advertencias);
+    if (hoja.hojaOrigen !== fuente.hojaActual) {
+      advertencias.push('El ' + periodo + ' se tomó de la hoja ' + hoja.hojaOrigen + ' de su fuente, distinta de la orientación actual (' + fuente.hojaActual + ').');
+    }
     return {
       periodo: fuente.periodo,
       materiasPorClave: grilla.materiasPorClave,
@@ -488,15 +552,18 @@ function leerFuenteHistorica_(fuente, dniBuscado, advertencias) {
   }
 }
 
-// Única lectura de una grilla fuente: sólo se consultan valores, nunca se escribe.
-function abrirGrillaFuente_(fuenteIngresada, hojaOrigen, periodo) {
-  const idFuente = extraerSpreadsheetId_(fuenteIngresada);
-  const libroFuente = SpreadsheetApp.openById(idFuente);
-  const hoja = libroFuente.getSheetByName(hojaOrigen);
-  if (!hoja) throw new Error('No se encontró la hoja ' + hojaOrigen + ' en la fuente de ' + periodo + '.');
+function abrirLibroFuente_(fuenteIngresada) {
+  return SpreadsheetApp.openById(extraerSpreadsheetId_(fuenteIngresada));
+}
 
-  const valores = hoja.getDataRange().getDisplayValues();
-  return { periodo, hojaOrigen, valores, estructura: detectarEstructuraFuente_(valores, periodo) };
+// Única lectura de una hoja de una grilla fuente: sólo se consultan valores, nunca se escribe. null si no existe.
+function leerHojaFuente_(libroFuente, hojaOrigen, periodo) {
+  const hoja = libroFuente.getSheetByName(hojaOrigen);
+  return hoja ? { periodo, hojaOrigen, valores: hoja.getDataRange().getDisplayValues() } : null;
+}
+
+function otrasHojasOrigen_(hojaOrigen) {
+  return CONFIG_EPS.HOJAS_ORIGEN.filter(nombre => nombre !== hojaOrigen);
 }
 
 function leerGrillaEstudiante_(fuente, dniBuscado, advertencias) {
@@ -724,6 +791,10 @@ function crearInforme_(ss, estudiante, materias, periodoGenerado, cicloLectivo, 
 
 // Completa una copia de Plantilla: la usan la generación individual y cada hoja de la generación por curso.
 function completarInforme_(salida, estudiante, materias, cicloLectivo, advertencias) {
+  // La fila 1 sólo lleva los logos (sin texto, bordes ni relleno). Inmovilizada, al imprimir con
+  // «Repetir filas inmovilizadas» cada página siguiente empieza con ese mismo aire superior (≈1 cm);
+  // la primera página no cambia y un boletín de una página se imprime igual que antes.
+  salida.setFrozenRows(1);
   salida.getRange('A1:A3').clearContent();
   salida.getRange('J3').setValue('CICLO LECTIVO: ' + cicloLectivo);
   salida.getRange('E4').setValue(estudiante.nombreCompleto);
@@ -832,7 +903,7 @@ function normalizarPeriodo_(valor) {
 
 function normalizarHojaOrigen_(valor) {
   const hoja = normalizarTexto_(valor).replace(/\s+/g, '');
-  return ['EPSI', 'EPSG'].includes(hoja) ? hoja : '';
+  return CONFIG_EPS.HOJAS_ORIGEN.includes(hoja) ? hoja : '';
 }
 
 // Nivel / curso como marcador de la grilla: "EPS2" o "2" → "EPS2".

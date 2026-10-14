@@ -1,6 +1,6 @@
-# Casos de prueba v0.3 (3º bimestre)
+# Casos de prueba del generador EPS (v0.4)
 
-Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS v0.3, cubriendo la incorporación del 3º bimestre, su acumulación con períodos anteriores (1º bimestre y 1º cuatrimestre) y la protección contra regresiones históricas.
+Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS v0.4. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período).
 
 ## Arnés de pruebas local
 
@@ -8,7 +8,7 @@ Para facilitar la reproducibilidad sin requerir interacción manual con Google S
 
 ### Características y funcionamiento del arnés
 
-- **Ejecución de código real**: `tests/run.js` carga y ejecuta el archivo de código fuente real `src/Codigo_Apps_Script_Generador_EPS_v0_3.gs` dentro de un contexto aislado (`node:vm`).
+- **Ejecución de código real**: `tests/run.js` carga y ejecuta el archivo de código fuente real `src/Generador_EPS_v0_4.gs` dentro de un contexto aislado (`node:vm`).
 - **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`).
 - **Consumo directo de fixtures vigentes**: En cada ejecución se vacía el directorio de trabajo temporal `tmp/unzipped/` y se extraen directamente los archivos XLSX y TSV que existen en `reference/fixtures/`. Si falta algún fixture o se modifica, el runner valida estrictamente el estado actual del disco y no reutiliza extracciones de corridas previas.
 - **Requisito de plataforma y shell**: El runner debe ejecutarse en un entorno **Windows** desde **PowerShell** o **`cmd`**, dependiendo exclusivamente del comando `tar.exe` provisto por el sistema operativo en `%SystemRoot%\System32` (bsdtar nativo de Windows). **No debe asumirse que funciona desde Git Bash**, ya que en dicho entorno `tar.exe` puede resolverse al binario provisto por MSYS y fallar al abrir los archivos XLSX empaquetados.
@@ -99,7 +99,7 @@ Con los fixtures `*_estructura_real_*.tsv`:
 - **Más de ocho materias**: las cajas de observaciones se desplazan sin pisar materias.
 - **Estudiante nuevo** (Beto Nuevo, DNI `97000002`): sólo presente en 3B; la ausencia en 1C es una advertencia no bloqueante. Con 1B, 1C y 3B indicadas en Control y el flujo completo de `generarInformeActual()`, el informe se genera con una advertencia por cada fuente anterior y las columnas de 1B y 1C vacías. Si el período elegido es 1º cuatrimestre, 1C es la principal y el DNI ausente bloquea con un error que identifica la fuente principal y el período.
 - **EPSG** (Gael Uno, DNI `96000001`): nivel visual `Gastronomía 1`.
-- **Estructuras ambiguas**: falta o repetición de `ORIENTACIÓN`, materia repetida, materia sin columna de valoración y DNI fuera de la fila "Valoración" son errores en la fuente principal; en una fuente anterior, esa fuente se descarta con advertencia.
+- **Estructuras ambiguas**: falta o repetición de `ORIENTACIÓN`, materia repetida, materia sin columna de valoración y DNI fuera de la fila "Valoración" son errores en la fuente principal; en una fuente anterior, esa hoja se descarta con advertencia (sección 8).
 
 ### 6. Campos generales y operativos: sólo desde la fuente principal (#10)
 
@@ -144,7 +144,7 @@ El mock de fuentes del arnés sólo expone lectura (`getDataRange().getDisplayVa
 
 ### 7. Generación por curso (#12)
 
-**Uso**: en `Control`, además del período, la hoja origen, el ciclo lectivo y las fuentes, se elige el nivel en `B9` (*Nivel / curso*, selector `EPS1`…`EPS4` incluido en el workbook versionado; también se acepta sólo el número). *Informes EPS > Generar boletines por curso* crea un libro nuevo `Boletines EPS - <hoja origen> - <nivel> - <período> <ciclo> - <fecha y hora>` con la hoja `Resumen` y una hoja por estudiante generado. El DNI de `B7` no se usa. La generación individual ignora `B9` y no cambia.
+**Uso**: en `Control`, además del período, la hoja origen, el ciclo lectivo y las fuentes, se elige el nivel en `B9` (*Nivel / curso*, selector `EPS1`…`EPS4` incluido en el workbook versionado; también se acepta sólo el número). *Informes EPS > Generar boletines por curso* crea un libro nuevo `Boletines EPS - <hoja origen> - <nivel> - <período> <ciclo> - <aaaa-mm-dd hh:mm>` con la hoja `Resumen` y una hoja por estudiante generado. La hora es siempre la de `America/Argentina/Buenos_Aires`, sin depender de la zona horaria del libro generador, del proyecto ni de la cuenta. El libro se crea en Mi unidad, y su organización posterior en carpetas queda a cargo del usuario. El DNI de `B7` no se usa. La generación individual ignora `B9` y no cambia.
 
 **Selección**: sólo desde la fuente principal ya leída. El nivel de cada fila es el último marcador `EPSn` de la columna A. Se selecciona una fila del nivel con DNI cuyo `LISTO PARA EXPORTAR` resulta `SÍ` según la tabla de la sección 6 (una forma no canónica como `Si` cuenta como `SÍ` y queda advertida). `NO`, vacío o inválido se omite con su motivo. `EXPORTADO` se informa en el `Resumen` pero no selecciona. Una fila del nivel con `LISTO PARA EXPORTAR = SÍ` y sin DNI se informa como error.
 
@@ -166,6 +166,7 @@ Casos automatizados (grillas reales sintéticas con bloques agregados en el test
 - Sin columna `LISTO PARA EXPORTAR` (renombrada `LISTO PARA IMPRIMIR`, repetida o ausente en la grilla v0.3), nivel inexistente o sin nivel: error claro y ningún libro.
 - Sin estudiantes listos: ningún libro; el diálogo y `Control` lo explican.
 - Menú: conserva *Generar informe actual* y agrega *Generar boletines por curso*.
+- Hora del nombre (sección 13; en el mock, la zona del libro generador es `America/Los_Angeles`): 21:07 UTC queda como `18:07` (no `14:07`), y 02:30 UTC del día 15 queda como `2026-10-14 23:30`. La zona se pasa explícitamente a `Utilities.formatDate`. El diálogo muestra el nombre y el enlace del libro; sin libro o en la generación individual no se crea ninguno.
 - `Resumen` oculta y boletines visibles, también con un estudiante fallido. Si ninguna hoja pudo crearse, `Resumen` queda visible con los errores (el mock rechaza ocultar la última hoja visible, como Google Sheets).
 - `Control` del xlsx versionado: `A9` = *Nivel / curso*, `B9` vacío con selector `EPS1,EPS2,EPS3,EPS4`. Con esa hoja, la generación por curso usa el nivel elegido, pide `B9` si no se eligió, y la generación individual lo ignora (aunque tenga un valor no válido).
 - Coordenadas de `Control`: las fuentes de 1º bimestre, 1º cuatrimestre y 3º bimestre están en `B10`, `B11` y `B12`, sin fila vacía intermedia. Los tests toman todas las coordenadas de `CONFIG_EPS` y comprueban en el xlsx que cada una esté junto a su rótulo, junto con los valores por defecto y las validaciones de `B5`, `B6` y `B9`.
@@ -174,3 +175,42 @@ Casos automatizados (grillas reales sintéticas con bloques agregados en el test
 **Cambio en la generación individual**: el contenido del informe no cambia. Las advertencias de las fuentes (falta de una fuente anterior, fuente anterior ilegible, encabezados de la cola) ahora aparecen antes que las del estudiante.
 
 **No cubierto por el arnés** (queda para la validación manual de #11): copia real de `Plantilla` a otro libro (imágenes, celdas combinadas, formato condicional, anchos y altos), permisos de creación en Drive, tiempos y límites de Apps Script con un curso completo, y PDF e impresión del libro.
+
+### 8. Orientación por período (#15)
+
+**Regla**: la orientación es del período, no del estudiante. `Control!B6` elige la hoja de la fuente principal; de ella salen la selección por curso, los datos generales, la orientación mostrada y `LISTO PARA EXPORTAR` / `EXPORTADO`. En cada fuente anterior, el DNI se busca en `EPSI` y en `EPSG`, empezando por la hoja de `B6`. Individual y por curso comparten este comportamiento.
+
+| DNI en las hojas de un período | Fuente principal | Fuente anterior |
+|---|---|---|
+| Ninguna | Error (como antes) | Advertencia y período vacío (como antes) |
+| Una | Se usa la hoja de `B6` | Se usa esa hoja; si no es la de `B6`, advertencia informativa *"El 1º cuatrimestre se tomó de la hoja EPSI de su fuente, distinta de la orientación actual (EPSG)."* |
+| Ambas | Error del estudiante: *"El DNI aparece en las hojas EPSG y EPSI de la fuente de 3º bimestre. No se puede decidir en qué orientación cursa este período."* | Error del estudiante: no se elige ni se combina |
+
+En la generación por curso, el error sólo afecta a ese estudiante; los demás se generan. Un DNI en ambas hojas de la principal no se genera en ninguna de las dos tandas.
+
+**Lectura acotada**: cada archivo se abre una vez y cada hoja de orientación se lee una vez por tanda. La otra hoja de la principal sólo se usa para detectar DNI repetidos entre orientaciones. Una hoja que falta en una fuente anterior no se advierte; si faltan todas, sí. Una hoja ilegible (estructura no identificable) se advierte una vez y no se usa, pero se sigue consultando su columna de DNI para no elegir otra hoja en silencio.
+
+Casos automatizados (trayectorias sintéticas armadas en el test sobre las grillas reales de EPSI y EPSG, con tandas EPSG y EPSI de EPS1):
+- **A** (1B EPSI, 1C EPSI, 3B EPSG): conserva 1B y 1C, incluidas las materias que sólo existen en EPSI (al final), con una advertencia por período y la orientación actual en el boletín.
+- **B** (1B EPSI, 1C EPSG, 3B EPSG): 1C desde la hoja actual y 1B desde EPSI.
+- **C** (sólo en 3B): se genera con la advertencia de ausencia de siempre.
+- **D** (1C en EPSI y EPSG) y **E** (3B en EPSI y EPSG): error del estudiante, en la tanda y en la generación individual; en E, en ninguna de las dos tandas.
+- **F** (EPSI → EPSG → EPSI) y EPSG → EPSI: cada período sale de su hoja.
+- Mismo informe y mismas advertencias en individual y por curso; una apertura por archivo y una lectura por hoja; sin accesos de escritura.
+- Hoja ilegible en una fuente anterior: advertencia única, se usa la otra hoja, y un DNI en ambas sigue siendo error.
+- `Control` del xlsx: `C6` y la regla de hoja origen describen la orientación del período a generar y la búsqueda en ambas hojas.
+
+### 9. Impresión de boletines de más de una página
+
+**Contexto**: la `Plantilla` está diseñada para una página con margen superior 0: los logos están anclados al borde superior de la fila 1. Un boletín con muchas materias (con la configuración de impresión de abajo, unas 14 o más) pasa a una segunda página. Google Sheets aplica el mismo margen superior a todas las páginas de la hoja, no parte filas y no permite fijar saltos de página por script, así que la segunda página empezaba pegada al borde.
+
+**Regla**: cada boletín (`Informe_actual` y cada hoja del libro por curso, en `completarInforme_`) tiene la fila 1 inmovilizada. Esa fila sólo contiene los logos, sin texto, bordes ni relleno, y mide 39,75 pt (≈1 cm impresa con "ajustar al ancho"). Al imprimir con *Repetir filas inmovilizadas*, la primera página no cambia y cada página siguiente empieza con esa fila vacía como aire superior. Un boletín de una página se imprime igual que antes. No se calcula dónde cae el salto, así que funciona con cualquier cantidad de materias. `Plantilla` y `Resumen` no se modifican.
+
+**Configuración de impresión**: A4 vertical, ajustar al ancho, márgenes superior y laterales de 0 cm e inferior de 1 cm, y *Repetir filas inmovilizadas* activada.
+
+Casos automatizados (sección 14 de `tests/run.js`; el paginado real de Sheets no se modela):
+- Boletín corto (3 materias): fila 1 inmovilizada y ninguna fila más; el PTF queda en la fila esperada.
+- Boletín largo (17 materias): conserva todas las materias y los cuatro bloques inferiores, con la fila 1 inmovilizada; la hoja del libro por curso es idéntica al informe individual; sin escrituras en las fuentes.
+- Tanda: todos los boletines con la fila 1 inmovilizada; `Resumen` y `Plantilla` sin cambios.
+
+**Validación manual** (#11): queda pendiente comprobar en Google Sheets que, con la opción activada, la segunda página tenga el aire esperado sin repetir los logos y sin agregar una tercera página.

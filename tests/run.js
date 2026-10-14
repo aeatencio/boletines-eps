@@ -1,4 +1,4 @@
-// Arnés de pruebas local para v0.3
+// Arnés de pruebas local para v0.4
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -82,6 +82,9 @@ function a1ToRC(a1) {
   return [r1, c1, r2 - r1 + 1, c2 - c1 + 1];
 }
 
+// Las fechas se crean dentro del contexto vm, donde instanceof Date no las reconoce.
+const esFecha = v => Object.prototype.toString.call(v) === "[object Date]";
+
 class MockSheet {
   constructor(name, grid) {
     this.name = name;
@@ -108,13 +111,13 @@ class MockSheet {
       setValue: v => {
         for (let i = 0; i < h; i++) {
           for (let j = 0; j < w; j++) {
-            sh.set(r + i, c + j, v instanceof Date ? "<fecha>" : v);
+            sh.set(r + i, c + j, esFecha(v) ? "<fecha>" : v);
           }
         }
       },
       setValues: filas => {
         if (filas.length !== h || filas.some(f => f.length !== w)) throw new Error("mock: setValues con dimensiones distintas del rango");
-        filas.forEach((f, i) => f.forEach((v, j) => sh.set(r + i, c + j, v instanceof Date ? "<fecha>" : v)));
+        filas.forEach((f, i) => f.forEach((v, j) => sh.set(r + i, c + j, esFecha(v) ? "<fecha>" : v)));
       },
       clearContent: () => {
         for (let i = 0; i < h; i++) {
@@ -139,6 +142,8 @@ class MockSheet {
     this.grid.splice(row - 1, n);
   }
   setRowHeight() {}
+  setFrozenRows(n) { this.filasInmovilizadas = n; }
+  getFrozenRows() { return this.filasInmovilizadas || 0; }
   // Como Google Sheets: no se puede ocultar la última hoja visible.
   hideSheet() {
     if (this.ss && this.ss.sheets.every(s => s === this || s.hidden)) throw new Error("mock: no se pueden ocultar todas las hojas");
@@ -161,7 +166,8 @@ class MockSS {
   }
   getName() { return this.name; }
   getUrl() { return "https://docs.google.com/spreadsheets/d/MOCK/" + encodeURIComponent(this.name); }
-  getSpreadsheetTimeZone() { return "America/Argentina/Buenos_Aires"; }
+  // Distinta de la de Buenos Aires, como el generador real observado: el nombre del libro no debe depender de ella.
+  getSpreadsheetTimeZone() { return "America/Los_Angeles"; }
   getSheets() { return this.sheets.slice(); }
   getSheetByName(n) { return this.sheets.find(s => s.name === n) || null; }
   deleteSheet(s) { this.sheets = this.sheets.filter(x => x !== s); }
@@ -206,14 +212,23 @@ function abrirFuenteMock(sources, registro = { aperturas: [], lecturas: [], inde
   };
 }
 
-function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()" }) {
-  const code = fs.readFileSync(path.join(ROOT, "src/Codigo_Apps_Script_Generador_EPS_v0_3.gs"), "utf8");
+// Formato real de Utilities.formatDate para el único patrón que usa el generador.
+function formatearFecha(fecha, zona, formato) {
+  if (formato !== "yyyy-MM-dd HH:mm") throw new Error("mock: formato no soportado " + formato);
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: zona, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+  }).format(fecha);
+}
+
+function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()", ahora = null }) {
+  const code = fs.readFileSync(path.join(ROOT, "src/Generador_EPS_v0_4.gs"), "utf8");
   const plantilla = new MockSheet("Plantilla", templateGrid);
   const ctrl = hojaControl(control);
   const ss = new MockSS([plantilla, ctrl]);
   const rawAlerts = [];
   const creados = [];
   const registro = { aperturas: [], lecturas: [], indebidos: [] };
+  const formatos = [];
   const ctx = {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
@@ -225,8 +240,21 @@ function runTest(testName, { control, sources, templateGrid, ejecutar = "generar
         return libro;
       }
     },
-    Utilities: { formatDate: () => "<fecha>" }
+    // Sin `ahora`, la fecha queda como "<fecha>"; con `ahora`, Date se fija a ese instante y se formatea de verdad.
+    Utilities: {
+      formatDate: (fecha, zona, formato) => {
+        formatos.push(zona + " " + formato);
+        return ahora ? formatearFecha(fecha, zona, formato) : "<fecha>";
+      }
+    }
   };
+  if (ahora) {
+    const fija = Date.parse(ahora);
+    ctx.Date = class extends Date {
+      constructor(...args) { if (args.length) super(...args); else super(fija); }
+      static now() { return fija; }
+    };
+  }
   vm.createContext(ctx);
   vm.runInContext(code, ctx);
   let error = null;
@@ -257,7 +285,8 @@ function runTest(testName, { control, sources, templateGrid, ejecutar = "generar
     out: out ? rect(out.grid) : null,
     ss,
     creados,
-    registro
+    registro,
+    formatos
   };
 }
 
@@ -266,7 +295,7 @@ function runTest(testName, { control, sources, templateGrid, ejecutar = "generar
 function cargarGenerador(sources) {
   const ctx = sources ? { SpreadsheetApp: { openById: abrirFuenteMock(sources) } } : {};
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(ROOT, "src/Codigo_Apps_Script_Generador_EPS_v0_3.gs"), "utf8"), ctx);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "src/Generador_EPS_v0_4.gs"), "utf8"), ctx);
   return ctx;
 }
 
@@ -314,7 +343,7 @@ function readTsv(p) {
 // Inicializar directorio de trabajo limpio para garantizar que cada corrida lea los fixtures vigentes
 initWorkDir();
 
-const tpl03 = readXlsx("src/Generador_informes_individuales_EPS_v0_3.xlsx").Plantilla;
+const tpl = readXlsx("src/Generador_EPS_v0_4.xlsx").Plantilla;
 const src1B = readXlsx("reference/fixtures/Valoraciones_ficticias_EPS_1er_bimestre_v0_3.xlsx");
 const src1C = readXlsx("reference/fixtures/Valoraciones_ficticias_EPS_1er_cuatrimestre_v0_3.xlsx");
 const src3B = { EPSI: readTsv("reference/fixtures/3er_bimestre.tsv") };
@@ -357,7 +386,7 @@ function assert(desc, cond, msg) {
 // =============================================================================
 // 1. Happy path 3B (Camila Uno, DNI 99000001 · 1B + 1C + 3B)
 // =============================================================================
-let r = runTest("Happy path 3B", { control: ctl("3º bimestre", "99000001"), sources, templateGrid: tpl03 });
+let r = runTest("Happy path 3B", { control: ctl("3º bimestre", "99000001"), sources, templateGrid: tpl });
 assert("Happy path 3B: sin errores", !r.error, r.error);
 assert("Happy path 3B: sin advertencias", r.advertencias.length === 0, r.advertencias.join("; "));
 assert("Happy path 3B: Control registra 'Sin advertencias'", r.estadoAdvertencias === "Sin advertencias", r.estadoAdvertencias);
@@ -375,7 +404,7 @@ assert("Happy path 3B: FGI I acumula los 3 períodos (ACREDITÓ|ACREDITÓ|ACREDI
 // =============================================================================
 // 2. Materia que aparece por primera vez en 3B (Carla Cuatro, DNI 99000003)
 // =============================================================================
-r = runTest("Materia que aparece por primera vez en 3B", { control: ctl("3º bimestre", "99000003"), sources, templateGrid: tpl03 });
+r = runTest("Materia que aparece por primera vez en 3B", { control: ctl("3º bimestre", "99000003"), sources, templateGrid: tpl });
 assert("Materia incorporada en 3B: sin errores", !r.error, r.error);
 assert("Materia incorporada en 3B: nivel visual es 'Informática 1'", r.out && r.out[5] && r.out[5][4] === "Informática 1", r.out ? r.out[5][4] : null);
 let filaIncorporada = (r.out || []).find(f => f[2] === "Taller C") || [];
@@ -385,7 +414,7 @@ assert("Materia incorporada en 3B: Taller C solo tiene valor en 3B (||Suficiente
 // 3. Caso separado: Valoración inválida en 3B (descarte + advertencia + continuidad)
 // =============================================================================
 let ctlInv = ctl("3º bimestre", "99000001", { [F3B]: "ID_3B_INV_xxxxxxxxxxxxxxxxxxxx" });
-let rInv = runTest("Valoración inválida 3B", { control: ctlInv, sources, templateGrid: tpl03 });
+let rInv = runTest("Valoración inválida 3B", { control: ctlInv, sources, templateGrid: tpl });
 assert("Valoración inválida 3B: no interrumpe ejecución", !rInv.error && rInv.out, rInv.error);
 
 let filaLenInv = (rInv.out || []).find(f => f[2] === "Lengua y Literatura I") || [];
@@ -403,7 +432,7 @@ assert("Valoración inválida 3B: continuidad (Matemática I acumula correctamen
 // =============================================================================
 
 // 4.1. Regresión 1B (CP-01 de v0.2: Camila Uno, DNI 99000001, EPSI)
-let r1B = runTest("Regresión 1B (CP-01)", { control: ctl("1º bimestre", "99000001", { [F1C]: "", [F3B]: "" }), sources, templateGrid: tpl03 });
+let r1B = runTest("Regresión 1B (CP-01)", { control: ctl("1º bimestre", "99000001", { [F1C]: "", [F3B]: "" }), sources, templateGrid: tpl });
 assert("Regresión 1B: genera sin errores", !r1B.error && r1B.out, r1B.error);
 assert("Regresión 1B: sin advertencias", r1B.advertencias.length === 0, r1B.advertencias.join("; "));
 assert("Regresión 1B: Control registra 'Sin advertencias'", r1B.estadoAdvertencias === "Sin advertencias", r1B.estadoAdvertencias);
@@ -416,7 +445,7 @@ let f1bFGI = (r1B.out || []).find(f => f[2] === "FGI I") || [];
 assert("Regresión 1B: FGI I solo valor en columna 1B (ACREDITÓ||)", f1bFGI.slice(4, 7).join("|") === "ACREDITÓ||", f1bFGI.slice(4, 7));
 
 // 4.2. Regresión 1C acumulativo (CP-02 de v0.2: Camila Uno, DNI 99000001, EPSI · 1B + 1C)
-let r1C = runTest("Regresión 1C acumulativo (CP-02)", { control: ctl("1º cuatrimestre", "99000001", { [F3B]: "" }), sources, templateGrid: tpl03 });
+let r1C = runTest("Regresión 1C acumulativo (CP-02)", { control: ctl("1º cuatrimestre", "99000001", { [F3B]: "" }), sources, templateGrid: tpl });
 assert("Regresión 1C: genera sin errores", !r1C.error && r1C.out, r1C.error);
 assert("Regresión 1C: sin advertencias", r1C.advertencias.length === 0, r1C.advertencias.join("; "));
 assert("Regresión 1C: Control registra 'Sin advertencias'", r1C.estadoAdvertencias === "Sin advertencias", r1C.estadoAdvertencias);
@@ -433,7 +462,7 @@ let f1cArq = (r1C.out || []).find(f => f[2] === "Arquitectura de Sistemas Inform
 assert("Regresión 1C: Arquitectura solo en 1C (|8|)", f1cArq.slice(4, 7).join("|") === "|8|", f1cArq.slice(4, 7));
 
 // 4.3. Regresión 1C valor no válido (CP-03 de v0.2: Bruno Dos, DNI 99000002 · valor '7,5' en 1C)
-let r1C_inv = runTest("Regresión 1C valor no válido (CP-03)", { control: ctl("1º cuatrimestre", "99000002", { [F3B]: "" }), sources, templateGrid: tpl03 });
+let r1C_inv = runTest("Regresión 1C valor no válido (CP-03)", { control: ctl("1º cuatrimestre", "99000002", { [F3B]: "" }), sources, templateGrid: tpl });
 assert("Regresión 1C valor no válido: genera sin abortar", !r1C_inv.error && r1C_inv.out, r1C_inv.error);
 let f1cBrunoLen = (r1C_inv.out || []).find(f => f[2] === "Lengua y Literatura I") || [];
 assert("Regresión 1C valor no válido: descarta '7,5' y conserva 1B (Suficiente||)", f1cBrunoLen.slice(4, 7).join("|") === "Suficiente||", f1cBrunoLen.slice(4, 7));
@@ -446,7 +475,7 @@ assert("Regresión 1C valor no válido: continuidad (Matemática I tiene |8|)", 
 let rGastro = runTest("Regresión 1C Gastronomía (CP-06)", {
   control: ctl("1º cuatrimestre", "98000001", { B6: "EPSG", [F3B]: "" }),
   sources,
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 assert("Regresión 1C Gastronomía: genera sin errores", !rGastro.error && rGastro.out, rGastro.error);
 assert("Regresión 1C Gastronomía: nivel visual es 'Gastronomía 1'", rGastro.out && rGastro.out[5] && rGastro.out[5][4] === "Gastronomía 1", rGastro.out ? rGastro.out[5][4] : null);
@@ -503,7 +532,7 @@ const ctlReal = (d, extra) => ctl(P3B, d, Object.assign({
   [F1C]: "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx",
   [F3B]: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx"
 }, extra));
-let rReal = runTest("Estructura real 3B", { control: ctlReal("97000001"), sources, templateGrid: tpl03 });
+let rReal = runTest("Estructura real 3B", { control: ctlReal("97000001"), sources, templateGrid: tpl });
 let matsReal = filasMaterias(rReal.out);
 const filaReal = nombre => matsReal.find(f => f[2] === nombre) || [];
 assert("Estructura real 3B: sin errores", !rReal.error && rReal.out, rReal.error);
@@ -538,7 +567,7 @@ assert("Estructura real 3B: sin advertencias salvo la falta de fuente de 1B",
   rReal.advertencias.join("; "));
 
 // 5.4. Estudiante nuevo, presente sólo en el período actual (Beto Nuevo, DNI 97000002, EPS1)
-let rNuevo = runTest("Estudiante nuevo 3B", { control: ctlReal("97000002"), sources, templateGrid: tpl03 });
+let rNuevo = runTest("Estudiante nuevo 3B", { control: ctlReal("97000002"), sources, templateGrid: tpl });
 let matsNuevo = filasMaterias(rNuevo.out);
 assert("Estudiante nuevo: genera sin errores", !rNuevo.error && rNuevo.out, rNuevo.error);
 assert("Estudiante nuevo: nivel visual es 'Informática 1'", rNuevo.out && rNuevo.out[5][4] === "Informática 1", rNuevo.out ? rNuevo.out[5][4] : null);
@@ -550,7 +579,7 @@ assert("Estudiante nuevo: la ausencia en 1C se informa como advertencia no bloqu
 
 // 5.5. Hoja EPSG con la forma real (Gael Uno, DNI 96000001)
 let rEpsg = runTest("Estructura real EPSG", {
-  control: ctlReal("96000001", { B6: "EPSG", [F1C]: "" }), sources, templateGrid: tpl03
+  control: ctlReal("96000001", { B6: "EPSG", [F1C]: "" }), sources, templateGrid: tpl
 });
 assert("Estructura real EPSG: genera sin errores", !rEpsg.error && rEpsg.out, rEpsg.error);
 assert("Estructura real EPSG: nivel visual es 'Gastronomía 1'", rEpsg.out && rEpsg.out[5][4] === "Gastronomía 1", rEpsg.out ? rEpsg.out[5][4] : null);
@@ -568,7 +597,7 @@ const ID_VAR = "ID_VARIANTE_xxxxxxxxxxxxxxxxx";
 let rSinOrient = runTest("Sin ORIENTACIÓN", {
   control: ctlReal("97000001", { [F3B]: ID_VAR }),
   sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "ORIENTACIÓN")] = ""; }) }),
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 assert("Sin ORIENTACIÓN en la principal: se informa error y no se genera",
   rSinOrient.error && rSinOrient.error.includes("No se encontró la columna ORIENTACIÓN") && !rSinOrient.out, rSinOrient.error);
@@ -576,7 +605,7 @@ assert("Sin ORIENTACIÓN en la principal: se informa error y no se genera",
 let rOrientDoble = runTest("ORIENTACIÓN repetida", {
   control: ctlReal("97000001", { [F3B]: ID_VAR }),
   sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "SEGUIMIENTO INTERNO")] = "Orientación"; }) }),
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 assert("ORIENTACIÓN repetida en la principal: se informa error",
   rOrientDoble.error && rOrientDoble.error.includes("La columna ORIENTACIÓN aparece más de una vez (columnas AN, AU)"), rOrientDoble.error);
@@ -584,7 +613,7 @@ assert("ORIENTACIÓN repetida en la principal: se informa error",
 let rRepetida = runTest("Materia repetida en principal", {
   control: ctlReal("97000001", { [F3B]: ID_VAR }),
   sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "Matemática IV")] = "Matemática I"; }) }),
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 assert("Materia repetida en la principal: se informa error con ambas columnas, sin elegir una",
   rRepetida.error && rRepetida.error.includes('Materia repetida en la fuente de 3º bimestre: "Matemática I" (columnas E, AH)') && !rRepetida.out,
@@ -593,7 +622,7 @@ assert("Materia repetida en la principal: se informa error con ambas columnas, s
 let rRepetidaHist = runTest("Materia repetida en fuente anterior", {
   control: ctlReal("97000001", { [F1C]: ID_VAR }),
   sources: conVariante(ID_VAR, { EPSI: variante(src1C_real.EPSI, g => { g[0][columnaDe(g, "Matemática IV")] = "Matemática I"; }) }),
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 assert("Materia repetida en una fuente anterior: advertencia, se descarta esa fuente y se genera con la principal",
   !rRepetidaHist.error && rRepetidaHist.advertencias.some(a => a.startsWith("Materia repetida en la fuente de 1º cuatrimestre") && a.endsWith("Se continuará con la fuente principal."))
@@ -603,7 +632,7 @@ assert("Materia repetida en una fuente anterior: advertencia, se descarta esa fu
 let rParRoto = runTest("Materia sin columna de valoración", {
   control: ctlReal("97000001", { [F3B]: ID_VAR }),
   sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { g[0][columnaDe(g, "Matemática I") + 1] = "Columna intrusa"; }) }),
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 assert("Materia sin su columna de valoración: se informa error",
   rParRoto.error && rParRoto.error.includes('La materia "Matemática I" (columna E) no tiene a continuación su columna de valoración'), rParRoto.error);
@@ -611,7 +640,7 @@ assert("Materia sin su columna de valoración: se informa error",
 let rFilaDni = runTest("DNI fuera de la fila Valoración", {
   control: ctlReal("97000001", { [F3B]: ID_VAR }),
   sources: conVariante(ID_VAR, { EPSI: variante(src3B_real.EPSI, g => { const r = filaDni(g, "97000001"); g[r][2] = ""; g[r + 1][2] = "97000001"; }) }),
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 assert("DNI fuera de la fila Valoración del bloque: se informa error en vez de leer otra fila",
   rFilaDni.error && rFilaDni.error.includes('La fila del DNI no es la fila "Valoración"') && !rFilaDni.out, rFilaDni.error);
@@ -623,7 +652,7 @@ let rNombre = runTest("Nombre de la grilla principal", {
     g[0][columnaDe(g, "Lengua y Literatura I")] = "LENGUA Y LITERATURA I";
     g[1][g[1].indexOf("Taller Profesional I C")] = "TALLER PROFESIONAL I C";
   }) }),
-  templateGrid: tpl03
+  templateGrid: tpl
 });
 let matsNombre = filasMaterias(rNombre.out).map(f => f[2] + ":" + valoresFila(f));
 assert("Nombre mostrado: materia de la grilla principal valorada sólo en 1C usa el nombre de la principal",
@@ -687,7 +716,7 @@ assert("Campos operativos: en la generación, 'Si' y 'no' quedan como SÍ y NO y
   operativos(dNoCanon) + " / " + dNoCanon.advertencias.join("; "));
 
 let srcOpVacio = variante3B(conCeldas("97000001", { "LISTO PARA EXPORTAR": "" }));
-let rOpVacio = runTest("LISTO PARA EXPORTAR vacío", { control: ctlAna3B, sources: srcOpVacio, templateGrid: tpl03 });
+let rOpVacio = runTest("LISTO PARA EXPORTAR vacío", { control: ctlAna3B, sources: srcOpVacio, templateGrid: tpl });
 let dOpVacio = generarDatos(ctlAna3B, srcOpVacio);
 assert("Celda operativa vacía: advertencia no bloqueante y mismo informe",
   !rOpVacio.error && mismoInforme(rOpVacio, rReal)
@@ -697,7 +726,7 @@ assert("Celda operativa vacía: el estado queda nulo",
   operativos(dOpVacio) === '{"listoParaExportar":null,"exportado":"NO"}', operativos(dOpVacio));
 
 let srcOpInvalido = variante3B(conCeldas("97000001", { "EXPORTADO": "Tal vez" }));
-let rOpInvalido = runTest("EXPORTADO inválido", { control: ctlAna3B, sources: srcOpInvalido, templateGrid: tpl03 });
+let rOpInvalido = runTest("EXPORTADO inválido", { control: ctlAna3B, sources: srcOpInvalido, templateGrid: tpl });
 let dOpInvalido = generarDatos(ctlAna3B, srcOpInvalido);
 assert("Valor operativo inválido: advertencia no bloqueante y mismo informe",
   !rOpInvalido.error && mismoInforme(rOpInvalido, rReal)
@@ -707,7 +736,7 @@ assert("Valor operativo inválido: el estado queda nulo",
   operativos(dOpInvalido) === '{"listoParaExportar":"SÍ","exportado":null}', operativos(dOpInvalido));
 
 let rOpDoble = runTest("EXPORTADO repetido", {
-  control: ctlAna3B, sources: variante3B(conEncabezados({ "SEGUIMIENTO INTERNO": "Exportado" })), templateGrid: tpl03
+  control: ctlAna3B, sources: variante3B(conEncabezados({ "SEGUIMIENTO INTERNO": "Exportado" })), templateGrid: tpl
 });
 assert("Encabezado operativo repetido: advertencia, no se elige una columna y se genera igual",
   !rOpDoble.error && mismoInforme(rOpDoble, rReal)
@@ -716,7 +745,7 @@ assert("Encabezado operativo repetido: advertencia, no se elige una columna y se
 
 // 6.3. LISTO PARA EXPORTAR y EXPORTADO todavía no seleccionan ni alteran la generación individual
 let rNoListo = runTest("LISTO PARA EXPORTAR = NO", {
-  control: ctlAna3B, sources: variante3B(conCeldas("97000001", { "LISTO PARA EXPORTAR": "NO", "EXPORTADO": "SÍ" })), templateGrid: tpl03
+  control: ctlAna3B, sources: variante3B(conCeldas("97000001", { "LISTO PARA EXPORTAR": "NO", "EXPORTADO": "SÍ" })), templateGrid: tpl
 });
 assert("LISTO PARA EXPORTAR = NO: el boletín individual se genera igual que con SÍ",
   !rNoListo.error && mismoInforme(rNoListo, rReal) && rNoListo.advertencias.join("\n") === ADV_SIN_1B,
@@ -732,7 +761,7 @@ assert("LISTO PARA EXPORTAR y EXPORTADO nunca son materias (estructura ni result
   !estReal.materias.some(m => ["LISTOPARAEXPORTAR", "EXPORTADO"].includes(m.clave))
     && dAna.informe && dAna.informe.materias.every(m => !/LISTO PARA EXPORTAR|EXPORTADO/i.test(m.nombre)));
 let rOpEnMaterias = runTest("LISTO PARA EXPORTAR en la zona de materias", {
-  control: ctlAna3B, sources: variante3B(conEncabezados({ "Matemática IV": "LISTO PARA EXPORTAR" })), templateGrid: tpl03
+  control: ctlAna3B, sources: variante3B(conEncabezados({ "Matemática IV": "LISTO PARA EXPORTAR" })), templateGrid: tpl
 });
 assert("LISTO PARA EXPORTAR antes de ORIENTACIÓN: error en vez de leerlo como materia",
   rOpEnMaterias.error && rOpEnMaterias.error.includes('El encabezado "LISTO PARA EXPORTAR" (columna AH) es un campo general u operativo y está antes de ORIENTACIÓN')
@@ -756,7 +785,7 @@ const srcHistIntrusa = Object.assign({}, sources, { [ID_VAR_1C]: { EPSI: variant
   conEncabezados({ "PLAN DE TRABAJO FORMATIVO (PTF)": "", "EXPORTADO": "LISTO PARA EXPORTAR" })(g);
 }) } });
 const ctlHistIntrusa = ctlReal("97000001", { [F1C]: ID_VAR_1C });
-let rHistIntrusa = runTest("Fuente histórica con cola distinta e inválida", { control: ctlHistIntrusa, sources: srcHistIntrusa, templateGrid: tpl03 });
+let rHistIntrusa = runTest("Fuente histórica con cola distinta e inválida", { control: ctlHistIntrusa, sources: srcHistIntrusa, templateGrid: tpl });
 let dHistIntrusa = generarDatos(ctlHistIntrusa, srcHistIntrusa);
 assert("Fuente histórica con orientación, observaciones, PTF y operativos distintos o inválidos: el informe no cambia",
   !rHistIntrusa.error && mismoInforme(rHistIntrusa, rReal) && !JSON.stringify(rHistIntrusa.out).includes("INTRUSO"),
@@ -773,7 +802,7 @@ assert("Fuente histórica con cola distinta e inválida: estudiante y camposOper
 assert("Generación 3B: observaciones y PTF salen de 3B",
   cajas(rReal.out) === "Obs 3B Ana|Asist 3B Ana|Conv 3B Ana|PTF 3B Ana" && !JSON.stringify(rReal.out).includes("1C Ana"), cajas(rReal.out));
 const srcHuecos3B = variante3B(conCeldas("97000001", { "ORIENTACIÓN": "", "OBSERVACIONES SOBRE ASISTENCIA": "", "PLAN DE TRABAJO FORMATIVO (PTF)": "" }));
-let rHuecos3B = runTest("Campos generales vacíos en 3B", { control: ctlAna3B, sources: srcHuecos3B, templateGrid: tpl03 });
+let rHuecos3B = runTest("Campos generales vacíos en 3B", { control: ctlAna3B, sources: srcHuecos3B, templateGrid: tpl });
 let dHuecos3B = generarDatos(ctlAna3B, srcHuecos3B);
 assert("Generación 3B: un campo general vacío en 3B queda vacío y nunca se completa con 1C",
   !rHuecos3B.error && cajas(rHuecos3B.out) === "Obs 3B Ana||Conv 3B Ana|" && !JSON.stringify(rHuecos3B.out).includes("1C Ana")
@@ -782,7 +811,7 @@ assert("Generación 3B: un campo general vacío en 3B queda vacío y nunca se co
 
 // 6.7. Generación de 1C: ahora 1C es la principal y sus campos generales y operativos sí se usan
 const ctl1CReal = ctl(P1C, "97000001", { [F1B]: "", [F1C]: "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx", [F3B]: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx" });
-let r1CReal = runTest("Generación 1C con 1C como principal", { control: ctl1CReal, sources, templateGrid: tpl03 });
+let r1CReal = runTest("Generación 1C con 1C como principal", { control: ctl1CReal, sources, templateGrid: tpl });
 let d1CReal = generarDatos(ctl1CReal, sources);
 assert("Generación 1C: observaciones y PTF salen de 1C",
   !r1CReal.error && cajas(r1CReal.out) === "Obs 1C Ana|Asist 1C Ana|Conv 1C Ana|PTF 1C Ana" && !JSON.stringify(r1CReal.out).includes("3B Ana"),
@@ -795,7 +824,7 @@ assert("Generación 1C: sólo advierte la falta de 1B",
 
 // 6.8. Encabezado general esperado que no puede identificarse en la principal
 let rSinAsist = runTest("Encabezado de asistencia no identificable", {
-  control: ctlAna3B, sources: variante3B(conEncabezados({ "OBSERVACIONES SOBRE ASISTENCIA": "ASISTENCIA" })), templateGrid: tpl03
+  control: ctlAna3B, sources: variante3B(conEncabezados({ "OBSERVACIONES SOBRE ASISTENCIA": "ASISTENCIA" })), templateGrid: tpl
 });
 assert("Encabezado general no identificable: advertencia clara",
   rSinAsist.advertencias.includes('No se encontró el encabezado "OBSERVACIONES SOBRE ASISTENCIA" después de ORIENTACIÓN en la fuente de 3º bimestre. Ese campo quedará vacío en el informe.'),
@@ -811,7 +840,7 @@ const encabezadosGenerales = [
   "OBSERVACIONES SOBRE CONVIVENCIA ESCOLAR", "PLAN DE TRABAJO FORMATIVO (PTF)"
 ];
 const srcColaSinEnc = variante3B(conEncabezados(Object.fromEntries(encabezadosGenerales.map(e => [e, ""]))));
-let rColaSinEnc = runTest("Cola con encabezados generales vacíos", { control: ctlAna3B, sources: srcColaSinEnc, templateGrid: tpl03 });
+let rColaSinEnc = runTest("Cola con encabezados generales vacíos", { control: ctlAna3B, sources: srcColaSinEnc, templateGrid: tpl });
 let dColaSinEnc = generarDatos(ctlAna3B, srcColaSinEnc);
 assert("Encabezados generales vacíos (forma observada en EPSG): una advertencia por campo, sin adivinar columnas",
   encabezadosGenerales.every(e => rColaSinEnc.advertencias.includes('No se encontró el encabezado "' + e + '" después de ORIENTACIÓN en la fuente de 3º bimestre. Ese campo quedará vacío en el informe.'))
@@ -834,7 +863,7 @@ const ctlSmoke = periodo => ctl(periodo, "97000002", {
   [F3B]: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx"
 });
 const advDniHistorico = periodo => "No se encontró el DNI en la fuente de " + periodo + ". Se continuará con la fuente principal.";
-let rSmoke = runTest("Smoke: estudiante sólo en 3B", { control: ctlSmoke(P3B), sources, templateGrid: tpl03 });
+let rSmoke = runTest("Smoke: estudiante sólo en 3B", { control: ctlSmoke(P3B), sources, templateGrid: tpl });
 let matsSmoke = filasMaterias(rSmoke.out);
 assert("Smoke 3B, estudiante sólo en 3B: generarInformeActual termina con éxito y lo registra en Control",
   !rSmoke.error && rSmoke.out && rSmoke.rawAlerts.length === 1 && rSmoke.rawAlerts[0].startsWith("Informe generado correctamente.")
@@ -852,7 +881,7 @@ assert("Smoke 3B: estudiante y campos generales salen de 3B",
   rSmoke.out && cajas(rSmoke.out));
 
 // Mismo Control con el período en 1º cuatrimestre: 1C pasa a ser la principal y el DNI ausente bloquea.
-let rSmoke1C = runTest("Smoke: mismo estudiante generando 1C", { control: ctlSmoke(P1C), sources, templateGrid: tpl03 });
+let rSmoke1C = runTest("Smoke: mismo estudiante generando 1C", { control: ctlSmoke(P1C), sources, templateGrid: tpl });
 const errDniPrincipal1C = "No se encontró el DNI en la fuente de 1º cuatrimestre. Es la fuente principal del período a generar (1º cuatrimestre), por eso no se puede continuar.";
 assert("Smoke con período 1º cuatrimestre: DNI ausente en la principal bloquea e identifica la fuente principal y el período",
   rSmoke1C.error === errDniPrincipal1C && !rSmoke1C.out
@@ -886,7 +915,7 @@ const conCurso = (cambiar3B, cambiar1C) => Object.assign({}, sources, {
 const fuentesCurso = { [F1B]: "", [F1C]: ID_CURSO_1C, [F3B]: ID_CURSO_3B };
 const ctlCurso = (nivel, extra) => ctl(P3B, "", Object.assign({ B9: nivel }, fuentesCurso, extra));
 const ctlIndividual = dni => ctl(P3B, dni, fuentesCurso);
-const runCurso = (nombre, control, srcs) => runTest(nombre, { control, sources: srcs, templateGrid: tpl03, ejecutar: "generarBoletinesPorCurso()" });
+const runCurso = (nombre, control, srcs) => runTest(nombre, { control, sources: srcs, templateGrid: tpl, ejecutar: "generarBoletinesPorCurso()" });
 const libroDe = r => r.creados[0] || null;
 const hojasDe = r => libroDe(r) ? libroDe(r).getSheets().map(s => s.getName()) : [];
 const gridHoja = (r, nombre) => { const h = libroDe(r) && libroDe(r).getSheetByName(nombre); return h ? rect(h.grid) : null; };
@@ -974,7 +1003,7 @@ assert("Por curso: el Resumen informa la fila de la fuente y las advertencias ge
 
 // Equivalencia con la generación individual (mismas fuentes y mismo Control, con el DNI del estudiante)
 ["97000001", "97000015", "97000016"].forEach(dni => {
-  const ind = runTest("Individual " + dni, { control: ctlIndividual(dni), sources: srcCurso, templateGrid: tpl03 });
+  const ind = runTest("Individual " + dni, { control: ctlIndividual(dni), sources: srcCurso, templateGrid: tpl });
   const hoja = gridHoja(rCurso, enResumen(rCurso, dni).hoja);
   assert("Por curso: la hoja de " + dni + " es idéntica al Informe_actual de la generación individual",
     !ind.error && hoja && JSON.stringify(hoja) === JSON.stringify(ind.out), ind.error || "hojas distintas");
@@ -995,7 +1024,7 @@ assert("Por curso: ningún acceso a las fuentes fuera de la lectura de valores, 
   rCurso.registro.indebidos.length === 0 && JSON.stringify(srcCurso) === fotoFuentes, rCurso.registro.indebidos.join(", "));
 assert("Por curso: el generador no crea Informe_actual ni modifica Plantilla",
   rCurso.ss.getSheets().map(s => s.getName()).join("|") === "Plantilla|Control"
-    && JSON.stringify(rect(rCurso.ss.getSheetByName("Plantilla").grid)) === JSON.stringify(rect(tpl03)));
+    && JSON.stringify(rect(rCurso.ss.getSheetByName("Plantilla").grid)) === JSON.stringify(rect(tpl)));
 assert("Por curso: Control registra el libro, los conteos y las advertencias generales",
   rCurso.estadoResultado.startsWith("Libro creado: " + NOMBRE_LIBRO_EPS2 + " · Generados: 4 · Omitidos: 3 · Con error: 0.")
     && rCurso.estadoAdvertencias === ADV_SIN_1B && rCurso.rawAlerts.length === 1 && rCurso.rawAlerts[0].startsWith("Libro creado: "),
@@ -1003,7 +1032,7 @@ assert("Por curso: Control registra el libro, los conteos y las advertencias gen
 
 // 8.2. Otro nivel del mismo Control (nivel indicado como "1")
 let rCurso1 = runCurso("Curso EPS1", ctlCurso("1"), srcCurso);
-let indBeto = runTest("Individual Beto", { control: ctlIndividual("97000002"), sources: srcCurso, templateGrid: tpl03 });
+let indBeto = runTest("Individual Beto", { control: ctlIndividual("97000002"), sources: srcCurso, templateGrid: tpl });
 assert("Por curso EPS1 (nivel '1'): sólo Beto, idéntico a su generación individual",
   !rCurso1.error && hojasDe(rCurso1).join("|") === "Resumen|Ficticio, Beto Nuevo"
     && libroDe(rCurso1).getName() === "Boletines EPS - EPSI - EPS1 - 3º bimestre 2026 - <fecha>"
@@ -1077,7 +1106,7 @@ assert("Resumen oculto: también cuando hay errores, sin perder el detalle del e
   visibilidad(rDuplicado) === "Resumen:oculta | Ficticia, Ana Real:visible" && enResumen(rDuplicado, "97000017").estado === "Error",
   visibilidad(rDuplicado));
 let rSinHojas = runTest("Ninguna hoja pudo crearse", {
-  control: ctlCurso("EPS2"), sources: srcCurso, templateGrid: tpl03,
+  control: ctlCurso("EPS2"), sources: srcCurso, templateGrid: tpl,
   ejecutar: "SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Plantilla').copyTo = () => { throw new Error('copia rechazada'); }; generarBoletinesPorCurso()"
 });
 assert("Resumen oculto: si no se generó ningún boletín, Resumen queda visible (única hoja) con los errores",
@@ -1089,7 +1118,7 @@ assert("Resumen oculto: si no se generó ningún boletín, Resumen queda visible
 // =============================================================================
 // 9. Control del workbook versionado: selector de nivel para la generación por curso (#12)
 // =============================================================================
-const XLSX_GENERADOR = "src/Generador_informes_individuales_EPS_v0_3.xlsx";
+const XLSX_GENERADOR = "src/Generador_EPS_v0_4.xlsx";
 const controlXlsx = readXlsx(XLSX_GENERADOR).Control;
 // XML de una hoja del último xlsx extraído, ubicada por nombre como en readXlsx.
 const xmlHoja = (rel, nombre) => {
@@ -1129,7 +1158,7 @@ assert("Control (xlsx): con B9 sin elegir, la generación por curso lo pide y no
   rXlsxSinNivel.error);
 let rXlsxIndividual = runTest("Individual con Control del xlsx y B9 de otro nivel", {
   control: ctlDesdeXlsx({ B5: P3B, B6: "EPSI", B7: "97000001", B9: "EPS1", [F1B]: "", [F1C]: "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx", [F3B]: "ID_3B_REAL_xxxxxxxxxxxxxxxxxxx" }),
-  sources, templateGrid: tpl03
+  sources, templateGrid: tpl
 });
 assert("Control (xlsx): la generación individual ignora B9 (Ana, EPS2, con B9 = EPS1: mismo informe y sin libro nuevo)",
   !rXlsxIndividual.error && mismoInforme(rXlsxIndividual, rReal) && rXlsxIndividual.creados.length === 0
@@ -1154,7 +1183,7 @@ const errPrincipalSinListo = periodo => 'No se encontró una única columna "LIS
 // 10.1. 3B: principal 3B; 1C y 1B (v0.3) sin columnas operativas
 const srcSinOp = conHist1C(sinOperativas);
 let r3BSinOp = runCurso("3B con históricas sin columnas operativas", ctlContrato(P3B), srcSinOp);
-let ind3BSinOp = runTest("Individual 3B con históricas sin columnas operativas", { control: ctlContrato(P3B, "97000001"), sources: srcSinOp, templateGrid: tpl03 });
+let ind3BSinOp = runTest("Individual 3B con históricas sin columnas operativas", { control: ctlContrato(P3B, "97000001"), sources: srcSinOp, templateGrid: tpl });
 assert("Contrato operativo, 3B: 1C y 1B sin columnas operativas son válidas; se genera con los valores de 1C",
   !r3BSinOp.error && hojasDe(r3BSinOp).join("|") === "Resumen|Ficticia, Ana Real"
     && valoresFila(filasMaterias(gridHoja(r3BSinOp, "Ficticia, Ana Real")).find(f => f[2] === "Matemática I") || []) === "|7|Avanzado"
@@ -1169,7 +1198,7 @@ assert("Contrato operativo, 3B: la generación individual funciona igual y su in
 
 // 10.2. 1C: principal 1C (con LISTO PARA EXPORTAR); 1B (v0.3) sin columnas operativas
 let r1CPrincipal = runCurso("1C con 1B sin columnas operativas", ctlContrato(P1C), conHist1C(() => {}));
-let ind1CPrincipal = runTest("Individual 1C con 1B sin columnas operativas", { control: ctlContrato(P1C, "97000001"), sources: conHist1C(() => {}), templateGrid: tpl03 });
+let ind1CPrincipal = runTest("Individual 1C con 1B sin columnas operativas", { control: ctlContrato(P1C, "97000001"), sources: conHist1C(() => {}), templateGrid: tpl });
 assert("Contrato operativo, 1C: 1B sin columnas operativas es válida; la selección usa LISTO PARA EXPORTAR de 1C",
   !r1CPrincipal.error && hojasDe(r1CPrincipal).join("|") === "Resumen|Ficticia, Ana Real"
     && libroDe(r1CPrincipal).getName().includes(" - 1º cuatrimestre 2026 - ")
@@ -1217,7 +1246,7 @@ assert("Contrato operativo: la principal 1C con LISTO PARA EXPORTAR duplicada fa
   r1CListoDoble.error && r1CListoDoble.error.startsWith(errPrincipalSinListo(P1C)) && r1CListoDoble.creados.length === 0, r1CListoDoble.error);
 
 // 10.6. La generación individual ignora B9 aunque tenga un valor no válido
-let rIndB9Invalido = runTest("Individual con B9 no válido", { control: ctlReal("97000001", { B9: "Cualquier cosa" }), sources, templateGrid: tpl03 });
+let rIndB9Invalido = runTest("Individual con B9 no válido", { control: ctlReal("97000001", { B9: "Cualquier cosa" }), sources, templateGrid: tpl });
 assert("Individual: ignora B9 aunque tenga un valor no válido (mismo informe)",
   !rIndB9Invalido.error && mismoInforme(rIndB9Invalido, rReal), rIndB9Invalido.error);
 
@@ -1260,6 +1289,224 @@ assert("Control (xlsx): las validaciones siguen en período, hoja origen y nivel
     CELDAS_CONTROL.CELDA_HOJA_ORIGEN + '="EPSI,EPSG"',
     CELDAS_CONTROL.CELDA_NIVEL + '="EPS1,EPS2,EPS3,EPS4"'
   ].join(" | "), validacionesXlsx);
+
+// =============================================================================
+// 12. Orientación por período: historial cuando el estudiante cambia de orientación (#15)
+// =============================================================================
+// Cada estudiante declara, por período, en qué hoja(s) figura y con qué valoraciones. Los tres archivos se
+// arman con las grillas reales sintéticas: para 1B y 3B sirven las de 3B (mismos valores válidos) y para
+// 1C EPSG, la estructura EPSG de 3B. Cada estudiante es una copia del bloque de un modelo, sin sus valoraciones.
+const valorar = (dni, valores) => g => {
+  const r = filaDni(g, dni);
+  g[r].forEach((v, c) => { if (v === "Valoración") g[r][c + 1] = ""; });
+  Object.entries(valores).forEach(([materia, v]) => {
+    const c = [0, 1].map(i => g[i].indexOf(materia)).find(col => col >= 0);
+    if (c === undefined) throw new Error("El fixture no tiene la materia " + materia);
+    g[r][c + 1] = v;
+  });
+};
+const TRAYECTOS = {
+  "95000001": { nombres: "Ana Cambio", "1B": [["EPSI"], { "Matemática I": "Suficiente", "Taller Profesional I A": "En proceso" }],
+    "1C": [["EPSI"], { "Matemática I": "8", "Taller Profesional I A": "7" }], "3B": [["EPSG"], { "Matemática I": "Avanzado", "Taller Gastronómico I A": "Suficiente" }] },
+  "95000002": { nombres: "Bruno Cambio", "1B": [["EPSI"], { "Matemática I": "En proceso" }],
+    "1C": [["EPSG"], { "Matemática I": "6", "Taller Gastronómico I A": "9" }], "3B": [["EPSG"], { "Matemática I": "Suficiente", "Taller Gastronómico I A": "Avanzado" }] },
+  "95000003": { nombres: "Ciro Nuevo", "3B": [["EPSG"], { "Matemática I": "Avanzado" }] },
+  "95000004": { nombres: "Fabi Multiple", "1B": [["EPSI"], { "Matemática I": "Suficiente" }],
+    "1C": [["EPSG"], { "Matemática I": "9", "Taller Gastronómico I A": "8" }], "3B": [["EPSI"], { "Matemática I": "Avanzado", "Taller Profesional I A": "Suficiente" }] },
+  "95000005": { nombres: "Gina Vuelta", "1B": [["EPSG"], { "Matemática I": "Avanzado", "Taller Gastronómico I A": "En proceso" }],
+    "1C": [["EPSG"], { "Matemática I": "7" }], "3B": [["EPSI"], { "Matemática I": "Suficiente" }] },
+  "95000006": { nombres: "Dario Doble", "1B": [["EPSG"], { "Matemática I": "Suficiente" }],
+    "1C": [["EPSI", "EPSG"], { "Matemática I": "5" }], "3B": [["EPSG"], { "Matemática I": "Avanzado" }] },
+  "95000007": { nombres: "Elsa Doble", "3B": [["EPSI", "EPSG"], { "Matemática I": "Avanzado" }] }
+};
+const BASES_TRAYECTO = {
+  "1B": { EPSI: [src3B_real.EPSI, "97000002"], EPSG: [src3B_real.EPSG, "96000001"] },
+  "1C": { EPSI: [src1C_real.EPSI, "97000001"], EPSG: [src3B_real.EPSG, "96000001"] },
+  "3B": { EPSI: [src3B_real.EPSI, "97000002"], EPSG: [src3B_real.EPSG, "96000001"] }
+};
+const archivoTrayectos = (periodo, cambiar = {}) => Object.fromEntries(["EPSI", "EPSG"].map(hoja => {
+  const [base, modelo] = BASES_TRAYECTO[periodo][hoja];
+  return [hoja, variante(base, g => {
+    let anterior = modelo;
+    Object.entries(TRAYECTOS).filter(([, t]) => t[periodo] && t[periodo][0].includes(hoja)).forEach(([dni, t]) => {
+      const operativos = periodo === "3B" ? { listo: "SÍ", exportado: "NO" } : {};
+      conBloques(modelo, anterior, [Object.assign({ apellido: "Trayecto", nombres: t.nombres, dni }, operativos)])(g);
+      valorar(dni, t[periodo][1])(g);
+      anterior = dni;
+    });
+    if (cambiar[hoja]) cambiar[hoja](g);
+  })];
+}));
+const ID_T1B = "ID_TRAYECTO_1B_xxxxxxxxxxxxxx";
+const ID_T1C = "ID_TRAYECTO_1C_xxxxxxxxxxxxxx";
+const ID_T3B = "ID_TRAYECTO_3B_xxxxxxxxxxxxxx";
+const srcTrayectos = (cambiar1C) => Object.assign({}, sources, {
+  [ID_T1B]: archivoTrayectos("1B"), [ID_T1C]: archivoTrayectos("1C", cambiar1C), [ID_T3B]: archivoTrayectos("3B")
+});
+const ctlTrayecto = (hoja, dni) => ctl(P3B, dni || "", { B6: hoja, B9: "EPS1", [F1B]: ID_T1B, [F1C]: ID_T1C, [F3B]: ID_T3B });
+const filaMateria = (r, hoja, materia) => valoresFila(filasMaterias(gridHoja(r, hoja)).find(f => f[2] === materia) || []);
+const tomadoDe = (periodo, hoja, actual) => "El " + periodo + " se tomó de la hoja " + hoja + " de su fuente, distinta de la orientación actual (" + actual + ").";
+
+const SRC_TRAYECTOS = srcTrayectos();
+const fotoTrayectos = JSON.stringify(SRC_TRAYECTOS);
+let rTrayEPSG = runCurso("Tanda EPSG con cambios de orientación", ctlTrayecto("EPSG"), SRC_TRAYECTOS);
+let rTrayEPSI = runCurso("Tanda EPSI con cambios de orientación", ctlTrayecto("EPSI"), SRC_TRAYECTOS);
+const estadosDe = r => resumenDe(r).filas.map(f => f.estado + ":" + f.dni).join(", ");
+
+assert("Orientación por período: la tanda EPSG continúa ante errores y respeta el orden de la grilla",
+  !rTrayEPSG.error && estadosDe(rTrayEPSG) === "Omitido:96000001, Generado:95000001, Generado:95000002, Generado:95000003, Error:95000006, Error:95000007"
+    && hojasDe(rTrayEPSG).join("|") === "Resumen|Trayecto, Ana Cambio|Trayecto, Bruno Cambio|Trayecto, Ciro Nuevo",
+  rTrayEPSG.error || estadosDe(rTrayEPSG));
+assert("Caso A (1B EPSI, 1C EPSI, 3B EPSG): conserva 1B y 1C desde EPSI, también las materias que sólo existen en EPSI",
+  filaMateria(rTrayEPSG, "Trayecto, Ana Cambio", "Matemática I") === "Suficiente|8|Avanzado"
+    && filaMateria(rTrayEPSG, "Trayecto, Ana Cambio", "Taller Gastronómico I A") === "||Suficiente"
+    && filaMateria(rTrayEPSG, "Trayecto, Ana Cambio", "Taller Profesional I A") === "En proceso|7|",
+  filasMaterias(gridHoja(rTrayEPSG, "Trayecto, Ana Cambio")).map(f => f[2] + ":" + valoresFila(f)).join(", "));
+assert("Caso A: advierte de qué hoja se tomó cada período anterior y muestra la orientación actual",
+  enResumen(rTrayEPSG, "95000001").detalle.split("\n").join("|") === [tomadoDe(P1C, "EPSI", "EPSG"), tomadoDe("1º bimestre", "EPSI", "EPSG")].join("|")
+    && gridHoja(rTrayEPSG, "Trayecto, Ana Cambio")[5][4] === "Gastronomía 1",
+  enResumen(rTrayEPSG, "95000001").detalle);
+assert("Caso B (1B EPSI, 1C EPSG, 3B EPSG): 1C de la hoja actual y 1B de EPSI, con una sola advertencia",
+  filaMateria(rTrayEPSG, "Trayecto, Bruno Cambio", "Matemática I") === "En proceso|6|Suficiente"
+    && filaMateria(rTrayEPSG, "Trayecto, Bruno Cambio", "Taller Gastronómico I A") === "|9|Avanzado"
+    && enResumen(rTrayEPSG, "95000002").detalle === tomadoDe("1º bimestre", "EPSI", "EPSG"),
+  enResumen(rTrayEPSG, "95000002").detalle);
+assert("Caso C (estudiante nuevo, sólo en 3B): se genera; la ausencia en cada período anterior se advierte como antes",
+  filaMateria(rTrayEPSG, "Trayecto, Ciro Nuevo", "Matemática I") === "||Avanzado"
+    && enResumen(rTrayEPSG, "95000003").detalle.split("\n").join("|") === [advDniHistorico(P1C), advDniHistorico("1º bimestre")].join("|"),
+  enResumen(rTrayEPSG, "95000003").detalle);
+assert("Caso D (DNI en EPSI y EPSG de 1C): error del estudiante, sin hoja ni combinación",
+  enResumen(rTrayEPSG, "95000006").detalle.startsWith("El DNI aparece en las hojas EPSG y EPSI de la fuente de 1º cuatrimestre. No se puede decidir cuál corresponde a ese período ni combinarlas")
+    && !hojasDe(rTrayEPSG).some(h => /Dario/.test(h)),
+  enResumen(rTrayEPSG, "95000006").detalle);
+assert("Caso E (DNI en EPSG y EPSI de la principal): error del estudiante en la tanda EPSG",
+  enResumen(rTrayEPSG, "95000007").detalle === "El DNI aparece en las hojas EPSG y EPSI de la fuente de 3º bimestre. No se puede decidir en qué orientación cursa este período. Es la fuente principal del período a generar (3º bimestre), por eso no se puede continuar.",
+  enResumen(rTrayEPSG, "95000007").detalle);
+assert("Caso E: tampoco se genera en la tanda EPSI, así que no hay dos boletines del mismo estudiante",
+  !rTrayEPSI.error && estadosDe(rTrayEPSI) === "Omitido:97000002, Generado:95000004, Generado:95000005, Error:95000007"
+    && enResumen(rTrayEPSI, "95000007").detalle.startsWith("El DNI aparece en las hojas EPSI y EPSG de la fuente de 3º bimestre.")
+    && ![rTrayEPSG, rTrayEPSI].some(r => hojasDe(r).some(h => /Elsa/.test(h))),
+  rTrayEPSI.error || estadosDe(rTrayEPSI));
+assert("Caso F (EPSI → EPSG → EPSI): cada período sale de su hoja y sólo 1C advierte",
+  filaMateria(rTrayEPSI, "Trayecto, Fabi Multiple", "Matemática I") === "Suficiente|9|Avanzado"
+    && filaMateria(rTrayEPSI, "Trayecto, Fabi Multiple", "Taller Profesional I A") === "||Suficiente"
+    && filaMateria(rTrayEPSI, "Trayecto, Fabi Multiple", "Taller Gastronómico I A") === "|8|"
+    && enResumen(rTrayEPSI, "95000004").detalle === tomadoDe(P1C, "EPSG", "EPSI"),
+  enResumen(rTrayEPSI, "95000004").detalle);
+assert("Cambio EPSG → EPSI (1B y 1C EPSG, 3B EPSI): conserva ambos desde EPSG y muestra la orientación actual",
+  filaMateria(rTrayEPSI, "Trayecto, Gina Vuelta", "Matemática I") === "Avanzado|7|Suficiente"
+    && filaMateria(rTrayEPSI, "Trayecto, Gina Vuelta", "Taller Gastronómico I A") === "En proceso||"
+    && enResumen(rTrayEPSI, "95000005").detalle.split("\n").join("|") === [tomadoDe(P1C, "EPSG", "EPSI"), tomadoDe("1º bimestre", "EPSG", "EPSI")].join("|")
+    && gridHoja(rTrayEPSI, "Trayecto, Gina Vuelta")[5][4] === "Informática 1",
+  enResumen(rTrayEPSI, "95000005").detalle);
+
+// Mismo comportamiento en la generación individual
+const indTrayecto = (hoja, dni) => runTest("Individual " + dni, { control: ctlTrayecto(hoja, dni), sources: SRC_TRAYECTOS, templateGrid: tpl });
+[["EPSG", "95000001", "Trayecto, Ana Cambio"], ["EPSI", "95000004", "Trayecto, Fabi Multiple"]].forEach(([hoja, dni, nombreHoja]) => {
+  const ind = indTrayecto(hoja, dni);
+  const tanda = hoja === "EPSG" ? rTrayEPSG : rTrayEPSI;
+  assert("Orientación por período, individual " + dni + ": mismo informe y mismas advertencias que en la tanda",
+    !ind.error && JSON.stringify(ind.out) === JSON.stringify(gridHoja(tanda, nombreHoja))
+      && JSON.stringify(advertenciasTanda(tanda, dni).sort()) === JSON.stringify(ind.advertencias.slice().sort()),
+    ind.error || ind.advertencias.join("; "));
+});
+const indDario = indTrayecto("EPSG", "95000006");
+const indElsa = indTrayecto("EPSG", "95000007");
+assert("Orientación por período, individual: los DNI ambiguos (histórica y principal) impiden generar, con el mismo motivo",
+  indDario.error === enResumen(rTrayEPSG, "95000006").detalle && !indDario.out
+    && indElsa.error === enResumen(rTrayEPSG, "95000007").detalle && !indElsa.out
+    && indElsa.rawAlerts[0] === "No se pudo generar el informe.\n\n" + indElsa.error,
+  (indDario.error || "") + " / " + (indElsa.error || ""));
+
+// Lectura acotada y sólo lectura
+const hojasLeidas = [ID_T3B + "/EPSG", ID_T3B + "/EPSI", ID_T1C + "/EPSG", ID_T1C + "/EPSI", ID_T1B + "/EPSG", ID_T1B + "/EPSI"].sort();
+assert("Orientación por período: en la tanda cada archivo se abre una vez y cada hoja se lee una vez, no por estudiante",
+  JSON.stringify(rTrayEPSG.registro.aperturas.slice().sort()) === JSON.stringify([ID_T1B, ID_T1C, ID_T3B].sort())
+    && JSON.stringify(rTrayEPSG.registro.lecturas.slice().sort()) === JSON.stringify(hojasLeidas),
+  JSON.stringify(rTrayEPSG.registro));
+assert("Orientación por período: ningún acceso de escritura y fuentes intactas",
+  [rTrayEPSG, rTrayEPSI].every(r => r.registro.indebidos.length === 0) && JSON.stringify(SRC_TRAYECTOS) === fotoTrayectos,
+  rTrayEPSG.registro.indebidos.concat(rTrayEPSI.registro.indebidos).join(", "));
+
+// Una hoja ilegible en una histórica (aquí, la de la orientación actual): se advierte una vez, se sigue con la otra y no se elige en silencio
+const rTrayRota = runCurso("1C EPSG sin ORIENTACIÓN", ctlTrayecto("EPSG"),
+  srcTrayectos({ EPSG: g => { g[0][colDe(g, "ORIENTACIÓN")] = ""; } }));
+assert("Hoja ilegible en una histórica: advertencia general única; la otra hoja se usa y el DNI en ambas sigue siendo error",
+  !rTrayRota.error
+    && resumenDe(rTrayRota).generales === "No se encontró la columna ORIENTACIÓN que separa las materias de los campos generales en la fuente de 1º cuatrimestre. No se usará la hoja EPSG de esa fuente."
+    && filaMateria(rTrayRota, "Trayecto, Ana Cambio", "Matemática I") === "Suficiente|8|Avanzado"
+    && filaMateria(rTrayRota, "Trayecto, Bruno Cambio", "Matemática I") === "En proceso||Suficiente"
+    && enResumen(rTrayRota, "95000006").estado === "Error",
+  rTrayRota.error || resumenDe(rTrayRota).generales);
+
+const textosOrientacion = [textoXlsx("C6"), (controlXlsx.find(f => /^La hoja origen/.test((f || [])[0] || "")) || [])[0] || ""];
+assert("Control (xlsx): los textos ya no afirman una orientación única; B6 es la del período a generar y las anteriores se buscan en ambas hojas",
+  textosOrientacion.every(t => !/[Úú]nica/.test(t) && /período a generar/.test(t) && /anteriores/.test(t)), textosOrientacion.join(" / "));
+
+// =============================================================================
+// 13. Libro por curso: hora de Buenos Aires en el nombre (#12)
+// =============================================================================
+const runCursoHora = (nombre, ahora) => runTest(nombre, {
+  control: ctlCurso("EPS2"), sources: srcCurso, templateGrid: tpl, ejecutar: "generarBoletinesPorCurso()", ahora
+});
+
+// La zona del libro generador en el mock es America/Los_Angeles: el nombre no debe depender de ella.
+let rHora = runCursoHora("Hora de Buenos Aires", "2026-10-14T21:07:00Z");
+assert("Hora: el nombre del libro lleva la hora de Buenos Aires (21:07 UTC → 18:07), no la del libro generador (14:07)",
+  !rHora.error && libroDe(rHora).getName() === "Boletines EPS - EPSI - EPS2 - 3º bimestre 2026 - 2026-10-14 18:07"
+    && rHora.ss.getSpreadsheetTimeZone() === "America/Los_Angeles",
+  rHora.error || libroDe(rHora).getName());
+assert("Hora: se formatea con la zona explícita America/Argentina/Buenos_Aires y el formato yyyy-MM-dd HH:mm",
+  JSON.stringify(rHora.formatos) === JSON.stringify(["America/Argentina/Buenos_Aires yyyy-MM-dd HH:mm"]), rHora.formatos.join(", "));
+let rHoraNoche = runCursoHora("Hora de Buenos Aires, otro día en UTC", "2026-10-15T02:30:00Z");
+assert("Hora: también la fecha es la de Buenos Aires (02:30 UTC del 15 → 2026-10-14 23:30)",
+  !rHoraNoche.error && libroDe(rHoraNoche).getName().endsWith(" - 2026-10-14 23:30"), rHoraNoche.error || libroDe(rHoraNoche).getName());
+assert("Libro por curso: un único libro nuevo, completo, y el diálogo muestra su nombre y su enlace",
+  rHora.creados.length === 1 && JSON.stringify(hojasDe(rHora)) === JSON.stringify(HOJAS_EPS2)
+    && rHora.rawAlerts[0].startsWith("Libro creado: " + libroDe(rHora).getName() + "\n" + libroDe(rHora).getUrl() + "\n\n"),
+  rHora.rawAlerts[0]);
+assert("Sin libro (nadie listo) y generación individual: no se crea ningún libro ni se arma su nombre",
+  [rNadieListo, rReal, rSmoke].every(r => r.creados.length === 0 && r.formatos.length === 0));
+
+// =============================================================================
+// 14. Impresión: aire superior en las páginas siguientes a la primera
+// =============================================================================
+// El paginado real de Google Sheets no se modela: se protege el mecanismo (fila 1 inmovilizada, para
+// «Repetir filas inmovilizadas») y que el contenido y la cantidad de filas no cambien.
+const inmovilizadas = hoja => hoja ? hoja.getFrozenRows() : null;
+// Fila (1-based) de la etiqueta del PTF, último bloque del boletín: 28 en la Plantilla, corrida sólo por las materias.
+const filaPtf = out => (out || []).findIndex(f => f[2].startsWith("PLAN DE TRABAJO FORMATIVO")) + 1;
+
+// 14.1. Boletín corto (Beto, 3 materias): sólo se agrega la fila inmovilizada, sin filas nuevas
+assert("Impresión, boletín corto: Informe_actual tiene la fila 1 inmovilizada y ninguna fila más que antes",
+  !rNuevo.error && inmovilizadas(rNuevo.ss.getSheetByName("Informe_actual")) === 1
+    && filaPtf(rNuevo.out) === 28 - (8 - 3) && filasMaterias(rNuevo.out).length === 3,
+  rNuevo.error || "PTF en la fila " + filaPtf(rNuevo.out));
+assert("Impresión: la Plantilla no se modifica (sin filas inmovilizadas)",
+  inmovilizadas(rNuevo.ss.getSheetByName("Plantilla")) === 0 && inmovilizadas(rCurso.ss.getSheetByName("Plantilla")) === 0);
+
+// 14.2. Boletín largo (Ana con las 16 materias de 3B valoradas + la que sólo existe en 1C: 17 materias)
+const srcLargo = variante3B(valorar("97000001", Object.fromEntries(estReal.materias.map(m => [m.nombre, "Suficiente"]))));
+let rLargo = runTest("Boletín largo individual", { control: ctlAna3B, sources: srcLargo, templateGrid: tpl });
+let rLargoCurso = runTest("Boletín largo por curso", {
+  control: ctlReal("97000001", { [F3B]: ID_VAR, B9: "EPS2" }), sources: srcLargo, templateGrid: tpl, ejecutar: "generarBoletinesPorCurso()"
+});
+assert("Impresión, boletín largo: conserva las 17 materias, los cuatro bloques inferiores y la fila 1 inmovilizada",
+  !rLargo.error && filasMaterias(rLargo.out).length === 17 && filaPtf(rLargo.out) === 28 + (17 - 8)
+    && cajas(rLargo.out) === "Obs 3B Ana|Asist 3B Ana|Conv 3B Ana|PTF 3B Ana"
+    && inmovilizadas(rLargo.ss.getSheetByName("Informe_actual")) === 1,
+  rLargo.error || filasMaterias(rLargo.out).length + " materias / PTF en la fila " + filaPtf(rLargo.out) + " / " + cajas(rLargo.out));
+assert("Impresión, boletín largo: la hoja del libro por curso es idéntica al informe individual y también inmoviliza la fila 1",
+  !rLargoCurso.error && JSON.stringify(gridHoja(rLargoCurso, "Ficticia, Ana Real")) === JSON.stringify(rLargo.out)
+    && inmovilizadas(libroDe(rLargoCurso).getSheetByName("Ficticia, Ana Real")) === 1,
+  rLargoCurso.error || hojasDe(rLargoCurso).join("|"));
+assert("Impresión, boletín largo: sin escrituras en las fuentes",
+  [rLargo, rLargoCurso].every(r => r.registro.indebidos.length === 0), rLargo.registro.indebidos.concat(rLargoCurso.registro.indebidos).join(", "));
+
+// 14.3. Tanda: todos los boletines con la fila 1 inmovilizada; el Resumen (oculto) no se toca
+assert("Impresión, tanda: cada boletín tiene la fila 1 inmovilizada y el Resumen no",
+  libroDe(rCurso).getSheets().every(h => inmovilizadas(h) === (h.getName() === "Resumen" ? 0 : 1)),
+  libroDe(rCurso).getSheets().map(h => h.getName() + ":" + inmovilizadas(h)).join(", "));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);
