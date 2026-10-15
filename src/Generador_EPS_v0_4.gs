@@ -49,6 +49,23 @@ const CONFIG_EPS = {
     '1º cuatrimestre': 6,  // F
     '3º bimestre': 7       // G
   },
+  // Las columnas de períodos de la Plantilla siguen el orden del año, de E hasta L (Calificación FINAL):
+  // 1B, 1C, 3B, 2º cuatrimestre, anual, recuperación I y II, final.
+  COLUMNA_ULTIMO_PERIODO: 12, // L
+
+  // Área de valoraciones (ver categoriaVisual_): cada nivel de la escala conceptual de los bimestres tiene su
+  // propio color, como en los modelos institucionales de 2024, con relleno claro y texto oscuro del mismo tono.
+  // Las notas numéricas, ACREDITÓ, EQUIVALENCIA y las celdas vacías no llevan color: la escuela no les definió uno.
+  SENALES: {
+    enProceso: { fondo: '#F4CCCC', texto: '#990000' },
+    suficiente: { fondo: '#D4EDBC', texto: '#11734B' },
+    avanzado: { fondo: '#BFE1F6', texto: '#0A53A8' },
+    neutra: { fondo: null, texto: '#000000' }
+  },
+  // Estados estructurales, no académicos: grises sin tono, de menos a más marcados. Celda sin contenido de un
+  // período ya habilitado ("no hay contenido", sin juzgar por qué) y período que todavía no corresponde.
+  COLOR_CELDA_VACIA: '#F5F6F7',
+  COLOR_PERIODO_FUTURO: '#E8EAED',
 
   // Encabezados que identifican cada campo de la cola (después de ORIENTACIÓN).
   // Se comparan normalizados (sin tildes ni diferencias de mayúsculas o espacios), nunca por posición.
@@ -179,7 +196,7 @@ function generarTandaCurso_(ss, config) {
     try {
       hoja = plantilla.copyTo(libro);
       hoja.setName(e.hoja);
-      completarInforme_(hoja, e.informe.estudiante, e.informe.materias, config.cicloLectivo, e.advertencias);
+      completarInforme_(hoja, e.informe.estudiante, e.informe.materias, config.periodo, config.cicloLectivo, e.advertencias);
       e.estado = 'Generado';
     } catch (err) {
       if (hoja) {
@@ -786,11 +803,11 @@ function crearInforme_(ss, estudiante, materias, periodoGenerado, cicloLectivo, 
   const salida = plantilla.copyTo(ss);
   salida.setName(CONFIG_EPS.HOJA_SALIDA);
   ss.setActiveSheet(salida);
-  completarInforme_(salida, estudiante, materias, cicloLectivo, advertencias);
+  completarInforme_(salida, estudiante, materias, periodoGenerado, cicloLectivo, advertencias);
 }
 
 // Completa una copia de Plantilla: la usan la generación individual y cada hoja de la generación por curso.
-function completarInforme_(salida, estudiante, materias, cicloLectivo, advertencias) {
+function completarInforme_(salida, estudiante, materias, periodoGenerado, cicloLectivo, advertencias) {
   // La fila 1 sólo lleva los logos (sin texto, bordes ni relleno). Inmovilizada, al imprimir con
   // «Repetir filas inmovilizadas» cada página siguiente empieza con ese mismo aire superior (≈1 cm);
   // la primera página no cambia y un boletín de una página se imprime igual que antes.
@@ -833,11 +850,60 @@ function completarInforme_(salida, estudiante, materias, cicloLectivo, advertenc
       });
     });
   }
+  aplicarSenalesVisuales_(salida, materias, periodoGenerado, filaInicio, filasNecesarias);
 
   escribirCajaTexto_(salida, CONFIG_EPS.FILA_OBS_GENERALES_BASE + delta, estudiante.observacionesGenerales);
   escribirCajaTexto_(salida, CONFIG_EPS.FILA_OBS_ASISTENCIA_BASE + delta, estudiante.observacionesAsistencia);
   escribirCajaTexto_(salida, CONFIG_EPS.FILA_OBS_CONVIVENCIA_BASE + delta, estudiante.observacionesConvivencia);
   escribirCajaTexto_(salida, CONFIG_EPS.FILA_PTF_BASE + delta, estudiante.ptf);
+}
+
+/**
+ * Fondos y color de texto del área de valoraciones (todas las filas de materias, de E a L), según el período generado:
+ * - columnas de períodos posteriores: gris, "todavía no corresponde en este informe" (aunque la celda esté vacía);
+ * - columnas ya habilitadas: el color del nivel conceptual de cada valoración (categoriaVisual_), o un gris más
+ *   tenue si la celda no tiene contenido.
+ * Reemplaza el semáforo de formato condicional que traía la Plantilla hasta v0.4 (sus únicas reglas).
+ */
+function aplicarSenalesVisuales_(salida, materias, periodoGenerado, filaInicio, filas) {
+  salida.setConditionalFormatRules([]);
+
+  const primera = CONFIG_EPS.COLUMNAS_INFORME[CONFIG_EPS.PERIODOS.BIMESTRE_1];
+  const ultimaHabilitada = CONFIG_EPS.COLUMNAS_INFORME[periodoGenerado];
+  const periodoPorColumna = {};
+  Object.keys(CONFIG_EPS.COLUMNAS_INFORME).forEach(periodo => { periodoPorColumna[CONFIG_EPS.COLUMNAS_INFORME[periodo]] = periodo; });
+
+  const fondos = [];
+  const textos = [];
+  for (let i = 0; i < filas; i++) {
+    const valores = materias[i] ? materias[i].valores : {};
+    const filaFondos = [];
+    const filaTextos = [];
+    for (let col = primera; col <= CONFIG_EPS.COLUMNA_ULTIMO_PERIODO; col++) {
+      const valor = periodoPorColumna[col] ? valores[periodoPorColumna[col]] : '';
+      const futuro = col > ultimaHabilitada;
+      const senal = CONFIG_EPS.SENALES[futuro || !valor ? 'neutra' : categoriaVisual_(valor)];
+      filaFondos.push(futuro ? CONFIG_EPS.COLOR_PERIODO_FUTURO : !valor ? CONFIG_EPS.COLOR_CELDA_VACIA : senal.fondo);
+      filaTextos.push(senal.texto);
+    }
+    fondos.push(filaFondos);
+    textos.push(filaTextos);
+  }
+  const area = salida.getRange(filaInicio, primera, filas, CONFIG_EPS.COLUMNA_ULTIMO_PERIODO - primera + 1);
+  area.setBackgrounds(fondos);
+  area.setFontColors(textos);
+}
+
+/**
+ * Categoría visual de una valoración: sólo los niveles de la escala conceptual de los bimestres tienen color propio
+ * (En proceso, Suficiente, Avanzado). Las notas numéricas, ACREDITÓ, EQUIVALENCIA y las celdas vacías son neutras.
+ * Los valores ya llegan canónicos (clasificarValor_).
+ */
+function categoriaVisual_(valor) {
+  if (valor === 'En proceso') return 'enProceso';
+  if (valor === 'Suficiente') return 'suficiente';
+  if (valor === 'Avanzado') return 'avanzado';
+  return 'neutra';
 }
 
 function escribirCajaTexto_(hoja, fila, valor) {

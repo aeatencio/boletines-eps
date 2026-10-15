@@ -214,3 +214,39 @@ Casos automatizados (sección 14 de `tests/run.js`; el paginado real de Sheets n
 - Tanda: todos los boletines con la fila 1 inmovilizada; `Resumen` y `Plantilla` sin cambios.
 
 **Validación manual** (#11): queda pendiente comprobar en Google Sheets que, con la opción activada, la segunda página tenga el aire esperado sin repetir los logos y sin agregar una tercera página.
+
+### 10. Color de las valoraciones: identidad de la escala conceptual
+
+**Origen**: los modelos institucionales "Informe Valoración + PTF" de abril de 2024 (horizontal y vertical) dan a cada nivel de la escala conceptual de los bimestres un color propio: En Proceso, Suficiente y Avanzado. Las notas numéricas aparecen en un gris neutro, sin color según aprobación. No hay texto que defina los colores; la leyenda sólo define los niveles y la escala de 1 a 10 con mínimo 6.
+
+**Regla**: en el área de valoraciones (filas de materias, columnas de períodos de `E` a `L`), cada nivel conceptual tiene identidad propia, con relleno claro y texto oscuro del mismo tono. Lo aplica `completarInforme_` en cada generación, así que vale igual para el informe individual y para el libro por curso:
+
+| Valoración | Tratamiento |
+|---|---|
+| `En proceso` | tono rojo claro, texto rojo oscuro (versión accesible del rojo saturado de 2024) |
+| `Suficiente` | tono verde claro, texto verde oscuro (como en 2024) |
+| `Avanzado` | tono celeste, texto azul oscuro (como en 2024) |
+| Notas numéricas (cualquier valor), `ACREDITÓ`, `EQUIVALENCIA` | dato neutro: sin relleno, texto negro |
+| Celda vacía de un período habilitado | gris muy tenue: "no hay contenido en esta celda", sin juzgar por qué |
+| Período posterior al generado (aunque la celda esté vacía) | gris: "todavía no corresponde en este informe" |
+
+- Vacía y futuro son estados estructurales, no académicos. Dependen sólo de si el generador escribió un valor y de la posición del período, nunca del valor. Son grises sin tono, de menos a más marcados (dato neutro < vacía < futuro), y futuro tiene precedencia sobre vacía. Una celda queda vacía cuando el generador no escribe nada en ella, por ejemplo con `CURSA`, `NO CURSA` o un valor descartado.
+- Los tonos están en `CONFIG_EPS.SENALES`, `COLOR_CELDA_VACIA` y `COLOR_PERIODO_FUTURO`. Los rellenos son claros (luminancia de 0,6 o más) y el texto tiene contraste de 4,5:1 o más. No se usa negrita: el color acompaña a la palabra, que siempre está.
+- No se colorean las notas según menos de 6 o 6 y más: los modelos no lo hacen y la escuela no lo definió.
+- `ACREDITÓ` y `EQUIVALENCIA` no aparecen en los modelos. Quedan neutras hasta que se decida otra cosa.
+- Trayectorias, de izquierda a derecha:
+  - `En proceso → 4 → Suficiente`: el rojo pasa a verde, y la nota queda neutra;
+  - `Avanzado → 9 → Avanzado`: celeste, neutro, celeste.
+- Columnas en gris según el período generado: con 1B, de `F` a `L`; con 1C, de `G` a `L`; con 3B, de `H` a `L`. Las columnas `H` a `L` no se completan en esta versión.
+- El color se calcula sobre todas las filas reales de materias, también las agregadas cuando hay más de 8, sin formato condicional. Sustituye al semáforo de formato condicional de v0.4 (los mismos tres tonos, saturados, sólo en las 8 filas de la `Plantilla`). Esas 6 reglas se quitaron de la `Plantilla`, y el boletín generado queda sin formato condicional aunque un generador anterior todavía las tenga.
+- `Plantilla` sin generar: el área de valoraciones (`E9:L16`) tiene una base uniforme, sin relleno. Se quitó el gris fijo de las columnas `F` y `H` a `L`, heredado del gris neutro de las notas del modelo de 2024, que ya no representaba ninguna regla. Encabezado y nombres de materia conservan su relleno estructural. Vacía y futuro aparecen sólo al generar.
+- Leyenda: la imagen institucional ya define En Proceso, Suficiente y Avanzado, y el color va pegado a esas palabras. No se agrega un texto sobre colores; `D17` queda vacía, como en v0.4.
+
+Casos automatizados (sección 15 de `tests/run.js`):
+- Gramática: sólo los tres niveles tienen color; tono propio por nivel (rojo, verde y azul), con texto del mismo tono; gris neutro para lo futuro; rellenos claros y contraste suficiente.
+- Estados estructurales: vacía y futuro son grises sin tono, distintos entre sí y de toda valoración, con orden perceptible en grises.
+- Trayectoria de 16 materias en 3B: mejora, en proceso sostenido, Avanzado sostenido, `Suficiente → 6 → Avanzado`, retroceso, `ACREDITÓ` y `EQUIVALENCIA` como datos neutros, notas de 1C neutras, 1B y 1C vacías en materias que sólo tienen 3B, la misma gramática en filas agregadas y sólo el área de valoraciones formateada.
+- Futuro según el período, con precedencia sobre vacía: 3B (16 materias), 1C (8, con una celda vacía en 1B) y 1B (7).
+- Individual y por curso con los mismos fondos y colores de texto; sin el semáforo heredado; sin escrituras en las fuentes.
+- Categoría de cada valor.
+- `Plantilla` del xlsx sin formato condicional, con base uniforme en `E9:L16`, con encabezado y nombres de materia intactos y con `D17` vacía, y la fila 17 en 192 pt.

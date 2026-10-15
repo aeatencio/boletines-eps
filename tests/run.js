@@ -86,9 +86,11 @@ function a1ToRC(a1) {
 const esFecha = v => Object.prototype.toString.call(v) === "[object Date]";
 
 class MockSheet {
-  constructor(name, grid) {
+  constructor(name, grid, reglas) {
     this.name = name;
     this.grid = grid.map(r => r.slice());
+    this.reglas = (reglas || []).slice(); // formato condicional
+    this.formatos = {};                   // "fila,columna" → { fondo, texto }, sólo lo que asigna el generador
   }
   getName() { return this.name; }
   // Como Google Sheets: el nombre no puede repetirse en el libro, sin distinguir mayúsculas.
@@ -127,6 +129,14 @@ class MockSheet {
         }
       },
       setWrap: () => {},
+      setBackgrounds: m => {
+        if (m.length !== h || m.some(f => f.length !== w)) throw new Error("mock: setBackgrounds con dimensiones distintas del rango");
+        m.forEach((f, i) => f.forEach((v, j) => { sh.formato(r + i, c + j).fondo = v; }));
+      },
+      setFontColors: m => {
+        if (m.length !== h || m.some(f => f.length !== w)) throw new Error("mock: setFontColors con dimensiones distintas del rango");
+        m.forEach((f, i) => f.forEach((v, j) => { sh.formato(r + i, c + j).texto = v; }));
+      },
       copyTo: () => {},
       getDataRange: undefined
     };
@@ -142,6 +152,9 @@ class MockSheet {
     this.grid.splice(row - 1, n);
   }
   setRowHeight() {}
+  formato(r, c) { return this.formatos[r + "," + c] || (this.formatos[r + "," + c] = {}); }
+  getConditionalFormatRules() { return this.reglas.slice(); }
+  setConditionalFormatRules(reglas) { this.reglas = reglas.slice(); }
   setFrozenRows(n) { this.filasInmovilizadas = n; }
   getFrozenRows() { return this.filasInmovilizadas || 0; }
   // Como Google Sheets: no se puede ocultar la última hoja visible.
@@ -151,7 +164,7 @@ class MockSheet {
   }
   isSheetHidden() { return !!this.hidden; }
   copyTo(ss) {
-    const s = new MockSheet("Copia de " + this.name, this.grid);
+    const s = new MockSheet("Copia de " + this.name, this.grid, this.reglas);
     s.ss = ss;
     ss.sheets.push(s);
     return s;
@@ -220,9 +233,9 @@ function formatearFecha(fecha, zona, formato) {
   }).format(fecha);
 }
 
-function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()", ahora = null }) {
+function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()", ahora = null, reglasPlantilla = [] }) {
   const code = fs.readFileSync(path.join(ROOT, "src/Generador_EPS_v0_4.gs"), "utf8");
-  const plantilla = new MockSheet("Plantilla", templateGrid);
+  const plantilla = new MockSheet("Plantilla", templateGrid, reglasPlantilla);
   const ctrl = hojaControl(control);
   const ss = new MockSS([plantilla, ctrl]);
   const rawAlerts = [];
@@ -1507,6 +1520,183 @@ assert("Impresión, boletín largo: sin escrituras en las fuentes",
 assert("Impresión, tanda: cada boletín tiene la fila 1 inmovilizada y el Resumen no",
   libroDe(rCurso).getSheets().every(h => inmovilizadas(h) === (h.getName() === "Resumen" ? 0 : 1)),
   libroDe(rCurso).getSheets().map(h => h.getName() + ":" + inmovilizadas(h)).join(", "));
+
+// =============================================================================
+// 15. Color comunicacional: identidad de cada nivel de la escala conceptual; gris para lo que todavía no corresponde
+// =============================================================================
+// Contrato (modelos institucionales de 2024): En proceso, Suficiente y Avanzado tienen cada uno su color; las notas
+// numéricas, ACREDITÓ y EQUIVALENCIA son datos neutros. Además hay dos estados estructurales, no académicos: celda
+// vacía de un período habilitado y período futuro. Las señales se identifican por la tabla del generador
+// (CONFIG_EPS): los tests protegen qué significa cada una y que sean distinguibles y legibles.
+const SENALES = CELDAS_CONTROL.SENALES;
+const FUTURO = CELDAS_CONTROL.COLOR_PERIODO_FUTURO;
+const VACIA = CELDAS_CONTROL.COLOR_CELDA_VACIA;
+const LETRA = { enProceso: "P", suficiente: "S", avanzado: "A", neutra: "." };
+// Trayectoria de Ana con 16 materias (más de las 8 de la Plantilla): 1B y 3B sobre la grilla real de 3B, 1C sobre la de 1C.
+const ID_COLOR_1B = "ID_COLOR_1B_xxxxxxxxxxxxxxxxx";
+const ID_COLOR_1C = "ID_COLOR_1C_xxxxxxxxxxxxxxxxx";
+const ID_COLOR_3B = "ID_COLOR_3B_xxxxxxxxxxxxxxxxx";
+const srcColor = Object.assign({}, sources, {
+  [ID_COLOR_1B]: { EPSI: variante(src3B_real.EPSI, valorar("97000001", {
+    "Matemática I": "En proceso", "Lengua y Literatura I": "Avanzado", "Taller Profesional I A": "Avanzado",
+    "Taller Profesional I B": "Equivalencia", "FGI I": "ACREDITÓ", "Matemática II": "En proceso", "Matemática III": "Suficiente" })) },
+  [ID_COLOR_1C]: { EPSI: variante(src1C_real.EPSI, valorar("97000001", {
+    "Matemática I": "4", "Lengua y Literatura I": "9", "Taller Profesional I A": "7", "Taller Profesional I B": "EQUIVALENCIA",
+    "FGI I": "ACREDITÓ", "Matemática II": "5", "Matemática III": "6", "Matemática IV": "3" })) },
+  [ID_COLOR_3B]: { EPSI: variante(src3B_real.EPSI, valorar("97000001", {
+    "Matemática I": "Suficiente", "Lengua y Literatura I": "Avanzado", "Taller Profesional I A": "En proceso",
+    "Taller Profesional I B": "EQUIVALENCIA", "FGI I": "ACREDITÓ", "Matemática II": "En proceso", "Inglés I": "Suficiente",
+    "Taller Profesional II A": "Avanzado", "Taller Profesional II B": "Suficiente", "FGI II": "ACREDITÓ", "Matemática III": "Avanzado",
+    "Taller Profesional III A": "Suficiente", "FGI III": "ACREDITÓ", "Matemática IV": "Avanzado", "Taller Profesional IV A": "Suficiente",
+    "FGI IV": "En proceso" })) }
+});
+const ctlColor = (periodo, extra) => ctl(periodo, "97000001", Object.assign({ B9: "EPS2", [F1B]: ID_COLOR_1B, [F1C]: ID_COLOR_1C, [F3B]: ID_COLOR_3B }, extra));
+const SEMAFORO_V04 = ["E9:E16 En Proceso", "E9:E16 Suficiente", "E9:E16 Avanzado", "G9:G16 En Proceso", "G9:G16 Suficiente", "G9:G16 Avanzado"];
+const runColor = (periodo, ejecutar) => runTest("Color " + periodo, {
+  control: ctlColor(periodo), sources: srcColor, templateGrid: tpl, reglasPlantilla: SEMAFORO_V04, ejecutar
+});
+// Por materia, de E (1B) a L (final): P En proceso, S Suficiente, A Avanzado, . dato neutro, V vacía, F período futuro, ? otra cosa.
+const senales = hoja => {
+  const g = rect(hoja.grid);
+  const out = {};
+  for (let r = 9; r <= g.length; r++) {
+    const materia = g[r - 1][2];
+    if (!materia || /^OBSERVACIONES/.test(materia)) break;
+    out[materia] = [5, 6, 7, 8, 9, 10, 11, 12].map(c => {
+      const f = hoja.formatos[r + "," + c] || {};
+      if (f.fondo === FUTURO && f.texto === SENALES.neutra.texto) return "F";
+      if (f.fondo === VACIA && f.texto === SENALES.neutra.texto) return "V";
+      const cat = Object.keys(SENALES).find(k => SENALES[k].fondo === f.fondo && SENALES[k].texto === f.texto);
+      return cat ? LETRA[cat] : "?";
+    }).join("");
+  }
+  return out;
+};
+const informeDe = r => r.ss.getSheetByName("Informe_actual");
+
+// 15.1. Gramática visual: identidad propia para cada nivel conceptual, sobria y legible
+const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const luminancia = h => { const [r, g, b] = rgb(h).map(c => c / 255).map(c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+const contraste = (a, b) => (Math.max(luminancia(a), luminancia(b)) + 0.05) / (Math.min(luminancia(a), luminancia(b)) + 0.05);
+const tono = h => { const [r, g, b] = rgb(h); if (Math.max(r, g, b) - Math.min(r, g, b) <= 8) return "neutro"; return r > g && r > b ? "rojo" : g > r && g > b ? "verde" : b > r && b > g ? "azul" : "otro"; };
+const niveles = ["enProceso", "suficiente", "avanzado"];
+assert("Gramática visual: sólo los tres niveles conceptuales tienen color; lo neutro no tiene relleno ni texto de color",
+  Object.keys(SENALES).sort().join(",") === "avanzado,enProceso,neutra,suficiente"
+    && SENALES.neutra.fondo === null && SENALES.neutra.texto === "#000000");
+assert("Gramática visual: cada nivel tiene su propio tono, como en los modelos de 2024 (En proceso rojo, Suficiente verde, Avanzado azul), y el período futuro es gris neutro",
+  niveles.map(k => tono(SENALES[k].fondo) + "/" + tono(SENALES[k].texto)).join(",") === "rojo/rojo,verde/verde,azul/azul" && tono(FUTURO) === "neutro"
+    && new Set(niveles.map(k => SENALES[k].fondo).concat(FUTURO)).size === 4,
+  niveles.map(k => SENALES[k].fondo + "/" + SENALES[k].texto).join(", "));
+assert("Gramática visual: rellenos claros (sin saturación que domine la página) y texto oscuro del mismo tono con contraste de al menos 4.5:1",
+  niveles.every(k => luminancia(SENALES[k].fondo) >= 0.6 && luminancia(SENALES[k].texto) < luminancia(SENALES[k].fondo)
+    && contraste(SENALES[k].fondo, SENALES[k].texto) >= 4.5),
+  niveles.map(k => k + ":" + contraste(SENALES[k].fondo, SENALES[k].texto).toFixed(1)).join(", "));
+
+const gris = h => { const [r, g, b] = rgb(h); return 0.299 * r + 0.587 * g + 0.114 * b; };
+assert("Estados estructurales: vacía y futuro son grises sin tono, distintos entre sí y de cualquier valoración",
+  tono(VACIA) === "neutro" && tono(FUTURO) === "neutro" && VACIA !== FUTURO
+    && !niveles.some(k => [VACIA, FUTURO].includes(SENALES[k].fondo)) && SENALES.neutra.fondo === null,
+  VACIA + " / " + FUTURO);
+assert("Estados estructurales: de menos a más marcado, dato neutro (sin relleno) < vacía < futuro, con diferencias perceptibles en grises",
+  255 - gris(VACIA) >= 6 && gris(VACIA) - gris(FUTURO) >= 8, gris(VACIA) + " / " + gris(FUTURO));
+
+// 15.2. 3B (16 materias): trayectorias legibles de izquierda a derecha, también en filas agregadas; H a L en gris
+let rColor3B = runColor(P3B);
+const s3B = informeDe(rColor3B) ? senales(informeDe(rColor3B)) : {};
+const fila3B = m => (s3B[m] || "").slice(0, 3);
+assert("Color 3B: genera las 16 materias, más de las 8 filas de la Plantilla",
+  !rColor3B.error && Object.keys(s3B).length === 16, rColor3B.error || Object.keys(s3B).join("|"));
+assert("Trayectoria que mejora: En proceso → 4 → Suficiente (la nota numérica queda neutra)",
+  fila3B("Matemática I") === "P.S", s3B["Matemática I"]);
+assert("Trayectoria que sigue en proceso: En proceso → 5 → En proceso",
+  fila3B("Matemática II") === "P.P", s3B["Matemática II"]);
+assert("Desempeño destacado: Avanzado → 9 → Avanzado (Avanzado tiene identidad propia, distinta de Suficiente)",
+  fila3B("Lengua y Literatura I") === "A.A", s3B["Lengua y Literatura I"]);
+assert("Trayectoria positiva: Suficiente → 6 → Avanzado",
+  fila3B("Matemática III") === "S.A", s3B["Matemática III"]);
+assert("Trayectoria que retrocede: Avanzado → 7 → En proceso",
+  fila3B("Taller Profesional I A") === "A.P", s3B["Taller Profesional I A"]);
+assert("ACREDITÓ y EQUIVALENCIA son datos neutros: la escuela no les definió un color, y no se confunden con vacío",
+  fila3B("FGI I") === "..." && fila3B("Taller Profesional I B") === "...", s3B["FGI I"] + " / " + s3B["Taller Profesional I B"]);
+assert("Notas numéricas: dato neutro en 1C, sea menor a 6 (3, 4, 5) o mayor o igual (6, 7, 9); sin nota, vacía",
+  ["Matemática I", "Matemática II", "Lengua y Literatura I", "Matemática III", "Taller Profesional I A", "Matemática IV"].every(m => s3B[m][1] === ".")
+    && ["Inglés I", "FGI II", "FGI IV"].every(m => s3B[m][1] === "V"),
+  Object.keys(s3B).map(m => m + ":" + s3B[m][1]).join(", "));
+assert("Vacía habilitada: materia que sólo tiene 3B (Inglés I) muestra 1B y 1C vacías, no futuras ni neutras",
+  fila3B("Inglés I") === "VVS" && fila3B("FGI II") === "VV.", s3B["Inglés I"] + " / " + s3B["FGI II"]);
+assert("Filas agregadas dinámicamente: misma gramática (Matemática IV vacía → 3 → Avanzado; FGI IV vacía, vacía, En proceso)",
+  fila3B("Matemática IV") === "V.A" && fila3B("FGI IV") === "VVP" && fila3B("Taller Profesional II A") === "VVA",
+  [s3B["Matemática IV"], s3B["FGI IV"], s3B["Taller Profesional II A"]].join(" / "));
+assert("Color 3B: E a G con su estado (nivel, dato neutro o vacía, sin gris fijo), H a L futuras en todas las filas, sin celdas sin asignar",
+  Object.values(s3B).every(v => /^[PSA.V][.V][PSA.V]F{5}$/.test(v)), JSON.stringify(s3B));
+assert("Color: sólo se formatea el área de valoraciones (filas de materias, columnas E a L)",
+  Object.keys(informeDe(rColor3B).formatos).every(k => { const [r, c] = k.split(",").map(Number); return r >= 9 && r < 9 + 16 && c >= 5 && c <= 12; })
+    && Object.keys(informeDe(rColor3B).formatos).length === 16 * 8,
+  Object.keys(informeDe(rColor3B).formatos).length);
+
+// 15.3. El gris depende del período generado
+let rColor1C = runColor(P1C);
+const s1C = informeDe(rColor1C) ? senales(informeDe(rColor1C)) : {};
+assert("Color 1C: G (3B) y siguientes futuras; E con su nivel o vacía y F dato neutro (8 materias, las de la Plantilla)",
+  !rColor1C.error && Object.keys(s1C).length === 8 && s1C["Matemática I"] === "P.FFFFFF" && s1C["Lengua y Literatura I"] === "A.FFFFFF"
+    && s1C["Matemática III"] === "S.FFFFFF" && s1C["Matemática IV"] === "V.FFFFFF" && s1C["FGI I"] === "..FFFFFF",
+  rColor1C.error || JSON.stringify(s1C));
+let rColor1B = runColor("1º bimestre");
+const s1B = informeDe(rColor1B) ? senales(informeDe(rColor1B)) : {};
+assert("Color 1B: F (1C) en adelante futuras; sólo E habilitada (7 materias, menos que la Plantilla)",
+  !rColor1B.error && Object.keys(s1B).length === 7 && s1B["Matemática I"] === "PFFFFFFF" && s1B["Lengua y Literatura I"] === "AFFFFFFF"
+    && s1B["Matemática III"] === "SFFFFFFF" && s1B["FGI I"] === ".FFFFFFF" && Object.values(s1B).every(v => /^[PSA.]F{7}$/.test(v)),
+  rColor1B.error || JSON.stringify(s1B));
+assert("Futuro tiene precedencia sobre vacía: en 1B y en 3B ninguna celda futura (todas sin contenido) queda como vacía",
+  Object.values(s1B).every(v => v.slice(1) === "FFFFFFF") && Object.values(s3B).every(v => v.slice(3) === "FFFFF"));
+
+// 15.4. Individual y por curso: mismo criterio visual; el semáforo heredado se elimina
+let rColorCurso = runColor(P3B, "generarBoletinesPorCurso()");
+const hojaCurso = libroDe(rColorCurso) && libroDe(rColorCurso).getSheetByName("Ficticia, Ana Real");
+assert("Color: la hoja del libro por curso tiene exactamente los mismos fondos y colores de texto que el informe individual",
+  !rColorCurso.error && hojaCurso && JSON.stringify(hojaCurso.formatos) === JSON.stringify(informeDe(rColor3B).formatos),
+  rColorCurso.error || hojasDe(rColorCurso).join("|"));
+assert("Color: las reglas del semáforo de v0.4 que traiga la Plantilla no llegan al boletín (individual ni curso) y la Plantilla no se toca",
+  informeDe(rColor3B).getConditionalFormatRules().length === 0 && hojaCurso.getConditionalFormatRules().length === 0
+    && rColor3B.ss.getSheetByName("Plantilla").getConditionalFormatRules().length === 6,
+  JSON.stringify(informeDe(rColor3B).getConditionalFormatRules()));
+assert("Color: sin escrituras en las fuentes",
+  [rColor3B, rColor1C, rColor1B, rColorCurso].every(r => r.registro.indebidos.length === 0));
+
+// 15.5. Categoría de cada valoración
+const genColor = cargarGenerador();
+const categorias = valores => valores.map(v => LETRA[genColor.categoriaVisual_(v)]).join("");
+assert("Categoría: En proceso, Suficiente y Avanzado con identidad propia; ACREDITÓ, EQUIVALENCIA, notas (1 a 10) y vacío neutros",
+  categorias(["En proceso", "Suficiente", "Avanzado", "ACREDITÓ", "EQUIVALENCIA", "1", "5", "6", "10", "", undefined]) === "PSA........");
+
+// 15.6. Plantilla versionada: sin semáforo; la leyenda institucional (imagen) no se altera
+const xmlPlantilla = xmlHoja(XLSX_GENERADOR, "Plantilla");
+assert("Plantilla (xlsx): sin reglas de formato condicional",
+  !/conditionalFormatting|cfRule/.test(xmlPlantilla));
+// Rellenos de la Plantilla según su estilo de celda (styles.xml del xlsx extraído).
+const rellenoPlantilla = (() => {
+  const dir = path.join(WORK, path.basename(XLSX_GENERADOR, ".xlsx"));
+  const st = fs.readFileSync(path.join(dir, "xl/styles.xml"), "utf8");
+  const bloque = t => (st.match(new RegExp("<(?:\\w+:)?" + t + "[^>]*>([\\s\\S]*?)</(?:\\w+:)?" + t + ">")) || [])[1] || "";
+  const fills = bloque("fills").match(/<(?:\w+:)?fill>[\s\S]*?<\/(?:\w+:)?fill>|<(?:\w+:)?fill\s*\/>/g) || [];
+  const xfs = bloque("cellXfs").match(/<(?:\w+:)?xf [^>]*?(?:\/>|>[\s\S]*?<\/(?:\w+:)?xf>)/g) || [];
+  const estilos = Object.fromEntries([...xmlPlantilla.matchAll(/<(?:\w+:)?c r="([A-Z]+\d+)"[^>]*? s="(\d+)"/g)].map(m => [m[1], +m[2]]));
+  return ref => {
+    const xf = xfs[estilos[ref]] || "";
+    const fill = fills[+((xf.match(/fillId="(\d+)"/) || [])[1] || 0)] || "";
+    return /patternType="(?!none)/.test(fill) ? ((fill.match(/rgb="([0-9A-F]+)"/i) || [])[1] || "con relleno") : null;
+  };
+})();
+const areaPlantilla = "EFGHIJKL".split("").flatMap(c => [9, 10, 11, 12, 13, 14, 15, 16].map(r => c + r));
+assert("Plantilla (xlsx): base uniforme en el área de valoraciones, sin rellenos heredados por columna",
+  areaPlantilla.every(ref => rellenoPlantilla(ref) === null), areaPlantilla.filter(ref => rellenoPlantilla(ref) !== null).join(","));
+assert("Plantilla (xlsx): encabezado de la tabla y nombres de materia conservan su relleno estructural",
+  "CEFGHIJKL".split("").every(c => rellenoPlantilla(c + "8") && rellenoPlantilla(c + "8") === rellenoPlantilla("C8"))
+    && [9, 16].every(r => rellenoPlantilla("C" + r) && rellenoPlantilla("C" + r) !== rellenoPlantilla("C8")),
+  rellenoPlantilla("C8") + " / " + rellenoPlantilla("C9"));
+assert("Plantilla (xlsx): sin línea de leyenda agregada en la fila 17 (D17 vacía) y la fila 17 sigue en 192 pt",
+  (rect(tpl)[16] || [])[3] === "" && /<(?:\w+:)?row r="17" ht="192" customHeight="1"/.test(xmlPlantilla),
+  (rect(tpl)[16] || [])[3]);
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);
