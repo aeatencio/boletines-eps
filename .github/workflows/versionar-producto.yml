@@ -1,0 +1,47 @@
+# Mantiene el invariante: el src/ de la punta de main es idéntico al src/ del último tag vX.Y.
+# Si difieren, crea el siguiente tag anotado vX.(Y+1) sobre la punta de main.
+# El salto de serie (por ejemplo v1.0) se hace a mano; este workflow nunca cambia X.
+name: Versionar producto
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: versionar-producto
+  cancel-in-progress: false
+
+jobs:
+  versionar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Restaurar el invariante de src/
+        run: |
+          set -euo pipefail
+
+          ultimo=$(git tag --list | { grep -E '^v[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n 1)
+          if [ -z "$ultimo" ]; then
+            echo "::error::No hay ningún tag vX.Y que sirva de base. Crear los tags históricos antes de usar este workflow."
+            exit 1
+          fi
+
+          if [ "$(git rev-parse "$ultimo:src")" = "$(git rev-parse HEAD:src)" ]; then
+            echo "src/ de main coincide con $ultimo. No se crea versión."
+            exit 0
+          fi
+
+          siguiente="${ultimo%.*}.$((10#${ultimo##*.} + 1))"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$siguiente" -m "$siguiente: $(git log -1 --format=%s HEAD)" HEAD
+          git push origin "refs/tags/$siguiente"
+          echo "Creado $siguiente sobre $(git rev-parse --short HEAD)."

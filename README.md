@@ -26,6 +26,12 @@ El proyecto está en desarrollo activo. La versión actual es v0.4, y el trabajo
 - `reference/`: casos de prueba y datos sintéticos.
 - `legacy/`: versiones anteriores, como referencia.
 
+## Versiones
+
+`src/` define el estado versionado del producto. Cada versión es un tag anotado `vX.Y` sobre un commit de `main`: cuando el contenido de `src/` en `main` difiere del último tag, el workflow [`versionar-producto`](.github/workflows/versionar-producto.yml) crea automáticamente el siguiente `Y`. Los cambios fuera de `src/` no generan versión.
+
+No se usa SemVer: el número es correlativo, y los tags no se mueven ni se reutilizan. El salto de serie (por ejemplo, `v1.0`) se crea a mano. Las versiones anteriores al repositorio se conservan como snapshots en `legacy/`.
+
 ## Pruebas
 
 En Windows, desde PowerShell o `cmd`, con Node.js:
