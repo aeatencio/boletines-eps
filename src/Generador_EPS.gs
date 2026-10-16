@@ -79,6 +79,9 @@ const CONFIG_EPS = {
   // período ya habilitado ("no hay contenido", sin juzgar por qué) y período que todavía no corresponde.
   COLOR_CELDA_VACIA: '#F5F6F7',
   COLOR_PERIODO_FUTURO: '#E8EAED',
+  // EQUIVALENCIA es una sola palabra más ancha que una columna de período en Montserrat 9 (≈94 px contra ≈80 px
+  // útiles en G): con ajuste de texto se partía por letras. En 7 (≈73 px) entra entera; el resto del área sigue en 9.
+  TAMANO_EQUIVALENCIA: 7,
 
   // Encabezados que identifican cada campo de la cola (después de ORIENTACIÓN).
   // Se comparan normalizados (sin tildes ni diferencias de mayúsculas o espacios), nunca por posición.
@@ -986,7 +989,9 @@ function completarInforme_(salida, estudiante, materias, periodoGenerado, cicloL
       Object.keys(CONFIG_EPS.COLUMNAS_INFORME).forEach(periodoKey => {
         const col = CONFIG_EPS.COLUMNAS_INFORME[periodoKey];
         if (mat.valores[periodoKey]) {
-          salida.getRange(row, col).setValue(mat.valores[periodoKey]);
+          const celda = salida.getRange(row, col);
+          celda.setValue(mat.valores[periodoKey]);
+          if (mat.valores[periodoKey] === 'EQUIVALENCIA') celda.setFontSize(CONFIG_EPS.TAMANO_EQUIVALENCIA);
         }
       });
     });

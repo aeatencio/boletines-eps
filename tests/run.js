@@ -129,6 +129,9 @@ class MockSheet {
         }
       },
       setWrap: () => {},
+      setFontSize: n => {
+        for (let i = 0; i < h; i++) for (let j = 0; j < w; j++) sh.formato(r + i, c + j).tamano = n;
+      },
       setBackgrounds: m => {
         if (m.length !== h || m.some(f => f.length !== w)) throw new Error("mock: setBackgrounds con dimensiones distintas del rango");
         m.forEach((f, i) => f.forEach((v, j) => { sh.formato(r + i, c + j).fondo = v; }));
@@ -1892,6 +1895,28 @@ assert("Control (xlsx): con las marcas del bloque se generan sólo esos cursos, 
   rXlsxVarios.error || rXlsxVarios.creados.map(l => l.getName()).join(" | "));
 assert("Control (xlsx): el manual y las reglas se conservan debajo del bloque",
   textoXlsx("A24") === "Manual breve" && textoXlsx("A31") === "Reglas centrales", textoXlsx("A24") + " / " + textoXlsx("A31"));
+
+// =============================================================================
+// 17. Textos que no deben cortarse: nombre del estudiante y EQUIVALENCIA
+// =============================================================================
+// El ancho real del texto no se modela: se protege el mecanismo (celda combinada del nombre y tamaño de EQUIVALENCIA).
+const combinadas = [...xmlPlantilla.matchAll(/<(?:\w+:)?mergeCell ref="([^"]+)"/g)].map(m => m[1]);
+assert("Plantilla (xlsx): el nombre ocupa E4:L4, sobre celdas vacías; DNI y curso siguen en E5:F5 y E6:F6",
+  combinadas.includes("E4:L4") && !combinadas.includes("E4:F4") && combinadas.includes("E5:F5") && combinadas.includes("E6:F6")
+    && "GHIJKL".split("").every(c => !rect(tpl)[3][colNum(c) - 1]),
+  combinadas.join(", "));
+// Celdas con texto de una hoja generada y el tamaño de letra que les asignó el generador.
+const tamanos = hoja => rect(hoja.grid).flatMap((f, r) => f.map((v, c) => [v, (hoja.formatos[(r + 1) + "," + (c + 1)] || {}).tamano]))
+  .filter(([v, t]) => t !== undefined || v === "EQUIVALENCIA");
+const soloEquivalenciaEn7 = hoja => { const t = tamanos(hoja); return t.length > 0 && t.every(([v, n]) => v === "EQUIVALENCIA" && n === 7); };
+assert("EQUIVALENCIA: en el informe individual va en 7 y ninguna otra celda cambia de tamaño (Ana: 1C y 3B)",
+  soloEquivalenciaEn7(rReal.ss.getSheetByName("Informe_actual")) && tamanos(rReal.ss.getSheetByName("Informe_actual")).length === 2,
+  JSON.stringify(tamanos(rReal.ss.getSheetByName("Informe_actual"))));
+assert("EQUIVALENCIA: igual en la hoja del libro por curso y en la de varios cursos",
+  soloEquivalenciaEn7(libroDe(rCurso).getSheetByName("Ficticia, Ana Real (97000001)"))
+    && soloEquivalenciaEn7(libroTodos("EPSI EPS2").getSheetByName("Ficticia, Ana Real (97000001)")));
+assert("EQUIVALENCIA: un boletín sin EQUIVALENCIA no cambia ningún tamaño (Beto)",
+  tamanos(rNuevo.ss.getSheetByName("Informe_actual")).length === 0, JSON.stringify(tamanos(rNuevo.ss.getSheetByName("Informe_actual"))));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

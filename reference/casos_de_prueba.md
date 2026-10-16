@@ -278,3 +278,15 @@ Casos automatizados (sección 16 de `tests/run.js`, sobre las grillas reales sin
 - `Control` del xlsx: encabezado `A14`, rótulo de cada curso junto a su marca vacía, validación `SÍ,NO` en `B15:B22`, manual y reglas corridos debajo del bloque. Con ese `Control`, se generan sólo los cursos marcados.
 
 **No cubierto por el arnés**: tiempo real y límites de Apps Script con los 8 cursos (límite de 6 minutos por ejecución), cuotas de creación en Drive, aspecto del bloque y de los selectores en Google Sheets, y el aviso de progreso.
+
+### 12. Textos que no deben cortarse: nombre del estudiante y EQUIVALENCIA
+
+**Nombre**: en la `Plantilla`, el nombre del estudiante (`E4`) era la celda combinada `E4:F4` (≈184 px). Google Sheets no deja que el texto de una celda combinada desborde a las vecinas, así que un nombre largo en Montserrat 11 se cortaba (por ejemplo, *"Robledo Mencacci, Alejo Lucas"* ocupa ≈226 px). Ahora la combinación es `E4:L4`, sobre celdas vacías: el nombre llega hasta el borde derecho del boletín y no cambian el DNI (`E5:F5`), el curso (`E6:F6`), los anchos de columna, los altos de fila ni la impresión.
+
+**EQUIVALENCIA**: el área de valoraciones usa Montserrat 9 con ajuste de texto. `EQUIVALENCIA` es una sola palabra de ≈94 px y una columna de período tiene ≈80 px útiles (la más angosta, `G`), así que Sheets la partía por letras (`EQUIVALENCI` / `A`). `completarInforme_` le asigna tamaño 7 (`CONFIG_EPS.TAMANO_EQUIVALENCIA`, ≈73 px) sólo a las celdas con ese valor. El resto del área queda en 9, y las otras valoraciones válidas ya entran enteras en 9. Mediciones: anchos de avance de Montserrat 400; anchos de columna estimados desde el xlsx (≈7 px por unidad).
+
+Casos automatizados (sección 17 de `tests/run.js`; el ancho real del texto no se modela):
+- `Plantilla` (xlsx): `E4:L4` combinada sobre celdas vacías, sin `E4:F4`, y `E5:F5` / `E6:F6` sin cambios.
+- `EQUIVALENCIA` en 7 en el informe individual, en el libro por curso y en el de varios cursos; ninguna otra celda cambia de tamaño. Un boletín sin `EQUIVALENCIA` no cambia ningún tamaño.
+
+**Validación manual**: comprobar en Google Sheets, y en el PDF, que un nombre largo se vea completo y que `EQUIVALENCIA` quede en una línea en las columnas de 1º bimestre, 1º cuatrimestre y 3º bimestre.
