@@ -1,4 +1,4 @@
-// Arnés de pruebas local para v0.4
+// Arnés de pruebas local
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -234,7 +234,7 @@ function formatearFecha(fecha, zona, formato) {
 }
 
 function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()", ahora = null, reglasPlantilla = [] }) {
-  const code = fs.readFileSync(path.join(ROOT, "src/Generador_EPS_v0_4.gs"), "utf8");
+  const code = fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8");
   const plantilla = new MockSheet("Plantilla", templateGrid, reglasPlantilla);
   const ctrl = hojaControl(control);
   const ss = new MockSS([plantilla, ctrl]);
@@ -308,7 +308,7 @@ function runTest(testName, { control, sources, templateGrid, ejecutar = "generar
 function cargarGenerador(sources) {
   const ctx = sources ? { SpreadsheetApp: { openById: abrirFuenteMock(sources) } } : {};
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(ROOT, "src/Generador_EPS_v0_4.gs"), "utf8"), ctx);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8"), ctx);
   return ctx;
 }
 
@@ -356,7 +356,7 @@ function readTsv(p) {
 // Inicializar directorio de trabajo limpio para garantizar que cada corrida lea los fixtures vigentes
 initWorkDir();
 
-const tpl = readXlsx("src/Generador_EPS_v0_4.xlsx").Plantilla;
+const tpl = readXlsx("src/Generador_EPS.xlsx").Plantilla;
 const src1B = readXlsx("reference/fixtures/Valoraciones_ficticias_EPS_1er_bimestre_v0_3.xlsx");
 const src1C = readXlsx("reference/fixtures/Valoraciones_ficticias_EPS_1er_cuatrimestre_v0_3.xlsx");
 const src3B = { EPSI: readTsv("reference/fixtures/3er_bimestre.tsv") };
@@ -1131,7 +1131,7 @@ assert("Resumen oculto: si no se generó ningún boletín, Resumen queda visible
 // =============================================================================
 // 9. Control del workbook versionado: selector de nivel para la generación por curso (#12)
 // =============================================================================
-const XLSX_GENERADOR = "src/Generador_EPS_v0_4.xlsx";
+const XLSX_GENERADOR = "src/Generador_EPS.xlsx";
 const controlXlsx = readXlsx(XLSX_GENERADOR).Control;
 // XML de una hoja del último xlsx extraído, ubicada por nombre como en readXlsx.
 const xmlHoja = (rel, nombre) => {

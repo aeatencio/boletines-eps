@@ -1,5 +1,5 @@
 /**
- * Generador de boletines EPS v0.4
+ * Generador de boletines EPS
  * 1º bimestre + 1º cuatrimestre + 3º bimestre · generación individual y por curso
  *
  * La app no modifica los archivos fuente ni la hoja Plantilla.
