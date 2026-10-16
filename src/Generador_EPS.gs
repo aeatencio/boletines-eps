@@ -1,10 +1,11 @@
 /**
  * Generador de boletines EPS
- * 1º bimestre + 1º cuatrimestre + 3º bimestre · generación individual y por curso
+ * 1º bimestre + 1º cuatrimestre + 3º bimestre · generación individual, por curso y de varios cursos
  *
  * La app no modifica los archivos fuente ni la hoja Plantilla.
  * La salida individual se genera en una hoja revisable llamada Informe_actual;
- * la generación por curso crea un libro nuevo con una hoja por estudiante y una hoja Resumen.
+ * la generación por curso crea un libro nuevo con una hoja por estudiante y una hoja Resumen;
+ * la de varios cursos crea, para cada curso elegido, el mismo libro que la generación por curso.
  */
 const CONFIG_EPS = {
   HOJA_CONTROL: 'Control',
@@ -23,6 +24,18 @@ const CONFIG_EPS = {
   CELDA_FUENTE_1B: 'B10',
   CELDA_FUENTE_1C: 'B11',
   CELDA_FUENTE_3B: 'B12',
+
+  // Generación de varios cursos: los 8 cursos de CFP7, cada uno con su marca SÍ / NO en Control.
+  CURSOS: [
+    { hojaOrigen: 'EPSI', nivel: 'EPS1', celda: 'B15' },
+    { hojaOrigen: 'EPSI', nivel: 'EPS2', celda: 'B16' },
+    { hojaOrigen: 'EPSI', nivel: 'EPS3', celda: 'B17' },
+    { hojaOrigen: 'EPSI', nivel: 'EPS4', celda: 'B18' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS1', celda: 'B19' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS2', celda: 'B20' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS3', celda: 'B21' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS4', celda: 'B22' }
+  ],
 
   ESTADO_FECHA: 'F2',
   ESTADO_RESULTADO: 'F3',
@@ -66,6 +79,9 @@ const CONFIG_EPS = {
   // período ya habilitado ("no hay contenido", sin juzgar por qué) y período que todavía no corresponde.
   COLOR_CELDA_VACIA: '#F5F6F7',
   COLOR_PERIODO_FUTURO: '#E8EAED',
+  // EQUIVALENCIA es una sola palabra más ancha que una columna de período en Montserrat 9 (≈94 px contra ≈80 px
+  // útiles en G): con ajuste de texto se partía por letras. En 7 (≈73 px) entra entera; el resto del área sigue en 9.
+  TAMANO_EQUIVALENCIA: 7,
 
   // Encabezados que identifican cada campo de la cola (después de ORIENTACIÓN).
   // Se comparan normalizados (sin tildes ni diferencias de mayúsculas o espacios), nunca por posición.
@@ -86,6 +102,8 @@ function onOpen() {
     .createMenu('Informes EPS')
     .addItem('Generar informe actual', 'generarInformeActual')
     .addItem('Generar boletines por curso', 'generarBoletinesPorCurso')
+    .addItem('Generar boletines de los cursos marcados', 'generarBoletinesCursosMarcados')
+    .addItem('Generar boletines de todos los cursos', 'generarBoletinesTodosLosCursos')
     .addToUi();
 }
 
@@ -124,9 +142,9 @@ function generarBoletinesPorCurso() {
   try {
     if (!control) throw new Error('No se encontró la hoja Control.');
 
-    const config = leerConfiguracion_(control, true);
+    const config = leerConfiguracion_(control, 'curso');
     const tanda = generarTandaCurso_(ss, config);
-    const conteo = 'Generados: ' + tanda.contar('Generado') + ' · Omitidos: ' + tanda.contar('Omitido') + ' · Con error: ' + tanda.contar('Error') + '.';
+    const conteo = conteoTanda_(tanda);
 
     if (!tanda.libro) {
       // Sin libro no hay hoja Resumen: el detalle por estudiante queda en Control y en el diálogo.
@@ -149,6 +167,114 @@ function generarBoletinesPorCurso() {
 }
 
 /**
+ * Generación de varios cursos: para cada curso elegido, el mismo libro que la generación por curso
+ * (un libro por curso, ninguno si el curso no tiene estudiantes listos).
+ * "Todos" toma los 8 cursos de CONFIG_EPS.CURSOS sin mirar las marcas de Control.
+ */
+function generarBoletinesCursosMarcados() {
+  generarBoletinesVariosCursos_(false);
+}
+
+function generarBoletinesTodosLosCursos() {
+  generarBoletinesVariosCursos_(true);
+}
+
+function generarBoletinesVariosCursos_(todos) {
+  const inicio = Date.now();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const control = ss.getSheetByName(CONFIG_EPS.HOJA_CONTROL);
+  let tandas = [];
+
+  try {
+    if (!control) throw new Error('No se encontró la hoja Control.');
+    const plantilla = ss.getSheetByName(CONFIG_EPS.HOJA_PLANTILLA);
+    if (!plantilla) throw new Error('No se encontró la hoja Plantilla.');
+
+    const config = leerConfiguracion_(control, 'cursos');
+    const cursos = todos ? CONFIG_EPS.CURSOS : leerCursosMarcados_(control);
+    // Todas las fuentes y selecciones se validan antes de crear el primer libro.
+    tandas = prepararTandasCursos_(config, cursos);
+    tandas.forEach((tanda, i) => {
+      ss.toast('Curso ' + (i + 1) + ' de ' + tandas.length + ': ' + cursoTanda_(tanda) + '.', 'Informes EPS');
+      crearLibroTanda_(plantilla, tanda);
+    });
+
+    const conLibro = tandas.filter(t => t.libro).length;
+    const resultado = 'Cursos: ' + tandas.length + ' · Libros creados: ' + conLibro + ' · Sin libro: ' + (tandas.length - conLibro) +
+      ' · Duración: ' + Math.round((Date.now() - inicio) / 1000) + ' s.';
+    registrarEstado_(control, resultado, detalleTandas_(tandas, true));
+    ui.alert(resultado + '\n\n- ' + detalleTandas_(tandas, false).join('\n- ') +
+      '\n\nEl detalle por estudiante está en la hoja ' + CONFIG_EPS.HOJA_RESUMEN + ' de cada libro y, para los cursos sin libro, en ' +
+      CONFIG_EPS.HOJA_CONTROL + '.');
+  } catch (err) {
+    // Un error después de crear algún libro no los borra: se informan para no repetirlos a ciegas.
+    const creados = tandas.filter(t => t.libro);
+    const detalle = creados.length ? ['Libros ya creados antes del error:'].concat(detalleTandas_(creados, false)) : [];
+    if (control) registrarEstado_(control, 'Error: ' + err.message, detalle);
+    ui.alert('No se pudieron generar los libros de los cursos.\n\n' + err.message + (detalle.length ? '\n\n' + detalle.join('\n- ') : ''));
+    throw err;
+  }
+}
+
+// Cursos con SÍ en su celda de Control, en el orden de CONFIG_EPS.CURSOS. NO o vacío no lo incluye.
+function leerCursosMarcados_(control) {
+  const cursos = CONFIG_EPS.CURSOS.filter(curso => {
+    const marca = normalizarTexto_(control.getRange(curso.celda).getDisplayValue());
+    if (marca && marca !== 'SI' && marca !== 'NO') {
+      throw new Error('La marca de ' + curso.hojaOrigen + ' ' + curso.nivel + ' (' + CONFIG_EPS.HOJA_CONTROL + '!' + curso.celda +
+        ') tiene un valor no admitido: "' + control.getRange(curso.celda).getDisplayValue() + '". Se esperaba SÍ, NO o vacío.');
+    }
+    return marca === 'SI';
+  });
+  if (!cursos.length) {
+    const celdas = CONFIG_EPS.CURSOS.map(curso => curso.celda);
+    throw new Error('No hay cursos marcados con SÍ en ' + CONFIG_EPS.HOJA_CONTROL + '!' + celdas[0] + ':' + celdas[celdas.length - 1] +
+      '. Para generar los 8, usar Informes EPS > Generar boletines de todos los cursos.');
+  }
+  return cursos;
+}
+
+// Cada orientación se lee una sola vez (leerFuentes_) y la comparten sus cursos; cada tanda recibe su copia de las advertencias generales.
+function prepararTandasCursos_(config, cursos) {
+  const lecturas = {};
+  return cursos.map(curso => {
+    const configCurso = Object.assign({}, config, { hojaOrigen: curso.hojaOrigen, nivel: curso.nivel });
+    if (!lecturas[curso.hojaOrigen]) {
+      const advertencias = [];
+      lecturas[curso.hojaOrigen] = { fuentes: leerFuentes_(configCurso, advertencias), advertencias };
+    }
+    const lectura = lecturas[curso.hojaOrigen];
+    return prepararTandaCurso_(lectura.fuentes, configCurso, lectura.advertencias.slice());
+  });
+}
+
+function cursoTanda_(tanda) {
+  return tanda.config.hojaOrigen + ' ' + tanda.config.nivel;
+}
+
+function conteoTanda_(tanda) {
+  return 'Generados: ' + tanda.contar('Generado') + ' · Omitidos: ' + tanda.contar('Omitido') + ' · Con error: ' + tanda.contar('Error') + '.';
+}
+
+// Una línea por curso; con detalle, los cursos sin libro agregan sus estudiantes (no tienen Resumen) y cada curso, sus advertencias generales.
+function detalleTandas_(tandas, conDetalle) {
+  const lineas = [];
+  tandas.forEach(tanda => {
+    const curso = cursoTanda_(tanda);
+    lineas.push(tanda.libro
+      ? curso + ': Libro creado: ' + tanda.libro.getName() + ' · ' + conteoTanda_(tanda) + ' ' + tanda.libro.getUrl()
+      : curso + ': Sin libro: ' + tanda.motivo + ' ' + conteoTanda_(tanda));
+    if (!conDetalle) return;
+    tanda.advertencias.forEach(a => lineas.push('  ' + curso + ' · ' + a));
+    if (!tanda.libro) {
+      tanda.estudiantes.forEach(e => lineas.push('  ' + curso + ' · ' + e.estado + ' · fila ' + (e.fila + 1) + ' · ' + e.nombre + ': ' + e.detalle));
+    }
+  });
+  return lineas;
+}
+
+/**
  * Errores globales (configuración, estructura de la fuente principal, falta de LISTO PARA EXPORTAR)
  * interrumpen la tanda antes de crear el libro. El error de un estudiante sólo afecta su hoja.
  * Si ningún estudiante puede generarse, no se crea el libro.
@@ -158,9 +284,16 @@ function generarTandaCurso_(ss, config) {
   if (!plantilla) throw new Error('No se encontró la hoja Plantilla.');
 
   const advertencias = [];
-  const fuentes = leerFuentes_(config, advertencias);
+  const tanda = prepararTandaCurso_(leerFuentes_(config, advertencias), config, advertencias);
+  crearLibroTanda_(plantilla, tanda);
+  return tanda;
+}
+
+// Selección y datos de cada estudiante del curso, sin crear nada: los errores globales salen de acá.
+function prepararTandaCurso_(fuentes, config, advertencias) {
   const estudiantes = seleccionarEstudiantesCurso_(fuentes.principal, config.nivel);
   const tanda = {
+    config,
     libro: null,
     motivo: '',
     advertencias,
@@ -176,14 +309,20 @@ function generarTandaCurso_(ss, config) {
       e.detalle = err.message;
     }
   });
+  return tanda;
+}
 
+// Libro del curso con una hoja por estudiante preparado y la hoja Resumen. Sin estudiantes preparados, no se crea.
+function crearLibroTanda_(plantilla, tanda) {
+  const config = tanda.config;
+  const estudiantes = tanda.estudiantes;
   const preparados = estudiantes.filter(e => e.informe);
   if (!preparados.length) {
     const curso = config.hojaOrigen + ' ' + config.nivel + ' (' + config.periodo + ')';
     tanda.motivo = tanda.contar('Error')
       ? 'Ningún estudiante seleccionado de ' + curso + ' pudo prepararse.'
       : 'No hay estudiantes con LISTO PARA EXPORTAR = SÍ en ' + curso + '.';
-    return tanda;
+    return;
   }
 
   const libro = SpreadsheetApp.create(nombreLibroCurso_(config));
@@ -207,12 +346,11 @@ function generarTandaCurso_(ss, config) {
     }
   });
 
-  escribirResumen_(resumen, config, estudiantes, advertencias);
+  escribirResumen_(resumen, config, estudiantes, tanda.advertencias);
   // Oculta para que no se imprima ni se exporte con el libro completo.
   // Google Sheets exige una hoja visible: si no se generó ningún boletín, Resumen queda visible.
   if (tanda.contar('Generado')) resumen.hideSheet();
   tanda.libro = libro;
-  return tanda;
 }
 
 /**
@@ -330,10 +468,16 @@ function escribirResumen_(hoja, config, estudiantes, advertencias) {
   hoja.getRange(1, 1, filas.length, columnas).setWrap(true);
 }
 
-function leerConfiguracion_(control, porCurso) {
+/**
+ * modo: sin indicar, generación individual (B6 y DNI); 'curso', generación por curso (B6 y B9);
+ * 'cursos', varios cursos (la orientación y el nivel salen de cada curso, no de B6, B7 ni B9).
+ */
+function leerConfiguracion_(control, modo) {
+  const porCurso = modo === 'curso';
+  const individual = !modo;
   const periodo = normalizarPeriodo_(control.getRange(CONFIG_EPS.CELDA_PERIODO).getDisplayValue());
-  const hojaOrigen = normalizarHojaOrigen_(control.getRange(CONFIG_EPS.CELDA_HOJA_ORIGEN).getDisplayValue());
-  const dni = porCurso ? '' : normalizarDni_(control.getRange(CONFIG_EPS.CELDA_DNI).getDisplayValue());
+  const hojaOrigen = modo === 'cursos' ? '' : normalizarHojaOrigen_(control.getRange(CONFIG_EPS.CELDA_HOJA_ORIGEN).getDisplayValue());
+  const dni = individual ? normalizarDni_(control.getRange(CONFIG_EPS.CELDA_DNI).getDisplayValue()) : '';
   const nivel = porCurso ? normalizarNivel_(control.getRange(CONFIG_EPS.CELDA_NIVEL).getDisplayValue()) : '';
   const cicloLectivo = texto_(control.getRange(CONFIG_EPS.CELDA_CICLO).getDisplayValue()) || '2026';
   const fuente1B = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_1B).getDisplayValue());
@@ -344,9 +488,9 @@ function leerConfiguracion_(control, porCurso) {
   if (![CONFIG_EPS.PERIODOS.BIMESTRE_1, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, CONFIG_EPS.PERIODOS.BIMESTRE_3].includes(periodo)) {
     throw new Error('El período indicado no está implementado en esta versión: ' + periodo);
   }
-  if (!hojaOrigen) throw new Error('La hoja origen debe ser EPSI o EPSG.');
+  if (modo !== 'cursos' && !hojaOrigen) throw new Error('La hoja origen debe ser EPSI o EPSG.');
   if (porCurso && !nivel) throw new Error('Falta indicar el nivel / curso en la celda ' + CONFIG_EPS.CELDA_NIVEL + ' de Control (EPS1, EPS2, EPS3 o EPS4).');
-  if (!porCurso && !dni) throw new Error('Falta completar el DNI del estudiante.');
+  if (individual && !dni) throw new Error('Falta completar el DNI del estudiante.');
   if (periodo === CONFIG_EPS.PERIODOS.BIMESTRE_1 && !fuente1B) {
     throw new Error('Falta la URL o ID del archivo de valoraciones del 1º bimestre.');
   }
@@ -845,7 +989,9 @@ function completarInforme_(salida, estudiante, materias, periodoGenerado, cicloL
       Object.keys(CONFIG_EPS.COLUMNAS_INFORME).forEach(periodoKey => {
         const col = CONFIG_EPS.COLUMNAS_INFORME[periodoKey];
         if (mat.valores[periodoKey]) {
-          salida.getRange(row, col).setValue(mat.valores[periodoKey]);
+          const celda = salida.getRange(row, col);
+          celda.setValue(mat.valores[periodoKey]);
+          if (mat.valores[periodoKey] === 'EQUIVALENCIA') celda.setFontSize(CONFIG_EPS.TAMANO_EQUIVALENCIA);
         }
       });
     });

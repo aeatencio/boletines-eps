@@ -129,6 +129,9 @@ class MockSheet {
         }
       },
       setWrap: () => {},
+      setFontSize: n => {
+        for (let i = 0; i < h; i++) for (let j = 0; j < w; j++) sh.formato(r + i, c + j).tamano = n;
+      },
       setBackgrounds: m => {
         if (m.length !== h || m.some(f => f.length !== w)) throw new Error("mock: setBackgrounds con dimensiones distintas del rango");
         m.forEach((f, i) => f.forEach((v, j) => { sh.formato(r + i, c + j).fondo = v; }));
@@ -185,6 +188,7 @@ class MockSS {
   getSheetByName(n) { return this.sheets.find(s => s.name === n) || null; }
   deleteSheet(s) { this.sheets = this.sheets.filter(x => x !== s); }
   setActiveSheet() {}
+  toast(mensaje) { (this.toasts = this.toasts || []).push(mensaje); }
 }
 
 function hojaControl(control) {
@@ -1102,13 +1106,15 @@ assert("Sin estudiantes listos: Control conserva el detalle de los omitidos y la
   rNadieListo.estadoAdvertencias === ADV_SIN_1B + "\nOmitido · fila 9 · Ficticia, Ana Real: LISTO PARA EXPORTAR = NO.",
   rNadieListo.estadoAdvertencias);
 
-// 8.6. Menú: la generación por curso es una acción separada y la individual se conserva
+// 8.6. Menú: la generación por curso y la de varios cursos son acciones separadas y la individual se conserva
 const menu = [];
 const genMenu = cargarGenerador();
 genMenu.SpreadsheetApp = { getUi: () => ({ createMenu: () => ({ addItem(t, f) { menu.push(t + "→" + f); return this; }, addToUi() {} }) }) };
 genMenu.onOpen();
-assert("Menú: conserva 'Generar informe actual' y agrega 'Generar boletines por curso'",
-  menu.join(", ") === "Generar informe actual→generarInformeActual, Generar boletines por curso→generarBoletinesPorCurso", menu.join(", "));
+assert("Menú: conserva 'Generar informe actual' y 'Generar boletines por curso', y agrega los cursos marcados y todos los cursos",
+  menu.join(", ") === "Generar informe actual→generarInformeActual, Generar boletines por curso→generarBoletinesPorCurso, "
+    + "Generar boletines de los cursos marcados→generarBoletinesCursosMarcados, Generar boletines de todos los cursos→generarBoletinesTodosLosCursos",
+  menu.join(", "));
 
 // 8.7. Resumen oculto: existe y conserva el detalle, pero no se imprime ni se exporta con el libro
 const visibilidad = r => libroDe(r) ? libroDe(r).getSheets().map(s => s.getName() + (s.isSheetHidden() ? ":oculta" : ":visible")).join(" | ") : "";
@@ -1296,11 +1302,12 @@ assert("Control (xlsx): valores por defecto conservados (B5 1º cuatrimestre, B6
   ["B5", "B6", "B8", "B9"].map(textoXlsx).join("|"));
 const validacionesXlsx = [...xmlHoja(XLSX_GENERADOR, "Control").matchAll(/<(?:\w+:)?dataValidation [^>]*sqref="([^"]+)"[^>]*>\s*<(?:\w+:)?formula1>([^<]*)</g)]
   .map(m => m[1] + "=" + m[2]).join(" | ");
-assert("Control (xlsx): las validaciones siguen en período, hoja origen y nivel",
+assert("Control (xlsx): las validaciones siguen en período, hoja origen y nivel, y las marcas de los cursos son SÍ / NO",
   validacionesXlsx === [
     CELDAS_CONTROL.CELDA_PERIODO + '="1º bimestre,1º cuatrimestre,3º bimestre"',
     CELDAS_CONTROL.CELDA_HOJA_ORIGEN + '="EPSI,EPSG"',
-    CELDAS_CONTROL.CELDA_NIVEL + '="EPS1,EPS2,EPS3,EPS4"'
+    CELDAS_CONTROL.CELDA_NIVEL + '="EPS1,EPS2,EPS3,EPS4"',
+    CELDAS_CONTROL.CURSOS[0].celda + ":" + CELDAS_CONTROL.CURSOS[7].celda + '="SÍ,NO"'
   ].join(" | "), validacionesXlsx);
 
 // =============================================================================
@@ -1697,6 +1704,219 @@ assert("Plantilla (xlsx): encabezado de la tabla y nombres de materia conservan 
 assert("Plantilla (xlsx): sin línea de leyenda agregada en la fila 17 (D17 vacía) y la fila 17 sigue en 192 pt",
   (rect(tpl)[16] || [])[3] === "" && /<(?:\w+:)?row r="17" ht="192" customHeight="1"/.test(xmlPlantilla),
   (rect(tpl)[16] || [])[3]);
+
+// =============================================================================
+// 16. Varios cursos en una sola operación (#20)
+// =============================================================================
+// Los 8 cursos fijos de CONFIG_EPS.CURSOS sobre las grillas reales sintéticas. 3B (principal):
+// - EPSI: EPS1 (Beto listo) y EPS2 como en la sección 8; EPS3 sin estudiantes; EPS4 con Dora lista.
+// - EPSG: EPS1 (Gael listo); EPS2 con Hugo en NO; EPS3 con Iris lista; EPS4 sin estudiantes.
+// 1C (anterior) como en la sección 8; sin fuente de 1B.
+// Agrega al final de la grilla el marcador de un nivel y, a continuación, copias del bloque de un modelo.
+const conNivel = (nivel, modelo, nuevos = []) => g => {
+  const base = modelo ? g.slice(filaDni(g, modelo), filaDni(g, modelo) + 4).map(f => f.slice()) : [];
+  g.push(Object.assign(Array(g[0].length).fill(""), { 0: nivel }));
+  nuevos.forEach(n => {
+    const bloque = base.map(f => f.slice());
+    [bloque[0][0], bloque[0][1], bloque[0][2]] = [n.apellido, n.nombres, n.dni];
+    bloque[0][colDe(g, "LISTO PARA EXPORTAR")] = n.listo;
+    g.push(...bloque);
+  });
+};
+const EPSI_VARIOS = [conNivel("EPS3"), conNivel("EPS4", "97000001", [{ apellido: "Ficticia", nombres: "Dora Cuatro", dni: "97000041", listo: "SÍ" }])];
+const EPSG_VARIOS = [
+  conCeldas("96000001", { "LISTO PARA EXPORTAR": "SÍ" }),
+  conNivel("EPS2", "96000001", [{ apellido: "Gastro", nombres: "Hugo No", dni: "96000021", listo: "NO" }]),
+  conNivel("EPS3", "96000001", [{ apellido: "Gastro", nombres: "Iris Tres", dni: "96000031", listo: "SÍ" }])
+];
+const conVarios = (epsi = EPSI_VARIOS, epsg = EPSG_VARIOS.concat(conNivel("EPS4"))) => Object.assign({}, srcCurso, {
+  [ID_CURSO_3B]: { EPSI: variante(srcCurso[ID_CURSO_3B].EPSI, aplicar(...epsi)), EPSG: variante(src3B_real.EPSG, aplicar(...epsg)) }
+});
+const srcVarios = conVarios();
+const fotoVarios = JSON.stringify(srcVarios);
+// Control de varios cursos: hoja origen, DNI y nivel con valores que la operación debe ignorar.
+const ctlVarios = marcas => ctl(P3B, "99000001", Object.assign({ B6: "EPSG", B9: "EPS3" }, fuentesCurso, marcas));
+const MARCA = Object.fromEntries(CELDAS_CONTROL.CURSOS.map(c => [c.hojaOrigen + " " + c.nivel, c.celda]));
+const marcas = (valores) => Object.fromEntries(Object.entries(valores).map(([curso, v]) => [MARCA[curso], v]));
+const runVarios = (nombre, control, srcs = srcVarios, ejecutar = "generarBoletinesCursosMarcados()") =>
+  runTest(nombre, { control, sources: srcs, templateGrid: tpl, ejecutar });
+// Libro completo: nombre y, por hoja, nombre, visibilidad, filas inmovilizadas, valores y colores.
+const fotoLibro = libro => libro && JSON.stringify([libro.getName(), libro.getSheets().map(h =>
+  [h.getName(), h.isSheetHidden(), h.getFrozenRows(), rect(h.grid), h.formatos])]);
+const NOMBRE_LIBRO = curso => "Boletines EPS - " + curso.replace(" ", " - ") + " - 3º bimestre 2026 - <fecha>";
+const CON_LIBRO = ["EPSI EPS1", "EPSI EPS2", "EPSI EPS4", "EPSG EPS1", "EPSG EPS3"];
+
+// 16.1. Todos: los 8 cursos sin marcar ninguno; un libro por curso con estudiantes listos
+let rTodos = runVarios("Todos los cursos", ctlVarios({}), srcVarios, "generarBoletinesTodosLosCursos()");
+const nombresTodos = rTodos.creados.map(l => l.getName());
+assert("Todos: sin marcas, termina sin error y crea un libro por cada curso con estudiantes listos, en orden fijo",
+  !rTodos.error && JSON.stringify(nombresTodos) === JSON.stringify(CON_LIBRO.map(NOMBRE_LIBRO)),
+  rTodos.error || nombresTodos.join(" | "));
+assert("Todos: como máximo un libro por curso y ninguno para los cursos sin estudiantes listos (EPSI EPS3, EPSG EPS2, EPSG EPS4)",
+  new Set(nombresTodos).size === nombresTodos.length
+    && ["EPSI EPS3", "EPSG EPS2", "EPSG EPS4"].every(c => !nombresTodos.includes(NOMBRE_LIBRO(c))));
+const porCursoDe = curso => {
+  const [hoja, nivel] = curso.split(" ");
+  return runCurso("Por curso " + curso, ctlCurso(nivel, { B6: hoja }), srcVarios);
+};
+const porCurso = Object.fromEntries(CELDAS_CONTROL.CURSOS.map(c => c.hojaOrigen + " " + c.nivel).map(curso => [curso, porCursoDe(curso)]));
+const libroTodos = curso => rTodos.creados.find(l => l.getName() === NOMBRE_LIBRO(curso)) || null;
+assert("Todos: cada libro es idéntico (hojas, Resumen, valores, colores, visibilidad) al de la generación por curso del mismo curso",
+  Object.entries(porCurso).every(([curso, r]) => !r.error && fotoLibro(libroDe(r)) === fotoLibro(libroTodos(curso))),
+  Object.entries(porCurso).filter(([curso, r]) => r.error || fotoLibro(libroDe(r)) !== fotoLibro(libroTodos(curso))).map(([c, r]) => c + ":" + (r.error || "distinto")).join(", "));
+assert("Todos: el contenido esperado (EPSG EPS3 sólo con Iris; EPSI EPS4 sólo con Dora; EPSG EPS2 omite a Hugo sin libro)",
+  libroTodos("EPSG EPS3").getSheets().map(h => h.getName()).join("|") === "Resumen|Gastro, Iris Tres"
+    && libroTodos("EPSI EPS4").getSheets().map(h => h.getName()).join("|") === "Resumen|Ficticia, Dora Cuatro"
+    && rect(libroTodos("EPSI EPS4").getSheetByName("Ficticia, Dora Cuatro").grid)[5][4] === "Informática 4"
+    && porCurso["EPSG EPS2"].rawAlerts[0].startsWith("No se creó ningún libro.\n\nNo hay estudiantes con LISTO PARA EXPORTAR = SÍ en EPSG EPS2 (3º bimestre)."));
+assert("Todos: Control resume cursos, libros, cursos sin libro y duración, con una línea por curso",
+  /^Cursos: 8 · Libros creados: 5 · Sin libro: 3 · Duración: \d+ s\.$/.test(rTodos.estadoResultado)
+    && rTodos.estadoAdvertencias.split("\n").filter(l => !l.startsWith("  ")).join("\n") === CELDAS_CONTROL.CURSOS.map(c => c.hojaOrigen + " " + c.nivel).map(curso =>
+      CON_LIBRO.includes(curso)
+        ? curso + ": Libro creado: " + NOMBRE_LIBRO(curso) + " · " + porCurso[curso].estadoResultado.split(" · ").slice(1).join(" · ")
+        : curso + ": Sin libro: " + porCurso[curso].estadoResultado.replace(/^Sin libro: /, "")).join("\n"),
+  rTodos.estadoResultado + "\n" + rTodos.estadoAdvertencias);
+assert("Todos: Control detalla las advertencias generales por curso y los estudiantes de los cursos sin libro",
+  rTodos.estadoAdvertencias.includes("  EPSG EPS1 · " + ADV_SIN_1B)
+    && rTodos.estadoAdvertencias.includes("  EPSG EPS2 · Omitido · fila 10 · Gastro, Hugo No: LISTO PARA EXPORTAR = NO."),
+  rTodos.estadoAdvertencias);
+assert("Todos: un único diálogo final con una línea por curso y un aviso de progreso por curso",
+  rTodos.rawAlerts.length === 1 && rTodos.rawAlerts[0].startsWith(rTodos.estadoResultado + "\n\n- EPSI EPS1: Libro creado: ")
+    && JSON.stringify(rTodos.ss.toasts) === JSON.stringify(CELDAS_CONTROL.CURSOS.map((c, i) => "Curso " + (i + 1) + " de 8: " + c.hojaOrigen + " " + c.nivel + ".")),
+  rTodos.rawAlerts.join(" / ") + " / " + JSON.stringify(rTodos.ss.toasts));
+assert("Todos: cada fuente se abre y cada hoja se lee una sola vez por orientación (no por curso)",
+  JSON.stringify(rTodos.registro.aperturas) === JSON.stringify([ID_CURSO_3B, ID_CURSO_1C, ID_CURSO_3B, ID_CURSO_1C])
+    && rTodos.registro.lecturas.length === 6,
+  JSON.stringify(rTodos.registro));
+assert("Todos: sin accesos de escritura a las fuentes; fuentes, Plantilla y hojas del generador intactas",
+  rTodos.registro.indebidos.length === 0 && JSON.stringify(srcVarios) === fotoVarios
+    && rTodos.ss.getSheets().map(s => s.getName()).join("|") === "Plantilla|Control"
+    && JSON.stringify(rect(rTodos.ss.getSheetByName("Plantilla").grid)) === JSON.stringify(rect(tpl)),
+  rTodos.registro.indebidos.join(", "));
+let rTodosConMarcas = runVarios("Todos con marcas", ctlVarios(marcas({ "EPSI EPS2": "SÍ", "EPSG EPS1": "NO", "EPSG EPS3": "cualquier cosa" })),
+  srcVarios, "generarBoletinesTodosLosCursos()");
+assert("Todos: ignora las marcas, aun con valores no válidos (mismos 5 libros)",
+  !rTodosConMarcas.error && JSON.stringify(rTodosConMarcas.creados.map(fotoLibro)) === JSON.stringify(rTodos.creados.map(fotoLibro)),
+  rTodosConMarcas.error);
+
+// 16.2. Cursos marcados: uno, varios, y un curso marcado sin estudiantes listos
+let rVarios = runVarios("Cursos marcados", ctlVarios(marcas({ "EPSI EPS1": "NO", "EPSI EPS2": "SÍ", "EPSG EPS3": "Si", "EPSI EPS3": "SÍ" })));
+assert("Marcados: sólo los cursos con SÍ ('Si' también), en orden fijo; el marcado sin estudiantes listos no crea libro",
+  !rVarios.error && rVarios.creados.map(l => l.getName()).join(" | ") === ["EPSI EPS2", "EPSG EPS3"].map(NOMBRE_LIBRO).join(" | ")
+    && /^Cursos: 3 · Libros creados: 2 · Sin libro: 1 · /.test(rVarios.estadoResultado)
+    && rVarios.estadoAdvertencias.includes("EPSI EPS3: Sin libro: No hay estudiantes con LISTO PARA EXPORTAR = SÍ en EPSI EPS3 (3º bimestre)."),
+  rVarios.error || rVarios.creados.map(l => l.getName()).join(" | ") + " / " + rVarios.estadoResultado);
+assert("Marcados: cada libro es idéntico al de la generación por curso (y al de Todos)",
+  ["EPSI EPS2", "EPSG EPS3"].every(curso => fotoLibro(rVarios.creados.find(l => l.getName() === NOMBRE_LIBRO(curso))) === fotoLibro(libroDe(porCurso[curso]))));
+assert("Marcados: con cursos de una sola orientación (EPSI), no se abre la otra hoja como principal ni se lee dos veces",
+  (r => !r.error && r.creados.length === 1 && r.registro.aperturas.length === 2 && r.registro.lecturas.length === 3)(
+    runVarios("Un curso marcado", ctlVarios(marcas({ "EPSI EPS2": "SÍ" })))));
+let rUno = runVarios("Un curso marcado (EPSG EPS1)", ctlVarios(marcas({ "EPSG EPS1": "SÍ" })));
+assert("Marcados: un solo curso produce exactamente el libro de la generación por curso",
+  !rUno.error && rUno.creados.length === 1 && fotoLibro(rUno.creados[0]) === fotoLibro(libroDe(porCurso["EPSG EPS1"])),
+  rUno.error);
+
+// 16.3. Errores de configuración: sin cursos marcados o marca no admitida; nada se lee ni se crea
+let rSinMarcas = runVarios("Sin cursos marcados", ctlVarios(marcas({ "EPSI EPS1": "NO" })));
+assert("Sin cursos marcados: error claro que sugiere Todos, sin leer fuentes ni crear libros",
+  rSinMarcas.error === "No hay cursos marcados con SÍ en Control!B15:B22. Para generar los 8, usar Informes EPS > Generar boletines de todos los cursos."
+    && rSinMarcas.registro.aperturas.length === 0 && rSinMarcas.creados.length === 0
+    && rSinMarcas.estadoResultado === "Error: " + rSinMarcas.error && rSinMarcas.rawAlerts[0].startsWith("No se pudieron generar los libros de los cursos."),
+  rSinMarcas.error);
+let rMarcaInvalida = runVarios("Marca no admitida", ctlVarios(marcas({ "EPSI EPS1": "SÍ", "EPSG EPS2": "x" })));
+assert("Marca no admitida: error que nombra el curso y la celda, sin leer fuentes ni crear libros",
+  rMarcaInvalida.error === 'La marca de EPSG EPS2 (Control!B20) tiene un valor no admitido: "x". Se esperaba SÍ, NO o vacío.'
+    && rMarcaInvalida.registro.aperturas.length === 0 && rMarcaInvalida.creados.length === 0,
+  rMarcaInvalida.error);
+let rVariosSinFuente = runVarios("Varios sin fuente principal", ctlVarios(Object.assign(marcas({ "EPSI EPS1": "SÍ" }), { [F3B]: "" })));
+assert("Varios cursos: la configuración se valida como en la generación por curso (falta la fuente principal)",
+  rVariosSinFuente.error === "Falta la URL o ID del archivo de valoraciones del 3º bimestre." && rVariosSinFuente.creados.length === 0,
+  rVariosSinFuente.error);
+
+// 16.4. Errores globales: abortan antes de crear el primer libro, aunque falle un curso posterior
+let rSinNivelEpsg = runVarios("Todos sin EPS4 en EPSG", ctlVarios({}), conVarios(EPSI_VARIOS, EPSG_VARIOS), "generarBoletinesTodosLosCursos()");
+assert("Error global en el último curso (EPSG sin marcador EPS4): ningún libro, tampoco de los cursos anteriores",
+  rSinNivelEpsg.error === "No se encontró el nivel EPS4 (marcador en la columna A) en la hoja EPSG de la fuente de 3º bimestre."
+    && rSinNivelEpsg.creados.length === 0 && rSinNivelEpsg.estadoResultado === "Error: " + rSinNivelEpsg.error,
+  rSinNivelEpsg.error);
+let rEpsgSinListo = runVarios("EPSG sin LISTO PARA EXPORTAR", ctlVarios(marcas({ "EPSI EPS2": "SÍ", "EPSG EPS1": "SÍ" })),
+  conVarios(EPSI_VARIOS, EPSG_VARIOS.concat(conNivel("EPS4"), conEncabezados({ "LISTO PARA EXPORTAR": "LISTO PARA IMPRIMIR" }))));
+assert("Error global de estructura en una orientación (EPSG sin LISTO PARA EXPORTAR): ningún libro",
+  rEpsgSinListo.error && rEpsgSinListo.error.startsWith('No se encontró una única columna "LISTO PARA EXPORTAR" después de ORIENTACIÓN en la hoja EPSG')
+    && rEpsgSinListo.creados.length === 0,
+  rEpsgSinListo.error);
+
+// 16.5. El error de un estudiante no afecta a los demás ni a otros cursos (Dora, EPSI EPS4, también en EPSG EPS3)
+const conDoraEnEpsg = conNivel("EPS4");
+let rDora = runVarios("Estudiante en ambas orientaciones", ctlVarios({}),
+  conVarios(EPSI_VARIOS, EPSG_VARIOS.concat(g => {
+    conBloques("96000031", "96000031", [{ apellido: "Ficticia", nombres: "Dora Cuatro", dni: "97000041", listo: "SÍ" }])(g);
+    conDoraEnEpsg(g);
+  })), "generarBoletinesTodosLosCursos()");
+assert("Falla de un estudiante: error en ambos cursos; EPSI EPS4 queda sin libro y EPSG EPS3 se genera con Iris",
+  !rDora.error && rDora.creados.length === 4 && !rDora.creados.some(l => l.getName() === NOMBRE_LIBRO("EPSI EPS4"))
+    && rDora.creados.find(l => l.getName() === NOMBRE_LIBRO("EPSG EPS3")).getSheets().map(h => h.getName()).join("|") === "Resumen|Gastro, Iris Tres"
+    && rDora.estadoAdvertencias.includes("EPSI EPS4: Sin libro: Ningún estudiante seleccionado de EPSI EPS4 (3º bimestre) pudo prepararse.")
+    && /\n  EPSI EPS4 · Error · fila \d+ · Ficticia, Dora Cuatro: El DNI aparece en las hojas EPSI y EPSG /.test(rDora.estadoAdvertencias),
+  rDora.error || rDora.creados.map(l => l.getName()).join(" | ") + "\n" + rDora.estadoAdvertencias);
+assert("Falla de un estudiante: los demás cursos producen los mismos libros que sin la falla",
+  ["EPSI EPS1", "EPSI EPS2", "EPSG EPS1"].every(curso => fotoLibro(rDora.creados.find(l => l.getName() === NOMBRE_LIBRO(curso))) === fotoLibro(libroTodos(curso))));
+
+// 16.6. Falla inesperada después de crear algún libro: se informa lo ya creado (no se borra ni se reintenta)
+let rCorte = runVarios("Falla al crear el segundo libro", ctlVarios({}), srcVarios,
+  "const crear = SpreadsheetApp.create; let n = 0; SpreadsheetApp.create = nombre => { if (++n === 2) throw new Error('cuota de Drive'); return crear(nombre); }; generarBoletinesTodosLosCursos()");
+assert("Falla inesperada: error propagado, Control y diálogo listan el libro ya creado",
+  rCorte.error === "cuota de Drive" && rCorte.creados.length === 1 && rCorte.estadoResultado === "Error: cuota de Drive"
+    && rCorte.estadoAdvertencias.startsWith("Libros ya creados antes del error:\nEPSI EPS1: Libro creado: " + NOMBRE_LIBRO("EPSI EPS1"))
+    && rCorte.rawAlerts[0].includes("Libros ya creados antes del error:\n- EPSI EPS1: Libro creado: "),
+  rCorte.error + " / " + rCorte.estadoAdvertencias);
+
+// 16.7. Las generaciones existentes no cambian con marcas en Control
+let rIndConMarcas = runTest("Individual con marcas", { control: ctlReal("97000001", marcas({ "EPSI EPS1": "SÍ", "EPSG EPS2": "x" })), sources, templateGrid: tpl });
+assert("Individual: ignora las marcas de varios cursos (mismo informe, sin libros)",
+  !rIndConMarcas.error && mismoInforme(rIndConMarcas, rReal) && rIndConMarcas.creados.length === 0, rIndConMarcas.error);
+let rCursoConMarcas = runCurso("Por curso con marcas", ctlCurso("EPS2", marcas({ "EPSI EPS1": "SÍ", "EPSG EPS2": "x" })), srcCurso);
+assert("Por curso: ignora las marcas de varios cursos (mismo libro que sin marcas)",
+  !rCursoConMarcas.error && rCursoConMarcas.creados.length === 1 && fotoLibro(libroDe(rCursoConMarcas)) === fotoLibro(libroDe(rCurso)),
+  rCursoConMarcas.error);
+
+// 16.8. Control del xlsx: bloque de varios cursos con los 8 cursos fijos
+const genCursos = cargarGenerador();
+assert("Control (xlsx): A14 encabeza el bloque de varios cursos",
+  textoXlsx("A14") === "Varios cursos" && textoXlsx("B14") === "Generar", textoXlsx("A14"));
+assert("Control (xlsx): cada marca está junto al nombre de su curso y empieza vacía",
+  CELDAS_CONTROL.CURSOS.length === 8 && CELDAS_CONTROL.CURSOS.every(c =>
+    rotuloDe(c.celda) === genCursos.construirNivelVisual_(c.hojaOrigen, c.nivel, "") + " (" + c.hojaOrigen + " " + c.nivel + ")" && textoXlsx(c.celda) === ""),
+  CELDAS_CONTROL.CURSOS.map(c => c.celda + ":" + rotuloDe(c.celda)).join(", "));
+let rXlsxVarios = runVarios("Varios cursos con Control del xlsx",
+  ctlDesdeXlsx(Object.assign({ B5: P3B }, fuentesCurso, marcas({ "EPSI EPS1": "SÍ", "EPSG EPS3": "SÍ" }))));
+assert("Control (xlsx): con las marcas del bloque se generan sólo esos cursos, sin depender de B6 ni B9",
+  !rXlsxVarios.error && rXlsxVarios.creados.map(l => l.getName()).join(" | ") === ["EPSI EPS1", "EPSG EPS3"].map(NOMBRE_LIBRO).join(" | "),
+  rXlsxVarios.error || rXlsxVarios.creados.map(l => l.getName()).join(" | "));
+assert("Control (xlsx): el manual y las reglas se conservan debajo del bloque",
+  textoXlsx("A24") === "Manual breve" && textoXlsx("A31") === "Reglas centrales", textoXlsx("A24") + " / " + textoXlsx("A31"));
+
+// =============================================================================
+// 17. Textos que no deben cortarse: nombre del estudiante y EQUIVALENCIA
+// =============================================================================
+// El ancho real del texto no se modela: se protege el mecanismo (celda combinada del nombre y tamaño de EQUIVALENCIA).
+const combinadas = [...xmlPlantilla.matchAll(/<(?:\w+:)?mergeCell ref="([^"]+)"/g)].map(m => m[1]);
+assert("Plantilla (xlsx): el nombre ocupa E4:L4, sobre celdas vacías; DNI y curso siguen en E5:F5 y E6:F6",
+  combinadas.includes("E4:L4") && !combinadas.includes("E4:F4") && combinadas.includes("E5:F5") && combinadas.includes("E6:F6")
+    && "GHIJKL".split("").every(c => !rect(tpl)[3][colNum(c) - 1]),
+  combinadas.join(", "));
+// Celdas con texto de una hoja generada y el tamaño de letra que les asignó el generador.
+const tamanos = hoja => rect(hoja.grid).flatMap((f, r) => f.map((v, c) => [v, (hoja.formatos[(r + 1) + "," + (c + 1)] || {}).tamano]))
+  .filter(([v, t]) => t !== undefined || v === "EQUIVALENCIA");
+const soloEquivalenciaEn7 = hoja => { const t = tamanos(hoja); return t.length > 0 && t.every(([v, n]) => v === "EQUIVALENCIA" && n === 7); };
+assert("EQUIVALENCIA: en el informe individual va en 7 y ninguna otra celda cambia de tamaño (Ana: 1C y 3B)",
+  soloEquivalenciaEn7(rReal.ss.getSheetByName("Informe_actual")) && tamanos(rReal.ss.getSheetByName("Informe_actual")).length === 2,
+  JSON.stringify(tamanos(rReal.ss.getSheetByName("Informe_actual"))));
+assert("EQUIVALENCIA: igual en la hoja del libro por curso y en la de varios cursos",
+  soloEquivalenciaEn7(libroDe(rCurso).getSheetByName("Ficticia, Ana Real (97000001)"))
+    && soloEquivalenciaEn7(libroTodos("EPSI EPS2").getSheetByName("Ficticia, Ana Real (97000001)")));
+assert("EQUIVALENCIA: un boletín sin EQUIVALENCIA no cambia ningún tamaño (Beto)",
+  tamanos(rNuevo.ss.getSheetByName("Informe_actual")).length === 0, JSON.stringify(tamanos(rNuevo.ss.getSheetByName("Informe_actual"))));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);
