@@ -1,6 +1,6 @@
 # Casos de prueba del generador EPS
 
-Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período).
+Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), y la sección 11, la generación de varios cursos (#20).
 
 ## Arnés de pruebas local
 
@@ -250,3 +250,31 @@ Casos automatizados (sección 15 de `tests/run.js`):
 - Individual y por curso con los mismos fondos y colores de texto; sin el semáforo heredado; sin escrituras en las fuentes.
 - Categoría de cada valor.
 - `Plantilla` del xlsx sin formato condicional, con base uniforme en `E9:L16`, con encabezado y nombres de materia intactos y con `D17` vacía, y la fila 17 en 192 pt.
+
+### 11. Varios cursos en una sola operación (#20)
+
+**Uso**: `Control` tiene el bloque *Varios cursos* (filas 14 a 22) con los 8 cursos fijos de CFP7 (`EPSI` y `EPSG`, `EPS1` a `EPS4`, en `CONFIG_EPS.CURSOS`) y una marca `SÍ` / `NO` por curso en `B15:B22`. *Informes EPS > Generar boletines de los cursos marcados* toma los cursos con `SÍ` (también `Si`); `NO` o vacío no lo incluye. *Informes EPS > Generar boletines de todos los cursos* toma los 8 y no mira las marcas. Ambas usan el período, el ciclo lectivo y las fuentes de `Control`, e ignoran `B6`, `B7` y `B9`. No hay descubrimiento de cursos.
+
+**Reutilización**: cada curso es una tanda de la generación por curso. `generarTandaCurso_` quedó dividida en `prepararTandaCurso_` (selección y datos de cada estudiante, sin crear nada) y `crearLibroTanda_` (libro, hojas y `Resumen`). La generación por curso llama a las dos seguidas; la de varios cursos primero prepara todos los cursos elegidos y después crea los libros en orden fijo.
+
+**Lectura**: las fuentes se leen una vez por orientación (`leerFuentes_`) y las comparten sus cursos. Cada tanda recibe su propia copia de las advertencias generales.
+
+**Errores**:
+- Configuración (ningún curso marcado, una marca distinta de `SÍ`, `NO` o vacío, falta de período o de fuente principal) y estructura (fuente principal ilegible, falta de `LISTO PARA EXPORTAR`, nivel sin marcador en la hoja de su orientación): abortan antes de crear el primer libro, aunque el curso con problemas sea el último.
+- Por estudiante: como en la generación por curso; no afecta a los demás estudiantes ni a otros cursos.
+- Curso sin estudiantes listos: no genera libro y los demás se procesan.
+- Falla inesperada al crear libros (por ejemplo, de Drive): no se borra lo creado; `Control` y el diálogo listan los libros ya creados.
+
+**Resultado**: `Control!F3` muestra `Cursos: n · Libros creados: n · Sin libro: n · Duración: n s.`. `F4` muestra una línea por curso (libro con conteos y enlace, o motivo sin libro), las advertencias generales de cada curso y, para los cursos sin libro, el detalle por estudiante. Un aviso (`toast`) indica el curso en curso. No hay jobs, colas, triggers ni cortes por tiempo: el rendimiento de los 8 cursos se mide en una prueba real.
+
+Casos automatizados (sección 16 de `tests/run.js`, sobre las grillas reales sintéticas con los 8 niveles en EPSI y EPSG; 3 cursos sin estudiantes listos):
+- Todos: sin marcas, 5 libros en orden fijo y ninguno para los 3 cursos sin estudiantes listos. Cada libro es idéntico al de la generación por curso del mismo curso (hojas, `Resumen`, valores, colores, visibilidad y fila inmovilizada). `Control`, diálogo y avisos con una línea por curso. Una apertura por archivo y orientación. Sin escrituras en las fuentes. Ignora las marcas, aun con valores no válidos.
+- Cursos marcados: sólo los marcados, en orden fijo, y el marcado sin estudiantes listos no crea libro. Con un solo curso, el libro es el de la generación por curso. Con una sola orientación, no se lee la otra como principal.
+- Sin cursos marcados, una marca no admitida o falta de la fuente principal: error claro, sin leer fuentes (en las marcas) ni crear libros.
+- Error global en el último curso (EPSG sin marcador `EPS4`) o en una orientación (EPSG sin `LISTO PARA EXPORTAR`): ningún libro.
+- Un estudiante en las hojas principales de EPSI y EPSG: error en los dos cursos; su curso queda sin libro, el otro se genera con el resto y los demás libros no cambian.
+- Falla al crear el segundo libro: el error se propaga y se informa el libro ya creado.
+- La generación individual y la generación por curso ignoran las marcas.
+- `Control` del xlsx: encabezado `A14`, rótulo de cada curso junto a su marca vacía, validación `SÍ,NO` en `B15:B22`, manual y reglas corridos debajo del bloque. Con ese `Control`, se generan sólo los cursos marcados.
+
+**No cubierto por el arnés**: tiempo real y límites de Apps Script con los 8 cursos (límite de 6 minutos por ejecución), cuotas de creación en Drive, aspecto del bloque y de los selectores en Google Sheets, y el aviso de progreso.
