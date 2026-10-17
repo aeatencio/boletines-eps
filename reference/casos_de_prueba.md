@@ -1,6 +1,6 @@
 # Casos de prueba del generador EPS
 
-Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), y la sección 11, la generación de varios cursos (#20).
+Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20), y la sección 13, la exportación a PDF (#21).
 
 ## Arnés de pruebas local
 
@@ -9,7 +9,7 @@ Para facilitar la reproducibilidad sin requerir interacción manual con Google S
 ### Características y funcionamiento del arnés
 
 - **Ejecución de código real**: `tests/run.js` carga y ejecuta el archivo de código fuente real `src/Generador_EPS.gs` dentro de un contexto aislado (`node:vm`).
-- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`).
+- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`; para la exportación a PDF, también `Ui.prompt()`, `UrlFetchApp.fetch()`, `DriveApp` y `ScriptApp.getOAuthToken()`).
 - **Consumo directo de fixtures vigentes**: En cada ejecución se vacía el directorio de trabajo temporal `tmp/unzipped/` y se extraen directamente los archivos XLSX y TSV que existen en `reference/fixtures/`. Si falta algún fixture o se modifica, el runner valida estrictamente el estado actual del disco y no reutiliza extracciones de corridas previas.
 - **Requisito de plataforma y shell**: El runner debe ejecutarse en un entorno **Windows** desde **PowerShell** o **`cmd`**, dependiendo exclusivamente del comando `tar.exe` provisto por el sistema operativo en `%SystemRoot%\System32` (bsdtar nativo de Windows). **No debe asumirse que funciona desde Git Bash**, ya que en dicho entorno `tar.exe` puede resolverse al binario provisto por MSYS y fallar al abrir los archivos XLSX empaquetados.
 
@@ -21,7 +21,7 @@ El arnés local valida la lógica de lectura tabular, normalización, acumulaci�
 3. Aspectos visuales y de formato del workbook: tipografías, alineación, bordes, anchos de columna y altos de fila efectivos en Google Sheets.
 4. Evaluación del formato condicional en tiempo real en la interfaz de Google Sheets.
 5. Importación real de planillas en formato nativo de Google Sheets.
-6. Presentación final para impresión ni generación de PDF.
+6. Presentación final para impresión ni el PDF que produce Google: la exportación se prueba hasta el pedido (URL, parámetros y manejo de la respuesta).
 
 Por estas razones, la tarea **#4 (verificación manual en entorno real de Google Sheets)** sigue siendo estrictamente necesaria para validar visualización, menús de usuario, permisos y la experiencia operativa completa antes de cualquier liberación.
 
@@ -290,3 +290,28 @@ Casos automatizados (sección 17 de `tests/run.js`; el ancho real del texto no s
 - `EQUIVALENCIA` en 7 en el informe individual, en el libro por curso y en el de varios cursos; ninguna otra celda cambia de tamaño. Un boletín sin `EQUIVALENCIA` no cambia ningún tamaño.
 
 **Validación manual**: comprobar en Google Sheets, y en el PDF, que un nombre largo se vea completo y que `EQUIVALENCIA` quede en una línea en las columnas de 1º bimestre, 1º cuatrimestre y 3º bimestre.
+
+### 13. Exportación a PDF de un libro ya generado (#21)
+
+**Uso**: *Informes EPS > Exportar PDF de un libro de boletines* pide el link o ID de un libro de la generación por curso (o de varios cursos), ya revisado. Crea una carpeta nueva junto al libro, `<nombre del libro> - PDF <fecha y hora>`, con un PDF por hoja de estudiante (todas menos `Resumen`), con el nombre de la hoja. Si no se puede ver la carpeta del libro, la crea en Mi unidad.
+
+**Separación**: es una operación posterior y separada de la generación, en su propio archivo (`src/Exportar_PDF.gs`). `Generador_EPS.gs` sólo la nombra en el menú y no usa sus servicios. El libro sólo se lee: una falla de exportación nunca obliga a regenerarlo. Cada exportación crea su carpeta, así que volver a exportar no reemplaza ni mezcla PDF anteriores.
+
+**Mecanismo**: la URL de exportación de Google Sheets (`/export?format=pdf&gid=…`), pedida con `UrlFetchApp` y el token del usuario. No está documentada oficialmente, por eso queda aislada en `urlExportacionPdf_` y `exportarHojaPdf_`. Cada pedido lleva la configuración de impresión completa (`CONFIG_PDF.PARAMETROS`), sin depender de lo guardado en el diálogo de impresión: `size=A4`, `portrait=true`, `fitw=true` y `scale=2` (ajustar al ancho), `top_margin`, `left_margin` y `right_margin` en 0, `bottom_margin=0.3937` (1 cm en pulgadas) y `fzr=true` (repetir filas inmovilizadas, la fila 1 de cada boletín; ver sección 9), sin cuadrícula, notas, título, nombre de hoja ni números de página.
+
+**Errores**:
+- Link no reconocible, libro sin `Resumen` (por ejemplo, el propio generador) o sin hojas de estudiantes: error claro, sin crear la carpeta.
+- Por hoja: una respuesta HTTP distinta de 200 (429 se señala como demasiadas exportaciones seguidas), una respuesta que no es PDF o una excepción del pedido se registran en esa hoja, y las demás se exportan igual. No hay reintentos.
+- Tiempo: pasados 5 minutos (`CONFIG_PDF.TIEMPO_MAXIMO_MS`), antes del límite de 6 de Apps Script, no se empieza otra exportación y las hojas que faltan se informan como sin exportar.
+
+**Resultado**: `Control!F3` muestra `PDF exportados: n de n · Con error: n · Sin exportar: n · Duración: n s (n s por PDF).`, el libro y el enlace a la carpeta. `F4` lista cada hoja con error o sin exportar, con el motivo. Un aviso (`toast`) indica la hoja en curso.
+
+Casos automatizados (sección 18 de `tests/run.js`, sobre el libro EPS2 de la generación por curso):
+- Libro completo: carpeta junto al libro, 4 PDF en el orden del libro y sin `Resumen`, un pedido por hoja con su `gid`, configuración de impresión validada e idéntica en todos los pedidos, token del usuario y `muteHttpExceptions`.
+- El libro no cambia (hojas, valores, formatos, visibilidad, filas inmovilizadas) y sólo se usan métodos de lectura.
+- Fallas por hoja (HTTP 429, respuesta HTML y excepción): las demás se exportan, `Control` detalla cada una y el libro no cambia; volver a exportar da los 4 PDF.
+- Tiempo máximo: con 3 minutos por PDF se exportan 2 de 4 y las otras 2 quedan informadas.
+- Libro sin `Resumen`, libro sin hojas de estudiantes, cancelación y link inválido: no se crea carpeta ni se exporta.
+- `Generador_EPS.gs` no usa `UrlFetchApp`, `DriveApp` ni `ScriptApp`.
+
+**No cubierto por el arnés**: el PDF que produce Google (tamaño, márgenes, ajuste al ancho, repetición de la fila 1, cortes de página), la vigencia de los parámetros de la URL, los permisos y cuotas reales, los tiempos y la aparición de errores 429. Queda pendiente la validación en Google real que pide #21: un boletín de una página, uno de dos páginas, un curso completo, independencia de la configuración guardada en el diálogo de impresión y tiempos reales.

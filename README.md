@@ -13,12 +13,13 @@ El proyecto está en desarrollo activo, y el trabajo pendiente se organiza en lo
 ## Puesta en funcionamiento
 
 1. Subir `src/Generador_EPS.xlsx` a Google Drive y abrirlo como Google Sheets.
-2. En *Extensiones > Apps Script*, pegar `src/Generador_EPS.gs`, guardar y recargar.
+2. En *Extensiones > Apps Script*, pegar `src/Generador_EPS.gs` y, en un segundo archivo de script, `src/Exportar_PDF.gs`; guardar y recargar.
 3. Completar la hoja `Control` con el período, el estudiante y las grillas de origen.
 4. Ejecutar *Informes EPS > Generar informe actual* y revisar el resultado antes de exportar o imprimir.
 5. Para un curso completo, elegir el nivel / curso (`EPS1`…`EPS4`) en `Control` y ejecutar *Informes EPS > Generar boletines por curso*. Se crea un libro nuevo con una hoja por estudiante con `LISTO PARA EXPORTAR = SÍ` en la grilla del período. El libro se crea en Mi unidad, y su organización posterior en carpetas queda a cargo del usuario. La hoja `Resumen`, con generados, omitidos, advertencias y errores, queda oculta para que no se imprima ni se exporte con el libro.
 6. Para varios cursos en una sola operación, marcar con `SÍ` los cursos del bloque *Varios cursos* de `Control` y ejecutar *Informes EPS > Generar boletines de los cursos marcados*; para los 8 cursos (EPSI y EPSG, EPS1…EPS4), ejecutar *Informes EPS > Generar boletines de todos los cursos*, que no mira las marcas. Se usan el período, el ciclo lectivo y las fuentes de `Control`; la hoja origen, el DNI y el nivel se ignoran. Cada curso produce el mismo libro que la generación por curso, y un curso sin estudiantes listos no genera libro. Antes de crear el primer libro se validan todas las fuentes y cursos: un error de configuración o de estructura no deja libros a medias. `Control` registra una línea por curso y la duración total.
-7. Para imprimir o exportar a PDF: A4 vertical, ajustar al ancho, márgenes superior y laterales de 0 cm e inferior de 1 cm, y la opción *Repetir filas inmovilizadas* del diálogo de impresión activada. Así, si un boletín ocupa dos páginas, la segunda empieza con aire superior.
+7. Para imprimir o exportar a PDF a mano: A4 vertical, ajustar al ancho, márgenes superior y laterales de 0 cm e inferior de 1 cm, y la opción *Repetir filas inmovilizadas* del diálogo de impresión activada. Así, si un boletín ocupa dos páginas, la segunda empieza con aire superior.
+8. Para obtener un PDF por estudiante de un libro ya generado y revisado, ejecutar *Informes EPS > Exportar PDF de un libro de boletines* y pegar el link del libro. Es una operación separada de la generación: no modifica el libro y usa siempre la configuración de impresión del punto anterior, sin depender de lo guardado en el diálogo de impresión. Los PDF, uno por hoja de estudiante y con el nombre de la hoja, quedan en una carpeta nueva junto al libro. `Control` registra cuántos se exportaron, la duración y cada hoja que falló; si algo falla, se vuelve a exportar el mismo libro. La primera vez, Google pide autorizar el acceso a Drive y a servicios externos (la exportación usa la URL de exportación de Google Sheets).
 
 ## Organización
 

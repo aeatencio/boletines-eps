@@ -87,12 +87,14 @@ const esFecha = v => Object.prototype.toString.call(v) === "[object Date]";
 
 class MockSheet {
   constructor(name, grid, reglas) {
+    this.sheetId = MockSheet.ultimoId = (MockSheet.ultimoId || 0) + 1; // gid, único como en Google Sheets
     this.name = name;
     this.grid = grid.map(r => r.slice());
     this.reglas = (reglas || []).slice(); // formato condicional
     this.formatos = {};                   // "fila,columna" → { fondo, texto }, sólo lo que asigna el generador
   }
   getName() { return this.name; }
+  getSheetId() { return this.sheetId; }
   // Como Google Sheets: el nombre no puede repetirse en el libro, sin distinguir mayúsculas.
   setName(n) {
     if (this.ss && this.ss.sheets.some(s => s !== this && s.name.toLowerCase() === String(n).toLowerCase())) {
@@ -181,6 +183,7 @@ class MockSS {
     sheets.forEach(s => { s.ss = this; });
   }
   getName() { return this.name; }
+  getId() { return this.id; }
   getUrl() { return "https://docs.google.com/spreadsheets/d/MOCK/" + encodeURIComponent(this.name); }
   // Distinta de la de Buenos Aires, como el generador real observado: el nombre del libro no debe depender de ella.
   getSpreadsheetTimeZone() { return "America/Los_Angeles"; }
@@ -1109,11 +1112,12 @@ assert("Sin estudiantes listos: Control conserva el detalle de los omitidos y la
 // 8.6. Menú: la generación por curso y la de varios cursos son acciones separadas y la individual se conserva
 const menu = [];
 const genMenu = cargarGenerador();
-genMenu.SpreadsheetApp = { getUi: () => ({ createMenu: () => ({ addItem(t, f) { menu.push(t + "→" + f); return this; }, addToUi() {} }) }) };
+genMenu.SpreadsheetApp = { getUi: () => ({ createMenu: () => ({ addItem(t, f) { menu.push(t + "→" + f); return this; }, addSeparator() { menu.push("---"); return this; }, addToUi() {} }) }) };
 genMenu.onOpen();
-assert("Menú: conserva 'Generar informe actual' y 'Generar boletines por curso', y agrega los cursos marcados y todos los cursos",
+assert("Menú: conserva las generaciones y agrega, separada, la exportación a PDF",
   menu.join(", ") === "Generar informe actual→generarInformeActual, Generar boletines por curso→generarBoletinesPorCurso, "
-    + "Generar boletines de los cursos marcados→generarBoletinesCursosMarcados, Generar boletines de todos los cursos→generarBoletinesTodosLosCursos",
+    + "Generar boletines de los cursos marcados→generarBoletinesCursosMarcados, Generar boletines de todos los cursos→generarBoletinesTodosLosCursos, "
+    + "---, Exportar PDF de un libro de boletines→exportarPdfLibro",
   menu.join(", "));
 
 // 8.7. Resumen oculto: existe y conserva el detalle, pero no se imprime ni se exporta con el libro
@@ -1917,6 +1921,210 @@ assert("EQUIVALENCIA: igual en la hoja del libro por curso y en la de varios cur
     && soloEquivalenciaEn7(libroTodos("EPSI EPS2").getSheetByName("Ficticia, Ana Real (97000001)")));
 assert("EQUIVALENCIA: un boletín sin EQUIVALENCIA no cambia ningún tamaño (Beto)",
   tamanos(rNuevo.ss.getSheetByName("Informe_actual")).length === 0, JSON.stringify(tamanos(rNuevo.ss.getSheetByName("Informe_actual"))));
+
+// =============================================================================
+// 18. Exportación a PDF de un libro ya generado (#21)
+// =============================================================================
+// Se exporta el libro EPS2 de la sección 8. La URL de exportación y Drive se simulan: el PDF real se valida en Google.
+const ID_LIBRO = "ID_LIBRO_EPS2_xxxxxxxxxxxxxxx";
+const LINK_LIBRO = "https://docs.google.com/spreadsheets/d/" + ID_LIBRO + "/edit#gid=0";
+const blobMock = tipo => ({ nombre: "", getContentType: () => tipo, setName(n) { this.nombre = n; return this; }, getName() { return this.nombre; } });
+const respuestaMock = (codigo, tipo) => ({ getResponseCode: () => codigo, getBlob: () => blobMock(tipo) });
+const PDF_OK = () => respuestaMock(200, "application/pdf");
+
+// Registra cada método del libro y de sus hojas que usa la exportación.
+const conAccesos = (obj, nombre, accesos) => new Proxy(obj, {
+  get(t, p) {
+    const v = t[p];
+    if (typeof v !== "function") return v;
+    return (...args) => {
+      accesos.add(nombre + "." + String(p));
+      const r = v.apply(t, args);
+      if (p === "getSheets") return r.map(h => conAccesos(h, "hoja", accesos));
+      if (p === "getSheetByName" && r) return conAccesos(r, "hoja", accesos);
+      return r;
+    };
+  }
+});
+
+// Ejecuta exportarPdfLibro() con los dos archivos de src cargados juntos, como en el proyecto de Apps Script.
+// responder(n, url) da la respuesta del pedido n; cada pedido avanza el reloj msPorPdf.
+function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = PDF_OK, msPorPdf = 0, padres }) {
+  const ctrl = hojaControl({});
+  const generador = new MockSS([new MockSheet("Plantilla", tpl), ctrl]);
+  const alerts = [], pedidos = [], carpetas = [], abiertos = [], accesos = new Set();
+  let reloj = Date.parse("2026-10-16T12:00:00Z");
+  const carpetaMock = (nombre, padre) => {
+    const c = {
+      nombre, padre, archivos: [],
+      getName: () => nombre,
+      getUrl: () => "https://drive.google.com/drive/folders/" + encodeURIComponent(nombre),
+      createFolder: n => { const nueva = carpetaMock(n, nombre); carpetas.push(nueva); return nueva; },
+      createFile: blob => { c.archivos.push(blob.getName()); return {}; }
+    };
+    return c;
+  };
+  const listaPadres = padres || [carpetaMock("Carpeta del curso")];
+  const ctx = {
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => generador,
+      getUi: () => ({
+        ButtonSet: { OK_CANCEL: "OK_CANCEL" },
+        Button: { OK: "OK", CANCEL: "CANCEL" },
+        prompt: () => ({ getSelectedButton: () => boton, getResponseText: () => respuesta }),
+        alert: m => alerts.push(m)
+      }),
+      openById: id => {
+        abiertos.push(id);
+        if (id !== libro.getId()) throw new Error("mock: id inexistente " + id);
+        return conAccesos(libro, "libro", accesos);
+      }
+    },
+    DriveApp: {
+      getFileById: () => { let i = 0; return { getParents: () => ({ hasNext: () => i < listaPadres.length, next: () => listaPadres[i++] }) }; },
+      getRootFolder: () => carpetaMock("Mi unidad")
+    },
+    ScriptApp: { getOAuthToken: () => "TOKEN_FICTICIO" },
+    UrlFetchApp: {
+      fetch: (url, opciones) => {
+        pedidos.push({ url, opciones });
+        reloj += msPorPdf;
+        return responder(pedidos.length, url);
+      }
+    },
+    Utilities: { formatDate: () => "<fecha>" },
+    Date: class extends Date {
+      constructor(...args) { if (args.length) super(...args); else super(reloj); }
+      static now() { return reloj; }
+    }
+  };
+  vm.createContext(ctx);
+  ["src/Generador_EPS.gs", "src/Exportar_PDF.gs"].forEach(f => vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), ctx));
+  let error = null;
+  try {
+    vm.runInContext("exportarPdfLibro()", ctx);
+  } catch (e) {
+    error = e.message;
+  }
+  return {
+    error, alerts, pedidos, carpetas, abiertos, accesos: [...accesos].sort(), generador,
+    archivos: carpetas.length ? carpetas[0].archivos : [],
+    resultado: ctrl.get(3, 6), advertencias: ctrl.get(4, 6), toasts: generador.toasts || []
+  };
+}
+
+const libroPdf = libroDe(rCurso);
+libroPdf.id = ID_LIBRO;
+const fotoLibroPdf = fotoLibro(libroPdf);
+const HOJAS_PDF = HOJAS_EPS2.slice(1); // sin Resumen
+const CARPETA_PDF = NOMBRE_LIBRO_EPS2 + " - PDF <fecha>";
+const parametrosPdf = url => Object.fromEntries(new URL(url).searchParams);
+const LECTURAS_LIBRO = ["hoja.getName", "hoja.getSheetId", "libro.getId", "libro.getName", "libro.getSheetByName", "libro.getSheets"];
+const soloLeyo = r => r.accesos.every(a => LECTURAS_LIBRO.includes(a));
+
+// 18.1. Libro completo: un PDF por hoja de estudiante, con la configuración de impresión validada
+let rPdf = runExportar({ libro: libroPdf });
+assert("PDF: termina sin error y crea una carpeta nueva junto al libro, con el nombre del libro",
+  !rPdf.error && rPdf.carpetas.length === 1 && rPdf.carpetas[0].nombre === CARPETA_PDF && rPdf.carpetas[0].padre === "Carpeta del curso",
+  rPdf.error || JSON.stringify(rPdf.carpetas.map(c => [c.nombre, c.padre])));
+assert("PDF: un archivo por hoja de estudiante, con el nombre de la hoja, en el orden del libro y sin Resumen",
+  JSON.stringify(rPdf.archivos) === JSON.stringify(HOJAS_PDF.map(h => h + ".pdf")), rPdf.archivos.join(" | "));
+assert("PDF: cada pedido exporta una sola hoja del libro (su gid) por la URL de exportación",
+  rPdf.pedidos.length === HOJAS_PDF.length
+    && rPdf.pedidos.every((p, i) => p.url.startsWith("https://docs.google.com/spreadsheets/d/" + ID_LIBRO + "/export?")
+      && parametrosPdf(p.url).gid === String(libroPdf.getSheetByName(HOJAS_PDF[i]).getSheetId())),
+  rPdf.pedidos.map(p => p.url).join("\n"));
+const pPdf = rPdf.pedidos.length ? parametrosPdf(rPdf.pedidos[0].url) : {};
+assert("PDF: A4 vertical, ajustado al ancho y con filas inmovilizadas repetidas",
+  pPdf.format === "pdf" && pPdf.size === "A4" && pPdf.portrait === "true" && pPdf.fitw === "true" && pPdf.scale === "2" && pPdf.fzr === "true",
+  JSON.stringify(pPdf));
+assert("PDF: márgenes superior, izquierdo y derecho de 0 cm e inferior de 1 cm (en pulgadas)",
+  pPdf.top_margin === "0" && pPdf.left_margin === "0" && pPdf.right_margin === "0" && Math.abs(Number(pPdf.bottom_margin) * 2.54 - 1) < 0.001,
+  JSON.stringify(pPdf));
+assert("PDF: todos los pedidos llevan la misma configuración completa, sin depender de lo guardado en el diálogo de impresión",
+  rPdf.pedidos.every(p => { const q = parametrosPdf(p.url); delete q.gid; const base = Object.assign({}, pPdf); delete base.gid; return JSON.stringify(q) === JSON.stringify(base); })
+    && ["gridlines", "printnotes", "printtitle", "sheetnames", "fzc"].every(k => pPdf[k] === "false") && pPdf.pagenum === "UNDEFINED",
+  JSON.stringify(pPdf));
+assert("PDF: cada pedido usa el token del usuario y no lanza excepciones por códigos HTTP",
+  rPdf.pedidos.every(p => p.opciones.headers.Authorization === "Bearer TOKEN_FICTICIO" && p.opciones.muteHttpExceptions === true));
+assert("PDF: el libro no se modifica (mismas hojas, valores, formatos, visibilidad y filas inmovilizadas) y sólo se lee",
+  fotoLibro(libroPdf) === fotoLibroPdf && soloLeyo(rPdf), rPdf.accesos.join(", "));
+assert("PDF: Control registra conteos, duración, libro y carpeta; el diálogo da el enlace a la carpeta",
+  rPdf.resultado === "PDF exportados: 4 de 4 · Con error: 0 · Sin exportar: 0 · Duración: 0 s (0 s por PDF). Libro: " + NOMBRE_LIBRO_EPS2
+    + " · Carpeta: https://drive.google.com/drive/folders/" + encodeURIComponent(CARPETA_PDF)
+    && rPdf.advertencias === "Sin advertencias"
+    && rPdf.alerts.length === 1 && rPdf.alerts[0].includes(CARPETA_PDF + "\nhttps://drive.google.com/drive/folders/"),
+  rPdf.resultado + " / " + rPdf.alerts.join(" / "));
+assert("PDF: un aviso por hoja exportada; el generador sólo cambia en el estado de Control",
+  rPdf.toasts.length === 4 && rPdf.toasts[0] === "PDF 1 de 4: " + HOJAS_PDF[0] + "."
+    && rPdf.generador.getSheets().map(h => h.getName()).join("|") === "Plantilla|Control",
+  rPdf.toasts.join(" / "));
+
+// 18.2. Falla de una exportación: se informa por hoja, las demás se exportan y el libro queda igual
+let rPdfFallas = runExportar({
+  libro: libroPdf,
+  responder: n => {
+    if (n === 2) return respuestaMock(429, "text/html");
+    if (n === 3) return respuestaMock(200, "text/html; charset=utf-8");
+    if (n === 4) throw new Error("Tiempo de espera agotado");
+    return PDF_OK();
+  }
+});
+assert("PDF con fallas: termina sin error, exporta las hojas que pudo y pide todas",
+  !rPdfFallas.error && JSON.stringify(rPdfFallas.archivos) === JSON.stringify([HOJAS_PDF[0] + ".pdf"]) && rPdfFallas.pedidos.length === 4,
+  rPdfFallas.error || rPdfFallas.archivos.join(" | "));
+assert("PDF con fallas: Control lista cada hoja fallida con su motivo (HTTP, respuesta que no es PDF, excepción)",
+  rPdfFallas.resultado.startsWith("PDF exportados: 1 de 4 · Con error: 3 · Sin exportar: 0 · ")
+    && rPdfFallas.advertencias === [
+      "Error · " + HOJAS_PDF[1] + ": Google respondió HTTP 429 (demasiadas exportaciones seguidas).",
+      "Error · " + HOJAS_PDF[2] + ": La respuesta de Google no es un PDF (text/html; charset=utf-8).",
+      "Error · " + HOJAS_PDF[3] + ": Tiempo de espera agotado"
+    ].join("\n")
+    && rPdfFallas.alerts[0].includes("El libro no se modificó: se puede volver a exportar."),
+  rPdfFallas.resultado + "\n" + rPdfFallas.advertencias);
+assert("PDF con fallas: el libro no se modifica",
+  fotoLibro(libroPdf) === fotoLibroPdf && soloLeyo(rPdfFallas), rPdfFallas.accesos.join(", "));
+let rPdfDeNuevo = runExportar({ libro: libroPdf });
+assert("PDF con fallas: volver a exportar el mismo libro da los 4 PDF en una carpeta nueva",
+  !rPdfDeNuevo.error && JSON.stringify(rPdfDeNuevo.archivos) === JSON.stringify(rPdf.archivos) && rPdfDeNuevo.carpetas.length === 1,
+  rPdfDeNuevo.error);
+
+// 18.3. Tiempo máximo: no se empieza otra exportación y las hojas que faltan se informan
+let rPdfTiempo = runExportar({ libro: libroPdf, msPorPdf: 3 * 60 * 1000 });
+assert("PDF con tiempo máximo: exporta 2 de 4 y las otras quedan sin exportar, informadas en Control",
+  !rPdfTiempo.error && rPdfTiempo.archivos.length === 2 && rPdfTiempo.pedidos.length === 2
+    && rPdfTiempo.resultado.startsWith("PDF exportados: 2 de 4 · Con error: 0 · Sin exportar: 2 · Duración: 360 s (180 s por PDF).")
+    && rPdfTiempo.advertencias === HOJAS_PDF.slice(2).map(h => "Sin exportar · " + h + ": se alcanzó el tiempo máximo de la ejecución.").join("\n"),
+  rPdfTiempo.error || rPdfTiempo.resultado + "\n" + rPdfTiempo.advertencias);
+
+// 18.4. Libros que no son de la generación por curso, cancelación y link inválido: no se crea nada
+const sinCambios = r => r.carpetas.length === 0 && r.pedidos.length === 0;
+const otroLibro = (id, hojas) => { const l = new MockSS(hojas.map(n => new MockSheet(n, [["x"]])), "Otro libro"); l.id = id; return l; };
+let rPdfGenerador = runExportar({ libro: otroLibro("ID_GENERADOR_xxxxxxxxxxxxxxxx", ["Control", "Plantilla", "Informe_actual"]),
+  respuesta: "ID_GENERADOR_xxxxxxxxxxxxxxxx" });
+assert("PDF: un libro sin Resumen (por ejemplo, el generador) se rechaza sin crear carpeta ni exportar",
+  rPdfGenerador.error === 'El libro "Otro libro" no tiene la hoja Resumen: no parece un libro de boletines generado por curso.'
+    && sinCambios(rPdfGenerador) && rPdfGenerador.resultado === "Error al exportar PDF: " + rPdfGenerador.error,
+  rPdfGenerador.error);
+let rPdfSoloResumen = runExportar({ libro: otroLibro("ID_SOLO_RESUMEN_xxxxxxxxxxxxx", ["Resumen"]), respuesta: "ID_SOLO_RESUMEN_xxxxxxxxxxxxx" });
+assert("PDF: un libro sin hojas de estudiantes se rechaza sin crear carpeta",
+  rPdfSoloResumen.error === 'El libro "Otro libro" no tiene hojas de estudiantes.' && sinCambios(rPdfSoloResumen), rPdfSoloResumen.error);
+let rPdfCancelado = runExportar({ libro: libroPdf, boton: "CANCEL" });
+assert("PDF: cancelar el pedido del link no abre el libro ni registra nada",
+  !rPdfCancelado.error && rPdfCancelado.abiertos.length === 0 && sinCambios(rPdfCancelado) && rPdfCancelado.resultado === "" && rPdfCancelado.alerts.length === 0);
+let rPdfLinkMalo = runExportar({ libro: libroPdf, respuesta: "boletines del curso" });
+assert("PDF: un link no reconocible se informa sin abrir ningún libro",
+  /^No pude reconocer el ID/.test(rPdfLinkMalo.error || "") && rPdfLinkMalo.abiertos.length === 0 && sinCambios(rPdfLinkMalo),
+  rPdfLinkMalo.error);
+let rPdfSinPadre = runExportar({ libro: libroPdf, padres: [] });
+assert("PDF: si no se puede ver la carpeta del libro, la carpeta de PDF se crea en Mi unidad",
+  !rPdfSinPadre.error && rPdfSinPadre.carpetas.length === 1 && rPdfSinPadre.carpetas[0].padre === "Mi unidad" && rPdfSinPadre.archivos.length === 4,
+  rPdfSinPadre.error);
+
+// 18.5. Separación: la generación no usa la exportación ni sus servicios
+assert("PDF: Generador_EPS.gs no usa UrlFetchApp, DriveApp ni ScriptApp; sólo nombra la exportación en el menú",
+  !/UrlFetchApp|DriveApp|ScriptApp/.test(fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8"))
+    && (fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8").match(/exportarPdfLibro/g) || []).length === 1);
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

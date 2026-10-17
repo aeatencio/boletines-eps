@@ -104,6 +104,9 @@ function onOpen() {
     .addItem('Generar boletines por curso', 'generarBoletinesPorCurso')
     .addItem('Generar boletines de los cursos marcados', 'generarBoletinesCursosMarcados')
     .addItem('Generar boletines de todos los cursos', 'generarBoletinesTodosLosCursos')
+    .addSeparator()
+    // Operación separada, en Exportar_PDF.gs: no forma parte de la generación.
+    .addItem('Exportar PDF de un libro de boletines', 'exportarPdfLibro')
     .addToUi();
 }
 
