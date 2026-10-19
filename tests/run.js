@@ -1991,31 +1991,49 @@ const conAccesos = (obj, nombre, accesos) => new Proxy(obj, {
 });
 
 // Ejecuta exportarPdfLibro() con los dos archivos de src cargados juntos, como en el proyecto de Apps Script.
-// responder(n, url) da la respuesta del pedido n; cada pedido avanza el reloj msPorPdf.
-function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = PDF_OK, msPorPdf = 0, padres }) {
+// responder(n, url, momento) da la respuesta del pedido n, hecho en ese momento; cada pedido avanza el reloj msPorPdf, y cada Utilities.sleep, lo que espera.
+// previas: carpetas que ya están junto al libro ({ nombre, descripcion, archivos, enPapelera, archivosEnPapelera, creada: ms antes }).
+// opcion: botón que se elige si se ofrece completar una exportación incompleta. msPrompt: lo que se tarda en pegar el link.
+// antes: código que se ejecuta antes (por ejemplo, para cambiar CONFIG_PDF).
+function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = PDF_OK, msPorPdf = 0, msPrompt = 0, padres, previas = [], opcion = "YES", antes = "" }) {
   const ctrl = hojaControl({});
   const generador = new MockSS([new MockSheet("Plantilla", tpl), ctrl]);
-  const alerts = [], pedidos = [], carpetas = [], abiertos = [], accesos = new Set();
+  const alerts = [], preguntas = [], pedidos = [], carpetas = [], abiertos = [], esperas = [], accesos = new Set();
   let reloj = Date.parse("2026-10-16T12:00:00Z");
-  const carpetaMock = (nombre, padre) => {
+  const iterador = lista => { let i = 0; return { hasNext: () => i < lista.length, next: () => lista[i++] }; };
+  const carpetaMock = (nombre, padre, datos = {}) => {
     const c = {
-      nombre, padre, archivos: [],
+      nombre, padre, hijas: [], archivos: (datos.archivos || []).slice(), archivosEnPapelera: datos.archivosEnPapelera || [],
+      creada: reloj - (datos.creada || 0), enPapelera: !!datos.enPapelera, descripcion: datos.descripcion || "",
       getName: () => nombre,
       getUrl: () => "https://drive.google.com/drive/folders/" + encodeURIComponent(nombre),
-      createFolder: n => { const nueva = carpetaMock(n, nombre); carpetas.push(nueva); return nueva; },
+      isTrashed: () => c.enPapelera,
+      getDescription: () => c.descripcion,
+      setDescription: d => { c.descripcion = d; return c; },
+      getDateCreated: () => new Date(c.creada),
+      getFolders: () => iterador(c.hijas),
+      getFiles: () => iterador(c.archivos.map(n => ({ getName: () => n, isTrashed: () => false }))
+        .concat(c.archivosEnPapelera.map(n => ({ getName: () => n, isTrashed: () => true })))),
+      createFolder: n => { const nueva = carpetaMock(n, nombre); c.hijas.push(nueva); carpetas.push(nueva); return nueva; },
       createFile: blob => { c.archivos.push(blob.getName()); return {}; }
     };
     return c;
   };
-  const listaPadres = padres || [carpetaMock("Carpeta del curso")];
+  const delCurso = carpetaMock("Carpeta del curso");
+  previas.forEach(p => delCurso.hijas.push(carpetaMock(p.nombre, "Carpeta del curso", p)));
+  const listaPadres = padres || [delCurso];
   const ctx = {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => generador,
       getUi: () => ({
-        ButtonSet: { OK_CANCEL: "OK_CANCEL" },
-        Button: { OK: "OK", CANCEL: "CANCEL" },
-        prompt: () => ({ getSelectedButton: () => boton, getResponseText: () => respuesta }),
-        alert: m => alerts.push(m)
+        ButtonSet: { OK_CANCEL: "OK_CANCEL", YES_NO_CANCEL: "YES_NO_CANCEL" },
+        Button: { OK: "OK", CANCEL: "CANCEL", YES: "YES", NO: "NO", CLOSE: "CLOSE" },
+        prompt: () => { reloj += msPrompt; return { getSelectedButton: () => boton, getResponseText: () => respuesta }; },
+        alert: (titulo, mensaje, botones) => {
+          if (!botones) return alerts.push(titulo);
+          preguntas.push(mensaje);
+          return opcion;
+        }
       }),
       openById: id => {
         abiertos.push(id);
@@ -2024,18 +2042,21 @@ function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = 
       }
     },
     DriveApp: {
-      getFileById: () => { let i = 0; return { getParents: () => ({ hasNext: () => i < listaPadres.length, next: () => listaPadres[i++] }) }; },
+      getFileById: () => ({ getParents: () => iterador(listaPadres) }),
       getRootFolder: () => carpetaMock("Mi unidad")
     },
     ScriptApp: { getOAuthToken: () => "TOKEN_FICTICIO" },
     UrlFetchApp: {
       fetch: (url, opciones) => {
-        pedidos.push({ url, opciones });
+        pedidos.push({ url, opciones, momento: reloj });
         reloj += msPorPdf;
-        return responder(pedidos.length, url);
+        return responder(pedidos.length, url, reloj - msPorPdf);
       }
     },
-    Utilities: { formatDate: () => "<fecha>" },
+    Utilities: {
+      formatDate: () => "<fecha>",
+      sleep: ms => { esperas.push(ms); reloj += ms; }
+    },
     Date: class extends Date {
       constructor(...args) { if (args.length) super(...args); else super(reloj); }
       static now() { return reloj; }
@@ -2045,12 +2066,12 @@ function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = 
   ["src/Generador_EPS.gs", "src/Exportar_PDF.gs"].forEach(f => vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), ctx));
   let error = null;
   try {
-    vm.runInContext("exportarPdfLibro()", ctx);
+    vm.runInContext(antes + "exportarPdfLibro()", ctx);
   } catch (e) {
     error = e.message;
   }
   return {
-    error, alerts, pedidos, carpetas, abiertos, accesos: [...accesos].sort(), generador,
+    error, alerts, preguntas, pedidos, carpetas, abiertos, esperas, accesos: [...accesos].sort(), generador, delCurso,
     archivos: carpetas.length ? carpetas[0].archivos : [],
     resultado: ctrl.get(3, 6), advertencias: ctrl.get(4, 6), toasts: generador.toasts || []
   };
@@ -2093,52 +2114,100 @@ assert("PDF: cada pedido usa el token del usuario y no lanza excepciones por có
 assert("PDF: el libro no se modifica (mismas hojas, valores, formatos, visibilidad y filas inmovilizadas) y sólo se lee",
   fotoLibro(libroPdf) === fotoLibroPdf && soloLeyo(rPdf), rPdf.accesos.join(", "));
 assert("PDF: Control registra conteos, duración, libro y carpeta; el diálogo da el enlace a la carpeta",
-  rPdf.resultado === "PDF exportados: 4 de 4 · Con error: 0 · Sin exportar: 0 · Duración: 0 s (0 s por PDF). Libro: " + NOMBRE_LIBRO_EPS2
+  rPdf.resultado === "PDF exportados: 4 de 4 · Con error: 0 · Sin exportar: 0 · Reintentos por HTTP 429: 0 · Duración: 9 s (2.3 s por PDF)."
+    + " La carpeta tiene 4 de 4 PDF. Libro: " + NOMBRE_LIBRO_EPS2
     + " · Carpeta: https://drive.google.com/drive/folders/" + encodeURIComponent(CARPETA_PDF)
     && rPdf.advertencias === "Sin advertencias"
     && rPdf.alerts.length === 1 && rPdf.alerts[0].includes(CARPETA_PDF + "\nhttps://drive.google.com/drive/folders/"),
   rPdf.resultado + " / " + rPdf.alerts.join(" / "));
+assert("PDF: la descripción de la carpeta nueva identifica al libro por su ID",
+  rPdf.carpetas.length === 1 && rPdf.carpetas[0].descripcion.includes(ID_LIBRO), rPdf.carpetas.length && rPdf.carpetas[0].descripcion);
+assert("PDF: el primer pedido sale enseguida y entre uno y otro se espera la pausa inicial (3 s), sin preguntar nada",
+  JSON.stringify(rPdf.esperas) === JSON.stringify([3000, 3000, 3000]) && rPdf.pedidos[0].momento === Date.parse("2026-10-16T12:00:00Z")
+    && rPdf.preguntas.length === 0,
+  JSON.stringify(rPdf.esperas));
 assert("PDF: un aviso por hoja exportada; el generador sólo cambia en el estado de Control",
   rPdf.toasts.length === 4 && rPdf.toasts[0] === "PDF 1 de 4: " + HOJAS_PDF[0] + "."
     && rPdf.generador.getSheets().map(h => h.getName()).join("|") === "Plantilla|Control",
   rPdf.toasts.join(" / "));
 
-// 18.2. Falla de una exportación: se informa por hoja, las demás se exportan y el libro queda igual
+// 18.2. Fallas por hoja: se informan, las demás se exportan y el libro queda igual
+// porHoja: respuestas de cada hoja (por su posición en HOJAS_PDF), una por intento; sin respuestas, PDF.
+const porHoja = respuestas => {
+  const intentos = {};
+  return (n, url) => {
+    const i = HOJAS_PDF.findIndex(h => String(libroPdf.getSheetByName(h).getSheetId()) === parametrosPdf(url).gid);
+    const k = intentos[i] = (intentos[i] || 0) + 1;
+    const r = (respuestas[i] || [])[k - 1];
+    if (r instanceof Error) throw r;
+    return r ? r() : PDF_OK();
+  };
+};
+const HTTP_429 = () => respuestaMock(429, "text/html");
 let rPdfFallas = runExportar({
   libro: libroPdf,
-  responder: n => {
-    if (n === 2) return respuestaMock(429, "text/html");
-    if (n === 3) return respuestaMock(200, "text/html; charset=utf-8");
-    if (n === 4) throw new Error("Tiempo de espera agotado");
-    return PDF_OK();
-  }
+  responder: porHoja({
+    1: [HTTP_429, HTTP_429, HTTP_429, HTTP_429],
+    2: [() => respuestaMock(200, "text/html; charset=utf-8")],
+    3: [new Error("Tiempo de espera agotado")]
+  })
 });
-assert("PDF con fallas: termina sin error, exporta las hojas que pudo y pide todas",
-  !rPdfFallas.error && JSON.stringify(rPdfFallas.archivos) === JSON.stringify([HOJAS_PDF[0] + ".pdf"]) && rPdfFallas.pedidos.length === 4,
+assert("PDF con fallas: termina sin error y exporta las hojas que pudo; la que sigue en 429 se pide 4 veces",
+  !rPdfFallas.error && JSON.stringify(rPdfFallas.archivos) === JSON.stringify([HOJAS_PDF[0] + ".pdf"]) && rPdfFallas.pedidos.length === 7,
   rPdfFallas.error || rPdfFallas.archivos.join(" | "));
-assert("PDF con fallas: Control lista cada hoja fallida con su motivo (HTTP, respuesta que no es PDF, excepción)",
-  rPdfFallas.resultado.startsWith("PDF exportados: 1 de 4 · Con error: 3 · Sin exportar: 0 · ")
+assert("PDF con fallas: Control lista cada hoja fallida con su motivo (429 tras los reintentos, respuesta que no es PDF, excepción)",
+  rPdfFallas.resultado.startsWith("PDF exportados: 1 de 4 · Con error: 3 · Sin exportar: 0 · Reintentos por HTTP 429: 3 · ")
+    && rPdfFallas.resultado.includes(" La carpeta tiene 1 de 4 PDF.")
     && rPdfFallas.advertencias === [
-      "Error · " + HOJAS_PDF[1] + ": Google respondió HTTP 429 (demasiadas exportaciones seguidas).",
+      "Error · " + HOJAS_PDF[1] + ": Google respondió HTTP 429 (demasiadas exportaciones seguidas). (4 intentos)",
       "Error · " + HOJAS_PDF[2] + ": La respuesta de Google no es un PDF (text/html; charset=utf-8).",
       "Error · " + HOJAS_PDF[3] + ": Tiempo de espera agotado"
     ].join("\n")
-    && rPdfFallas.alerts[0].includes("El libro no se modificó: se puede volver a exportar."),
+    && rPdfFallas.alerts[0].includes("El libro no se modificó. Para completar la carpeta, volver a exportar el mismo libro y elegir Sí"),
   rPdfFallas.resultado + "\n" + rPdfFallas.advertencias);
+assert("PDF con fallas: ante cada 429 la pausa se duplica (6, 12, 24 s) y la mayor queda para las hojas siguientes; sólo otros errores no la cambian",
+  JSON.stringify(rPdfFallas.esperas) === JSON.stringify([3000, 6000, 12000, 24000, 24000, 24000])
+    && rPdfFallas.toasts.includes("Google limitó las exportaciones: se espera 6 s y se reintenta " + HOJAS_PDF[1] + "."),
+  JSON.stringify(rPdfFallas.esperas));
 assert("PDF con fallas: el libro no se modifica",
   fotoLibro(libroPdf) === fotoLibroPdf && soloLeyo(rPdfFallas), rPdfFallas.accesos.join(", "));
-let rPdfDeNuevo = runExportar({ libro: libroPdf });
-assert("PDF con fallas: volver a exportar el mismo libro da los 4 PDF en una carpeta nueva",
-  !rPdfDeNuevo.error && JSON.stringify(rPdfDeNuevo.archivos) === JSON.stringify(rPdf.archivos) && rPdfDeNuevo.carpetas.length === 1,
+let rPdf429UnaVez = runExportar({ libro: libroPdf, responder: porHoja({ 1: [HTTP_429], 2: [HTTP_429, HTTP_429] }) });
+assert("PDF: un 429 se reintenta y la hoja se exporta; cada PDF exportado baja la pausa 3 s, sin bajar de 3",
+  !rPdf429UnaVez.error && JSON.stringify(rPdf429UnaVez.archivos) === JSON.stringify(HOJAS_PDF.map(h => h + ".pdf"))
+    && rPdf429UnaVez.resultado.startsWith("PDF exportados: 4 de 4 · Con error: 0 · Sin exportar: 0 · Reintentos por HTTP 429: 3 · ")
+    && JSON.stringify(rPdf429UnaVez.esperas) === JSON.stringify([3000, 6000, 3000, 6000, 12000, 9000])
+    && rPdf429UnaVez.advertencias === "Sin advertencias",
+  rPdf429UnaVez.error || rPdf429UnaVez.resultado + " " + JSON.stringify(rPdf429UnaVez.esperas));
+let rPdfDeNuevo = runExportar({ libro: libroPdf, previas: [{ nombre: CARPETA_PDF, archivos: HOJAS_PDF.map(h => h + ".pdf") }] });
+assert("PDF: si la última exportación está completa, volver a exportar crea una carpeta nueva con los 4 PDF, sin preguntar",
+  !rPdfDeNuevo.error && JSON.stringify(rPdfDeNuevo.archivos) === JSON.stringify(rPdf.archivos) && rPdfDeNuevo.carpetas.length === 1
+    && rPdfDeNuevo.preguntas.length === 0,
   rPdfDeNuevo.error);
 
-// 18.3. Tiempo máximo: no se empieza otra exportación y las hojas que faltan se informan
+// 18.3. Tiempo máximo, contado desde el inicio de la ejecución: no se empieza otra exportación y las hojas que faltan se informan
 let rPdfTiempo = runExportar({ libro: libroPdf, msPorPdf: 3 * 60 * 1000 });
 assert("PDF con tiempo máximo: exporta 2 de 4 y las otras quedan sin exportar, informadas en Control",
   !rPdfTiempo.error && rPdfTiempo.archivos.length === 2 && rPdfTiempo.pedidos.length === 2
-    && rPdfTiempo.resultado.startsWith("PDF exportados: 2 de 4 · Con error: 0 · Sin exportar: 2 · Duración: 360 s (180 s por PDF).")
+    && rPdfTiempo.resultado.startsWith("PDF exportados: 2 de 4 · Con error: 0 · Sin exportar: 2 · Reintentos por HTTP 429: 0 · Duración: 363 s (181.5 s por PDF).")
     && rPdfTiempo.advertencias === HOJAS_PDF.slice(2).map(h => "Sin exportar · " + h + ": se alcanzó el tiempo máximo de la ejecución.").join("\n"),
   rPdfTiempo.error || rPdfTiempo.resultado + "\n" + rPdfTiempo.advertencias);
+let rPdfPromptLento = runExportar({ libro: libroPdf, msPrompt: 4 * 60 * 1000, msPorPdf: 30 * 1000 });
+assert("PDF con tiempo máximo: el tiempo que se tarda en pegar el link cuenta (4 min de diálogo + 30 s por PDF: 2 de 4)",
+  !rPdfPromptLento.error && rPdfPromptLento.pedidos.length === 2
+    && rPdfPromptLento.resultado.startsWith("PDF exportados: 2 de 4 · Con error: 0 · Sin exportar: 2 · "),
+  rPdfPromptLento.error || rPdfPromptLento.resultado);
+
+let rPdfSinMargen = runExportar({ libro: libroPdf, msPrompt: 5 * 60 * 1000 + 1000 });
+assert("PDF con tiempo máximo: si al cerrar los diálogos ya no hay margen para el primer pedido, no se crea una carpeta vacía",
+  rPdfSinMargen.error && rPdfSinMargen.error.startsWith("No queda tiempo en esta ejecución para empezar la exportación")
+    && rPdfSinMargen.carpetas.length === 0 && rPdfSinMargen.pedidos.length === 0
+    && rPdfSinMargen.resultado === "Error al exportar PDF: " + rPdfSinMargen.error,
+  rPdfSinMargen.error);
+let rPdfMargenJusto = runExportar({ libro: libroPdf, msPrompt: 5 * 60 * 1000 - 1000, msPorPdf: 30 * 1000 });
+assert("PDF con tiempo máximo: con margen para el primer pedido, se exporta lo que entra y el resto queda informado",
+  !rPdfMargenJusto.error && rPdfMargenJusto.carpetas.length === 1 && rPdfMargenJusto.archivos.length === 1
+    && rPdfMargenJusto.resultado.startsWith("PDF exportados: 1 de 4 · Con error: 0 · Sin exportar: 3 · "),
+  rPdfMargenJusto.error || rPdfMargenJusto.resultado);
 
 // 18.4. Libros que no son de la generación por curso, cancelación y link inválido: no se crea nada
 const sinCambios = r => r.carpetas.length === 0 && r.pedidos.length === 0;
@@ -2171,6 +2240,114 @@ assert("PDF: Generador_EPS.gs no usa UrlFetchApp ni ScriptApp; sólo nombra la e
 assert("PDF: Generador_EPS.gs usa de DriveApp sólo la raíz (carpeta de los libros) y getFileById (mover el libro nuevo)",
   JSON.stringify((codigoGenerador.match(/DriveApp\.\w+/g) || []).sort()) === JSON.stringify(["DriveApp.getFileById", "DriveApp.getRootFolder"]),
   (codigoGenerador.match(/DriveApp\.\w+/g) || []).join(", "));
+
+// 18.6. Límite de Google en un curso como el de la prueba real (15 hojas)
+// Google no publica el límite. Modelo supuesto: acepta hasta 6 pedidos en cualquier ventana de 60 s y rechaza con 429 el
+// resto (los rechazados no cuentan). Reproduce lo observado en producción con pedidos seguidos: 6 PDF y 9 rechazos en ~24 s.
+const ID_LIBRO_15 = "ID_LIBRO_15_HOJAS_xxxxxxxxxxx";
+const HOJAS_15 = Array.from({ length: 15 }, (_, i) => "Ficticio, Estudiante " + String(i + 1).padStart(2, "0"));
+const libro15 = new MockSS([new MockSheet("Resumen", [["x"]])].concat(HOJAS_15.map(n => new MockSheet(n, [["x"]]))), "Libro sintético de 15");
+libro15.id = ID_LIBRO_15;
+const limiteVentana = (maximo, ventanaMs) => {
+  const aceptados = [];
+  return (n, url, momento) => {
+    if (aceptados.filter(t => momento - t < ventanaMs).length >= maximo) return HTTP_429();
+    aceptados.push(momento);
+    return PDF_OK();
+  };
+};
+const runLimite = (opciones) => runExportar(Object.assign({ libro: libro15, respuesta: ID_LIBRO_15, msPorPdf: 1600 }, opciones));
+let rSinPausa = runLimite({ responder: limiteVentana(6, 60000), antes: "CONFIG_PDF.PAUSA_MS = 0; CONFIG_PDF.INTENTOS_POR_HOJA = 1; " });
+assert("Límite (modelo): sin pausa ni reintentos, como antes, reproduce la prueba real: 6 de 15 y 9 rechazos 429 en 24 s",
+  !rSinPausa.error && rSinPausa.archivos.length === 6
+    && rSinPausa.resultado.startsWith("PDF exportados: 6 de 15 · Con error: 9 · Sin exportar: 0 · Reintentos por HTTP 429: 0 · Duración: 24 s"),
+  rSinPausa.error || rSinPausa.resultado);
+let rConPausa = runLimite({ responder: limiteVentana(6, 60000) });
+const segundosDe = r => Number((r.resultado.match(/Duración: (\d+) s/) || [])[1]);
+assert("Límite (modelo): con pausa y reintentos se exportan los 15, en orden, dentro del tiempo máximo",
+  !rConPausa.error && JSON.stringify(rConPausa.archivos) === JSON.stringify(HOJAS_15.map(h => h + ".pdf"))
+    && rConPausa.resultado.startsWith("PDF exportados: 15 de 15 · Con error: 0 · Sin exportar: 0 · ")
+    && segundosDe(rConPausa) < 300 && rConPausa.advertencias === "Sin advertencias",
+  rConPausa.error || rConPausa.resultado);
+
+// 18.7. Recuperación: completar la última exportación incompleta sin repetir lo ya exportado
+const CARPETA_PREVIA = NOMBRE_LIBRO_EPS2 + " - PDF 2026-10-16 08:00";
+// Las carpetas anteriores del libro llevan la descripción que les puso la exportación (18.1), no una escrita en el test.
+const DESCRIPCION_LIBRO_PDF = rPdf.carpetas[0].descripcion;
+const previaIncompleta = (extra) => Object.assign({ nombre: CARPETA_PREVIA, descripcion: DESCRIPCION_LIBRO_PDF,
+  archivos: [HOJAS_PDF[0] + ".pdf", HOJAS_PDF[2] + ".pdf"], creada: 3600000 }, extra);
+const gidsPedidos = r => r.pedidos.map(p => parametrosPdf(p.url).gid);
+const gidsDe = hojas => hojas.map(h => String(libroPdf.getSheetByName(h).getSheetId()));
+let rCompletar = runExportar({ libro: libroPdf, previas: [previaIncompleta()] });
+const previaDe = r => r.delCurso.hijas.find(c => c.nombre === CARPETA_PREVIA);
+assert("Completar: se pregunta, con la carpeta y cuántos PDF tiene",
+  rCompletar.preguntas.length === 1
+    && rCompletar.preguntas[0].startsWith("La última exportación de este libro quedó incompleta: " + CARPETA_PREVIA + " tiene 2 de 4 PDF.")
+    && rCompletar.preguntas[0].includes("Sí: completar esa carpeta, exportando sólo las 2 hojas que faltan."),
+  rCompletar.preguntas.join(" / "));
+assert("Completar (Sí): se piden sólo las hojas que faltan y sus PDF van a esa carpeta, sin crear otra",
+  !rCompletar.error && JSON.stringify(gidsPedidos(rCompletar)) === JSON.stringify(gidsDe([HOJAS_PDF[1], HOJAS_PDF[3]]))
+    && rCompletar.carpetas.length === 0
+    && JSON.stringify(previaDe(rCompletar).archivos) === JSON.stringify([0, 2, 1, 3].map(i => HOJAS_PDF[i] + ".pdf")),
+  rCompletar.error || JSON.stringify(previaDe(rCompletar).archivos));
+assert("Completar (Sí): Control dice cuántos faltaban y que la carpeta quedó completa, con su enlace; el libro sólo se lee",
+  rCompletar.resultado.startsWith("PDF exportados: 2 de 2 que faltaban · Con error: 0 · Sin exportar: 0 · Reintentos por HTTP 429: 0 · ")
+    && rCompletar.resultado.includes(" La carpeta tiene 4 de 4 PDF. Libro: " + NOMBRE_LIBRO_EPS2 + " · Carpeta: https://drive.google.com/drive/folders/" + encodeURIComponent(CARPETA_PREVIA))
+    && !rCompletar.alerts[0].includes("Para completar") && fotoLibro(libroPdf) === fotoLibroPdf && soloLeyo(rCompletar),
+  rCompletar.resultado);
+let rNoCompletar = runExportar({ libro: libroPdf, previas: [previaIncompleta()], opcion: "NO" });
+assert("Completar (No): todas las hojas en una carpeta nueva; la anterior no se toca",
+  !rNoCompletar.error && rNoCompletar.carpetas.length === 1 && rNoCompletar.carpetas[0].nombre === CARPETA_PDF
+    && rNoCompletar.archivos.length === 4 && rNoCompletar.pedidos.length === 4 && previaDe(rNoCompletar).archivos.length === 2,
+  rNoCompletar.error);
+const sinNada = r => !r.error && r.pedidos.length === 0 && r.carpetas.length === 0 && r.resultado === "" && r.alerts.length === 0;
+assert("Completar (Cancelar o cerrar el diálogo): no se exporta, no se crea carpeta ni se registra nada",
+  ["CANCEL", "CLOSE"].every(o => sinNada(runExportar({ libro: libroPdf, previas: [previaIncompleta()], opcion: o }))));
+const preguntaCon = previas => runExportar({ libro: libroPdf, previas, opcion: "NO" }).preguntas.length === 1;
+assert("Completar: sólo cuenta la última carpeta de PDF del libro, fuera de la papelera",
+  !preguntaCon([previaIncompleta({ creada: 7200000 }), previaIncompleta({ nombre: NOMBRE_LIBRO_EPS2 + " - PDF 2026-10-16 10:00", archivos: HOJAS_PDF.map(h => h + ".pdf"), creada: 60000 })])
+    && preguntaCon([previaIncompleta({ creada: 60000 }), previaIncompleta({ nombre: NOMBRE_LIBRO_EPS2 + " - PDF 2026-10-16 10:00", archivos: HOJAS_PDF.map(h => h + ".pdf"), creada: 7200000 })])
+    && !preguntaCon([previaIncompleta({ enPapelera: true })]));
+assert("Completar: un PDF en la papelera cuenta como faltante",
+  preguntaCon([previaIncompleta({ archivos: HOJAS_PDF.slice(1).map(h => h + ".pdf"), archivosEnPapelera: [HOJAS_PDF[0] + ".pdf"] })]));
+assert("Completar: el libro se reconoce por la descripción, no por el nombre: una carpeta renombrada se ofrece; una sin descripción, no",
+  preguntaCon([previaIncompleta({ nombre: "PDF para revisar" })]) && !preguntaCon([previaIncompleta({ descripcion: "" })]));
+
+// Regresión: dos libros distintos (IDs distintos) con exactamente el mismo nombre, en la misma carpeta del período,
+// como dos regeneraciones del mismo curso en el mismo minuto. La exportación incompleta de uno no es del otro.
+const ID_GEMELO = "ID_LIBRO_EPS2_GEMELO_xxxxxxxxx";
+const gemelo = new MockSS(libroPdf.getSheets().map(h => new MockSheet(h.getName(), h.grid)), libroPdf.getName());
+gemelo.id = ID_GEMELO;
+const previaDelOtro = previaIncompleta();
+let rGemelo = runExportar({ libro: gemelo, respuesta: ID_GEMELO, previas: [previaDelOtro] });
+assert("Mismo nombre (regresión): los dos libros tienen IDs distintos y exactamente el mismo nombre",
+  gemelo.getId() !== libroPdf.getId() && gemelo.getName() === libroPdf.getName() && CARPETA_PREVIA.startsWith(gemelo.getName() + " - PDF "));
+assert("Mismo nombre (regresión): al exportar el otro libro, la carpeta incompleta del primero no se ofrece ni se completa",
+  !rGemelo.error && rGemelo.preguntas.length === 0 && rGemelo.carpetas.length === 1 && rGemelo.archivos.length === 4
+    && rGemelo.pedidos.every(p => p.url.startsWith("https://docs.google.com/spreadsheets/d/" + ID_GEMELO + "/export?"))
+    && JSON.stringify(previaDe(rGemelo).archivos) === JSON.stringify(previaDelOtro.archivos)
+    && rGemelo.carpetas[0].descripcion.includes(ID_GEMELO) && !rGemelo.carpetas[0].descripcion.includes(ID_LIBRO),
+  rGemelo.error || rGemelo.preguntas.join(" / ") + " / " + JSON.stringify(previaDe(rGemelo).archivos));
+assert("Mismo nombre (regresión): la misma carpeta sí se ofrece al exportar el libro al que pertenece",
+  runExportar({ libro: libroPdf, previas: [previaIncompleta()], opcion: "CANCEL" }).preguntas.length === 1);
+
+// Recuperación de punta a punta con un límite más estricto que el del modelo: una corrida no alcanza y la siguiente completa
+let rCorrida1 = runLimite({ responder: limiteVentana(3, 60000) });
+const carpetaCorrida1 = rCorrida1.carpetas[0];
+let rCorrida2 = runLimite({ responder: limiteVentana(3, 60000),
+  previas: [{ nombre: carpetaCorrida1.nombre, descripcion: carpetaCorrida1.descripcion, archivos: carpetaCorrida1.archivos, creada: 60000 }] });
+const faltaban = 15 - carpetaCorrida1.archivos.length;
+assert("Recuperación: con un límite de 3 por minuto la primera corrida queda incompleta, lo informa y dice cómo completar",
+  !rCorrida1.error && faltaban > 0 && rCorrida1.resultado.includes(" La carpeta tiene " + (15 - faltaban) + " de 15 PDF.")
+    && rCorrida1.alerts[0].includes("Para completar la carpeta, volver a exportar el mismo libro y elegir Sí"),
+  rCorrida1.error || rCorrida1.resultado);
+assert("Recuperación: la segunda corrida pide sólo las hojas que faltaban y la carpeta queda con los 15 PDF",
+  !rCorrida2.error && rCorrida2.pedidos.length >= faltaban && rCorrida2.carpetas.length === 0
+    && new Set(rCorrida2.pedidos.map(p => parametrosPdf(p.url).gid)).size === faltaban
+    && rCorrida2.resultado.startsWith("PDF exportados: " + faltaban + " de " + faltaban + " que faltaban · Con error: 0 · Sin exportar: 0 · ")
+    && rCorrida2.resultado.includes(" La carpeta tiene 15 de 15 PDF.")
+    && JSON.stringify(rCorrida2.delCurso.hijas[0].archivos.slice().sort()) === JSON.stringify(HOJAS_15.map(h => h + ".pdf")),
+  rCorrida2.error || rCorrida2.resultado);
 
 // =============================================================================
 // 19. Organización de los libros en Drive (#23)
