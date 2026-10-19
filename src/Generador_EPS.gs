@@ -6,6 +6,7 @@
  * La salida individual se genera en una hoja revisable llamada Informe_actual;
  * la generación por curso crea un libro nuevo con una hoja por estudiante y una hoja Resumen;
  * la de varios cursos crea, para cada curso elegido, el mismo libro que la generación por curso.
+ * Esos libros se guardan en Mi unidad > Boletines EPS > <ciclo> - <período> (ver carpetaLibros_).
  */
 const CONFIG_EPS = {
   HOJA_CONTROL: 'Control',
@@ -15,6 +16,8 @@ const CONFIG_EPS = {
 
   // Hora local del nombre de los libros de la generación por curso.
   ZONA_HORARIA: 'America/Argentina/Buenos_Aires',
+  // Carpeta de Mi unidad con los libros de la generación por curso, en una subcarpeta por ciclo y período.
+  CARPETA_LIBROS: 'Boletines EPS',
 
   CELDA_PERIODO: 'B5',
   CELDA_HOJA_ORIGEN: 'B6',
@@ -158,7 +161,7 @@ function generarBoletinesPorCurso() {
     }
 
     registrarEstado_(control, 'Libro creado: ' + tanda.libro.getName() + ' · ' + conteo + ' ' + tanda.libro.getUrl(), tanda.advertencias);
-    ui.alert('Libro creado: ' + tanda.libro.getName() + '\n' + tanda.libro.getUrl() + '\n\n' + conteo +
+    ui.alert('Libro creado: ' + tanda.libro.getName() + '\n' + tanda.libro.getUrl() + '\nCarpeta: ' + rutaCarpetaLibros_(config) + '\n\n' + conteo +
       '\nEl detalle por estudiante está en la hoja ' + CONFIG_EPS.HOJA_RESUMEN + ' del libro' +
       (tanda.contar('Generado') ? ', oculta para que no se imprima ni se exporte.' : '.') +
       (tanda.advertencias.length ? '\n\nAdvertencias generales:\n- ' + tanda.advertencias.join('\n- ') : ''));
@@ -198,9 +201,10 @@ function generarBoletinesVariosCursos_(todos) {
     const cursos = todos ? CONFIG_EPS.CURSOS : leerCursosMarcados_(control);
     // Todas las fuentes y selecciones se validan antes de crear el primer libro.
     tandas = prepararTandasCursos_(config, cursos);
+    const carpeta = carpetaLibros_(tandas);
     tandas.forEach((tanda, i) => {
       ss.toast('Curso ' + (i + 1) + ' de ' + tandas.length + ': ' + cursoTanda_(tanda) + '.', 'Informes EPS');
-      crearLibroTanda_(plantilla, tanda);
+      crearLibroTanda_(plantilla, tanda, carpeta);
     });
 
     const conLibro = tandas.filter(t => t.libro).length;
@@ -208,6 +212,7 @@ function generarBoletinesVariosCursos_(todos) {
       ' · Duración: ' + Math.round((Date.now() - inicio) / 1000) + ' s.';
     registrarEstado_(control, resultado, detalleTandas_(tandas, true));
     ui.alert(resultado + '\n\n- ' + detalleTandas_(tandas, false).join('\n- ') +
+      (conLibro ? '\n\nCarpeta de los libros: ' + rutaCarpetaLibros_(config) + '.' : '') +
       '\n\nEl detalle por estudiante está en la hoja ' + CONFIG_EPS.HOJA_RESUMEN + ' de cada libro y, para los cursos sin libro, en ' +
       CONFIG_EPS.HOJA_CONTROL + '.');
   } catch (err) {
@@ -288,7 +293,7 @@ function generarTandaCurso_(ss, config) {
 
   const advertencias = [];
   const tanda = prepararTandaCurso_(leerFuentes_(config, advertencias), config, advertencias);
-  crearLibroTanda_(plantilla, tanda);
+  crearLibroTanda_(plantilla, tanda, carpetaLibros_([tanda]));
   return tanda;
 }
 
@@ -315,8 +320,9 @@ function prepararTandaCurso_(fuentes, config, advertencias) {
   return tanda;
 }
 
-// Libro del curso con una hoja por estudiante preparado y la hoja Resumen. Sin estudiantes preparados, no se crea.
-function crearLibroTanda_(plantilla, tanda) {
+// Libro del curso con una hoja por estudiante preparado y la hoja Resumen, en la carpeta de los libros (carpetaLibros_).
+// Sin estudiantes preparados, no se crea.
+function crearLibroTanda_(plantilla, tanda, carpeta) {
   const config = tanda.config;
   const estudiantes = tanda.estudiantes;
   const preparados = estudiantes.filter(e => e.informe);
@@ -329,6 +335,7 @@ function crearLibroTanda_(plantilla, tanda) {
   }
 
   const libro = SpreadsheetApp.create(nombreLibroCurso_(config));
+  moverLibro_(libro, carpeta, config);
   const resumen = libro.getSheets()[0];
   resumen.setName(CONFIG_EPS.HOJA_RESUMEN);
   asignarNombresHojas_(preparados);
@@ -417,6 +424,43 @@ function seleccionarEstudiantesCurso_(principal, nivel) {
 function nombreLibroCurso_(config) {
   const fecha = Utilities.formatDate(new Date(), CONFIG_EPS.ZONA_HORARIA, 'yyyy-MM-dd HH:mm');
   return ['Boletines EPS', config.hojaOrigen, config.nivel, config.periodo + ' ' + config.cicloLectivo, fecha].join(' - ');
+}
+
+/**
+ * Carpeta de los libros: Mi unidad > Boletines EPS > <ciclo> - <período>, una por entrega. La exportación a PDF crea
+ * sus carpetas junto al libro, así que también quedan ahí. Cada carpeta existente con ese nombre se reutiliza, salvo
+ * en la papelera; si falta, se crea. Se busca una sola vez por operación, antes del primer libro, y sólo si se va a
+ * crear alguno: sin libros, Drive no se toca.
+ */
+function carpetaLibros_(tandas) {
+  if (!tandas.some(t => t.estudiantes.some(e => e.informe))) return null;
+  return nombresCarpetaLibros_(tandas[0].config).reduce((padre, nombre) => {
+    const existentes = padre.getFoldersByName(nombre);
+    while (existentes.hasNext()) {
+      const carpeta = existentes.next();
+      if (!carpeta.isTrashed()) return carpeta;
+    }
+    return padre.createFolder(nombre);
+  }, DriveApp.getRootFolder());
+}
+
+function nombresCarpetaLibros_(config) {
+  return [CONFIG_EPS.CARPETA_LIBROS, config.cicloLectivo + ' - ' + config.periodo];
+}
+
+function rutaCarpetaLibros_(config) {
+  return ['Mi unidad'].concat(nombresCarpetaLibros_(config)).join(' > ');
+}
+
+// Se mueve recién creado, antes de completarlo: si la ejecución se corta después, el libro igual queda en su carpeta.
+// Si no puede moverse, el libro vacío queda en Mi unidad y el error lo nombra para borrarlo.
+function moverLibro_(libro, carpeta, config) {
+  try {
+    DriveApp.getFileById(libro.getId()).moveTo(carpeta);
+  } catch (err) {
+    throw new Error('No se pudo mover el libro nuevo a ' + rutaCarpetaLibros_(config) + ': ' + err.message +
+      ' El libro "' + libro.getName() + '" quedó vacío en Mi unidad y se puede borrar: ' + libro.getUrl());
+  }
 }
 
 

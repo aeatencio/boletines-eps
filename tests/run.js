@@ -240,7 +240,21 @@ function formatearFecha(fecha, zona, formato) {
   }).format(fecha);
 }
 
-function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()", ahora = null, reglasPlantilla = [] }) {
+// Carpeta de Drive simulada: hijas por nombre (con repetidos, como Drive), papelera y ruta para los tests.
+// `creadas` registra la ruta de cada carpeta que crea el generador.
+function carpetaDrive(nombre, padre = null, creadas = []) {
+  const c = {
+    nombre, padre, hijas: [], enPapelera: false,
+    getName: () => nombre,
+    isTrashed: () => c.enPapelera,
+    getFoldersByName: n => { const l = c.hijas.filter(h => h.nombre === n); let i = 0; return { hasNext: () => i < l.length, next: () => l[i++] }; },
+    createFolder: n => { const h = carpetaDrive(n, c, creadas); c.hijas.push(h); creadas.push(h.ruta()); return h; },
+    ruta: () => (padre ? padre.ruta() + " > " : "") + nombre
+  };
+  return c;
+}
+
+function runTest(testName, { control, sources, templateGrid, ejecutar = "generarInformeActual()", ahora = null, reglasPlantilla = [], prepararDrive = () => {} }) {
   const code = fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8");
   const plantilla = new MockSheet("Plantilla", templateGrid, reglasPlantilla);
   const ctrl = hojaControl(control);
@@ -249,15 +263,40 @@ function runTest(testName, { control, sources, templateGrid, ejecutar = "generar
   const creados = [];
   const registro = { aperturas: [], lecturas: [], indebidos: [] };
   const formatos = [];
+  // Mi unidad: prepararDrive arma las carpetas que ya existían; después se registra lo que hace el generador.
+  const carpetasCreadas = [];
+  const miUnidad = carpetaDrive("Mi unidad", null, carpetasCreadas);
+  prepararDrive(miUnidad);
+  carpetasCreadas.length = 0;
+  const accesosDrive = [];
   const ctx = {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
       getUi: () => ({ alert: m => rawAlerts.push(m), createMenu: () => ({ addItem() { return this; }, addToUi() {} }) }),
       openById: abrirFuenteMock(sources, registro),
+      // Como en Google: el libro nuevo queda en Mi unidad.
       create: nombre => {
         const libro = new MockSS([new MockSheet("Hoja 1", [])], nombre);
+        libro.id = "ID_LIBRO_CREADO_" + (creados.length + 1);
+        libro.carpeta = miUnidad;
         creados.push(libro);
         return libro;
+      }
+    },
+    // Al mover, se anota también cuántas hojas tenía el libro: el generador lo mueve recién creado.
+    DriveApp: {
+      getRootFolder: () => { accesosDrive.push("getRootFolder"); return miUnidad; },
+      getFileById: id => {
+        accesosDrive.push("getFileById");
+        const libro = creados.find(l => l.getId() === id);
+        if (!libro) throw new Error("mock: archivo inexistente " + id);
+        return {
+          moveTo: carpeta => {
+            if (!carpeta || !carpeta.ruta) throw new Error("mock: moveTo sin carpeta de Drive");
+            libro.carpeta = carpeta;
+            libro.hojasAlMover = libro.getSheets().length;
+          }
+        };
       }
     },
     // Sin `ahora`, la fecha queda como "<fecha>"; con `ahora`, Date se fija a ese instante y se formatea de verdad.
@@ -306,7 +345,10 @@ function runTest(testName, { control, sources, templateGrid, ejecutar = "generar
     ss,
     creados,
     registro,
-    formatos
+    formatos,
+    miUnidad,
+    carpetasCreadas,
+    accesosDrive
   };
 }
 
@@ -1485,9 +1527,10 @@ assert("Hora: se formatea con la zona explícita America/Argentina/Buenos_Aires 
 let rHoraNoche = runCursoHora("Hora de Buenos Aires, otro día en UTC", "2026-10-15T02:30:00Z");
 assert("Hora: también la fecha es la de Buenos Aires (02:30 UTC del 15 → 2026-10-14 23:30)",
   !rHoraNoche.error && libroDe(rHoraNoche).getName().endsWith(" - 2026-10-14 23:30"), rHoraNoche.error || libroDe(rHoraNoche).getName());
-assert("Libro por curso: un único libro nuevo, completo, y el diálogo muestra su nombre y su enlace",
+assert("Libro por curso: un único libro nuevo, completo, y el diálogo muestra su nombre, su enlace y su carpeta",
   rHora.creados.length === 1 && JSON.stringify(hojasDe(rHora)) === JSON.stringify(HOJAS_EPS2)
-    && rHora.rawAlerts[0].startsWith("Libro creado: " + libroDe(rHora).getName() + "\n" + libroDe(rHora).getUrl() + "\n\n"),
+    && rHora.rawAlerts[0].startsWith("Libro creado: " + libroDe(rHora).getName() + "\n" + libroDe(rHora).getUrl()
+      + "\nCarpeta: Mi unidad > Boletines EPS > 2026 - 3º bimestre\n\n"),
   rHora.rawAlerts[0]);
 assert("Sin libro (nadie listo) y generación individual: no se crea ningún libro ni se arma su nombre",
   [rNadieListo, rReal, rSmoke].every(r => r.creados.length === 0 && r.formatos.length === 0));
@@ -2121,10 +2164,108 @@ assert("PDF: si no se puede ver la carpeta del libro, la carpeta de PDF se crea 
   !rPdfSinPadre.error && rPdfSinPadre.carpetas.length === 1 && rPdfSinPadre.carpetas[0].padre === "Mi unidad" && rPdfSinPadre.archivos.length === 4,
   rPdfSinPadre.error);
 
-// 18.5. Separación: la generación no usa la exportación ni sus servicios
-assert("PDF: Generador_EPS.gs no usa UrlFetchApp, DriveApp ni ScriptApp; sólo nombra la exportación en el menú",
-  !/UrlFetchApp|DriveApp|ScriptApp/.test(fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8"))
-    && (fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8").match(/exportarPdfLibro/g) || []).length === 1);
+// 18.5. Separación: la generación no usa la exportación ni sus servicios (DriveApp, sólo para guardar sus libros; sección 19)
+const codigoGenerador = fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8");
+assert("PDF: Generador_EPS.gs no usa UrlFetchApp ni ScriptApp; sólo nombra la exportación en el menú",
+  !/UrlFetchApp|ScriptApp/.test(codigoGenerador) && (codigoGenerador.match(/exportarPdfLibro/g) || []).length === 1);
+assert("PDF: Generador_EPS.gs usa de DriveApp sólo la raíz (carpeta de los libros) y getFileById (mover el libro nuevo)",
+  JSON.stringify((codigoGenerador.match(/DriveApp\.\w+/g) || []).sort()) === JSON.stringify(["DriveApp.getFileById", "DriveApp.getRootFolder"]),
+  (codigoGenerador.match(/DriveApp\.\w+/g) || []).join(", "));
+
+// =============================================================================
+// 19. Organización de los libros en Drive (#23)
+// =============================================================================
+// Drive se simula (carpetas, papelera y moveTo); los permisos y el comportamiento real se validan en Google.
+const CARPETA_3B = "Mi unidad > Boletines EPS > 2026 - 3º bimestre";
+const rutaLibro = libro => libro.carpeta.ruta();
+
+// 19.1. Por curso: carpeta creada la primera vez, libro movido recién creado y completo en ella
+assert("Drive, por curso: el libro queda en Mi unidad > Boletines EPS > <ciclo> - <período>, creadas al no existir",
+  !rCurso.error && rutaLibro(libroDe(rCurso)) === CARPETA_3B
+    && JSON.stringify(rCurso.carpetasCreadas) === JSON.stringify(["Mi unidad > Boletines EPS", CARPETA_3B]),
+  rCurso.error || rutaLibro(libroDe(rCurso)) + " / " + rCurso.carpetasCreadas.join(", "));
+assert("Drive, por curso: se mueve recién creado (con su única hoja inicial), antes de copiar los boletines",
+  libroDe(rCurso).hojasAlMover === 1 && JSON.stringify(hojasDe(rCurso)) === JSON.stringify(HOJAS_EPS2),
+  libroDe(rCurso).hojasAlMover);
+assert("Drive, por curso: Control conserva el resultado y el enlace del libro, sin cambios",
+  rCurso.estadoResultado === "Libro creado: " + NOMBRE_LIBRO_EPS2 + " · Generados: 4 · Omitidos: 3 · Con error: 0. " + libroDe(rCurso).getUrl(),
+  rCurso.estadoResultado);
+
+// 19.2. Carpetas existentes: se reutilizan; una en la papelera se ignora; otro ciclo o período, otra subcarpeta
+const conCarpetas = (...rutas) => miUnidad => rutas.forEach(ruta => ruta.split(" > ").reduce((padre, nombre) =>
+  padre.getFoldersByName(nombre).hasNext() ? padre.getFoldersByName(nombre).next() : padre.createFolder(nombre), miUnidad));
+const runCursoDrive = (nombre, prepararDrive, extra) =>
+  runTest(nombre, { control: ctlCurso("EPS2", extra), sources: srcCurso, templateGrid: tpl, ejecutar: "generarBoletinesPorCurso()", prepararDrive });
+let rCarpetaExistente = runCursoDrive("Carpeta existente", conCarpetas("Boletines EPS > 2026 - 3º bimestre", "Boletines EPS > 2026 - 1º cuatrimestre"));
+assert("Drive: con las carpetas ya creadas, el libro va a la existente y no se crea ninguna",
+  !rCarpetaExistente.error && rCarpetaExistente.carpetasCreadas.length === 0 && rutaLibro(libroDe(rCarpetaExistente)) === CARPETA_3B
+    && rCarpetaExistente.miUnidad.hijas.length === 1 && rCarpetaExistente.miUnidad.hijas[0].hijas.length === 2,
+  rCarpetaExistente.error || rCarpetaExistente.carpetasCreadas.join(", "));
+let rEnPapelera = runCursoDrive("Carpeta en la papelera", miUnidad => {
+  conCarpetas("Boletines EPS > 2026 - 3º bimestre")(miUnidad);
+  miUnidad.hijas[0].hijas[0].enPapelera = true;
+});
+const subcarpetas3B = r => r.miUnidad.hijas[0].hijas.filter(c => c.nombre === "2026 - 3º bimestre");
+assert("Drive: una carpeta con el mismo nombre en la papelera se ignora y se crea otra",
+  !rEnPapelera.error && JSON.stringify(rEnPapelera.carpetasCreadas) === JSON.stringify([CARPETA_3B])
+    && subcarpetas3B(rEnPapelera).length === 2 && libroDe(rEnPapelera).carpeta === subcarpetas3B(rEnPapelera)[1],
+  rEnPapelera.error || rEnPapelera.carpetasCreadas.join(", "));
+let rOtroCiclo = runCursoDrive("Otro ciclo", conCarpetas("Boletines EPS > 2026 - 3º bimestre"), { B8: "2027" });
+assert("Drive: otro ciclo lectivo usa su propia subcarpeta dentro de Boletines EPS",
+  !rOtroCiclo.error && rutaLibro(libroDe(rOtroCiclo)) === "Mi unidad > Boletines EPS > 2027 - 3º bimestre"
+    && JSON.stringify(rOtroCiclo.carpetasCreadas) === JSON.stringify(["Mi unidad > Boletines EPS > 2027 - 3º bimestre"]),
+  rOtroCiclo.error || rutaLibro(libroDe(rOtroCiclo)));
+let rOtroPeriodo = runTest("Otro período", { control: ctl("1º cuatrimestre", "", Object.assign({ B9: "EPS2" }, fuentesCurso)),
+  sources: srcCurso, templateGrid: tpl, ejecutar: "generarBoletinesPorCurso()" });
+assert("Drive: otro período usa su propia subcarpeta (1º cuatrimestre)",
+  !rOtroPeriodo.error && rutaLibro(libroDe(rOtroPeriodo)) === "Mi unidad > Boletines EPS > 2026 - 1º cuatrimestre",
+  rOtroPeriodo.error || rutaLibro(libroDe(rOtroPeriodo)));
+
+// 19.3. Varios cursos: una sola búsqueda de la carpeta y todos los libros en ella
+assert("Drive, varios cursos: los 5 libros quedan en la misma carpeta, buscada y creada una sola vez",
+  !rTodos.error && rTodos.creados.every(l => rutaLibro(l) === CARPETA_3B && l.hojasAlMover === 1)
+    && JSON.stringify(rTodos.carpetasCreadas) === JSON.stringify(["Mi unidad > Boletines EPS", CARPETA_3B])
+    && rTodos.accesosDrive.filter(a => a === "getRootFolder").length === 1,
+  rTodos.error || rTodos.creados.map(rutaLibro).join(", ") + " / " + rTodos.accesosDrive.join(", "));
+assert("Drive, varios cursos: el diálogo indica la carpeta de los libros, después de la línea de cada curso",
+  rTodos.rawAlerts[0].includes(" s.\n\n- EPSI EPS1: Libro creado: ")
+    && rTodos.rawAlerts[0].includes("\n\nCarpeta de los libros: " + CARPETA_3B + ".\n\nEl detalle por estudiante"),
+  rTodos.rawAlerts[0]);
+let rCorteDrive = runVarios("Falla al crear el segundo libro (Drive)", ctlVarios({}), srcVarios,
+  "const crear = SpreadsheetApp.create; let n = 0; SpreadsheetApp.create = nombre => { if (++n === 2) throw new Error('cuota de Drive'); return crear(nombre); }; generarBoletinesTodosLosCursos()");
+assert("Drive, varios cursos: si la ejecución falla a mitad, el libro ya creado igual quedó en la carpeta",
+  rCorteDrive.error === "cuota de Drive" && rCorteDrive.creados.length === 1 && rutaLibro(rCorteDrive.creados[0]) === CARPETA_3B,
+  rCorteDrive.error);
+
+// 19.4. Sin libro, errores previos y generación individual: Drive no se toca
+assert("Drive: sin estudiantes listos, con un error global o en la generación individual, no se busca ni crea ninguna carpeta",
+  [rNadieListo, rSinListo, rNivelInexistente, rSinNivelEpsg, rSinMarcas, rReal, rSmoke].every(r => r.accesosDrive.length === 0 && r.carpetasCreadas.length === 0),
+  [rNadieListo, rSinListo, rNivelInexistente, rSinNivelEpsg, rSinMarcas, rReal, rSmoke].map(r => r.accesosDrive.length).join(","));
+let rVariosSinListos = runVarios("Marcados sin estudiantes listos", ctlVarios(marcas({ "EPSI EPS3": "SÍ", "EPSG EPS2": "SÍ" })));
+assert("Drive, varios cursos: si ningún curso marcado tiene libro, no se crea la carpeta y el diálogo no la menciona",
+  !rVariosSinListos.error && rVariosSinListos.creados.length === 0 && rVariosSinListos.accesosDrive.length === 0
+    && !rVariosSinListos.rawAlerts[0].includes("Carpeta"),
+  rVariosSinListos.error || rVariosSinListos.rawAlerts[0]);
+
+// 19.5. Fallas de Drive
+let rSinCarpeta = runCursoDrive("No se puede crear la carpeta", miUnidad => {
+  miUnidad.createFolder = () => { throw new Error("Acceso denegado: DriveApp."); };
+});
+assert("Drive: si no se puede crear la carpeta, no se crea ningún libro y el error queda en Control",
+  rSinCarpeta.error === "Acceso denegado: DriveApp." && rSinCarpeta.creados.length === 0
+    && rSinCarpeta.estadoResultado === "Error: Acceso denegado: DriveApp.",
+  rSinCarpeta.error);
+let rSinMover = runTest("No se puede mover el libro", { control: ctlCurso("EPS2"), sources: srcCurso, templateGrid: tpl,
+  ejecutar: "DriveApp.getFileById = () => ({ moveTo: () => { throw new Error('Sin permiso.'); } }); generarBoletinesPorCurso()" });
+assert("Drive: si no se puede mover el libro nuevo, la generación se detiene y el error nombra la carpeta y el libro vacío a borrar",
+  rSinMover.error === "No se pudo mover el libro nuevo a " + CARPETA_3B + ": Sin permiso. El libro \"" + NOMBRE_LIBRO_EPS2
+      + "\" quedó vacío en Mi unidad y se puede borrar: " + libroDe(rSinMover).getUrl()
+    && rSinMover.creados.length === 1 && hojasDe(rSinMover).join("|") === "Hoja 1" && rSinMover.estadoResultado === "Error: " + rSinMover.error,
+  rSinMover.error);
+
+// 19.6. La organización no cambia el contenido del libro
+assert("Drive: el libro organizado es idéntico al de la generación por curso sin carpetas previas",
+  fotoLibro(libroDe(rCarpetaExistente)) === fotoLibro(libroDe(rCurso)) && fotoLibro(libroDe(rEnPapelera)) === fotoLibro(libroDe(rCurso)));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

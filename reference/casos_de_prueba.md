@@ -1,6 +1,6 @@
 # Casos de prueba del generador EPS
 
-Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20), y la sección 13, la exportación a PDF (#21).
+Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20); la sección 13, la exportación a PDF (#21), y la sección 14, la organización de los libros en Drive (#23).
 
 ## Arnés de pruebas local
 
@@ -9,7 +9,7 @@ Para facilitar la reproducibilidad sin requerir interacción manual con Google S
 ### Características y funcionamiento del arnés
 
 - **Ejecución de código real**: `tests/run.js` carga y ejecuta el archivo de código fuente real `src/Generador_EPS.gs` dentro de un contexto aislado (`node:vm`).
-- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`; para la exportación a PDF, también `Ui.prompt()`, `UrlFetchApp.fetch()`, `DriveApp` y `ScriptApp.getOAuthToken()`).
+- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`; para guardar los libros, `DriveApp` con carpetas, papelera y `moveTo()`; para la exportación a PDF, también `Ui.prompt()`, `UrlFetchApp.fetch()`, `DriveApp` y `ScriptApp.getOAuthToken()`).
 - **Consumo directo de fixtures vigentes**: En cada ejecución se vacía el directorio de trabajo temporal `tmp/unzipped/` y se extraen directamente los archivos XLSX y TSV que existen en `reference/fixtures/`. Si falta algún fixture o se modifica, el runner valida estrictamente el estado actual del disco y no reutiliza extracciones de corridas previas.
 - **Requisito de plataforma y shell**: El runner debe ejecutarse en un entorno **Windows** desde **PowerShell** o **`cmd`**, dependiendo exclusivamente del comando `tar.exe` provisto por el sistema operativo en `%SystemRoot%\System32` (bsdtar nativo de Windows). **No debe asumirse que funciona desde Git Bash**, ya que en dicho entorno `tar.exe` puede resolverse al binario provisto por MSYS y fallar al abrir los archivos XLSX empaquetados.
 
@@ -144,7 +144,7 @@ El mock de fuentes del arnés sólo expone lectura (`getDataRange().getDisplayVa
 
 ### 7. Generación por curso (#12)
 
-**Uso**: en `Control`, además del período, la hoja origen, el ciclo lectivo y las fuentes, se elige el nivel en `B9` (*Nivel / curso*, selector `EPS1`…`EPS4` incluido en el workbook versionado; también se acepta sólo el número). *Informes EPS > Generar boletines por curso* crea un libro nuevo `Boletines EPS - <hoja origen> - <nivel> - <período> <ciclo> - <aaaa-mm-dd hh:mm>` con la hoja `Resumen` y una hoja por estudiante generado. La hora es siempre la de `America/Argentina/Buenos_Aires`, sin depender de la zona horaria del libro generador, del proyecto ni de la cuenta. El libro se crea en Mi unidad, y su organización posterior en carpetas queda a cargo del usuario. El DNI de `B7` no se usa. La generación individual ignora `B9` y no cambia.
+**Uso**: en `Control`, además del período, la hoja origen, el ciclo lectivo y las fuentes, se elige el nivel en `B9` (*Nivel / curso*, selector `EPS1`…`EPS4` incluido en el workbook versionado; también se acepta sólo el número). *Informes EPS > Generar boletines por curso* crea un libro nuevo `Boletines EPS - <hoja origen> - <nivel> - <período> <ciclo> - <aaaa-mm-dd hh:mm>` con la hoja `Resumen` y una hoja por estudiante generado. La hora es siempre la de `America/Argentina/Buenos_Aires`, sin depender de la zona horaria del libro generador, del proyecto ni de la cuenta. El libro se guarda en `Mi unidad > Boletines EPS > <ciclo> - <período>` (sección 14). El DNI de `B7` no se usa. La generación individual ignora `B9` y no cambia.
 
 **Selección**: sólo desde la fuente principal ya leída. El nivel de cada fila es el último marcador `EPSn` de la columna A. Se selecciona una fila del nivel con DNI cuyo `LISTO PARA EXPORTAR` resulta `SÍ` según la tabla de la sección 6 (una forma no canónica como `Si` cuenta como `SÍ` y queda advertida). `NO`, vacío o inválido se omite con su motivo. `EXPORTADO` se informa en el `Resumen` pero no selecciona. Una fila del nivel con `LISTO PARA EXPORTAR = SÍ` y sin DNI se informa como error.
 
@@ -174,7 +174,7 @@ Casos automatizados (grillas reales sintéticas con bloques agregados en el test
 
 **Cambio en la generación individual**: el contenido del informe no cambia. Las advertencias de las fuentes (falta de una fuente anterior, fuente anterior ilegible, encabezados de la cola) ahora aparecen antes que las del estudiante.
 
-**No cubierto por el arnés** (queda para la validación manual de #11): copia real de `Plantilla` a otro libro (imágenes, celdas combinadas, formato condicional, anchos y altos), permisos de creación en Drive, tiempos y límites de Apps Script con un curso completo, y PDF e impresión del libro.
+**No cubierto por el arnés** (queda para la validación manual de #11): copia real de `Plantilla` a otro libro (imágenes, celdas combinadas, formato condicional, anchos y altos), permisos de creación en Drive (y de carpetas, sección 14), tiempos y límites de Apps Script con un curso completo, y PDF e impresión del libro.
 
 ### 8. Orientación por período (#15)
 
@@ -263,7 +263,7 @@ Casos automatizados (sección 15 de `tests/run.js`):
 - Configuración (ningún curso marcado, una marca distinta de `SÍ`, `NO` o vacío, falta de período o de fuente principal) y estructura (fuente principal ilegible, falta de `LISTO PARA EXPORTAR`, nivel sin marcador en la hoja de su orientación): abortan antes de crear el primer libro, aunque el curso con problemas sea el último.
 - Por estudiante: como en la generación por curso; no afecta a los demás estudiantes ni a otros cursos.
 - Curso sin estudiantes listos: no genera libro y los demás se procesan.
-- Falla inesperada al crear libros (por ejemplo, de Drive): no se borra lo creado; `Control` y el diálogo listan los libros ya creados.
+- Falla inesperada al crear libros (por ejemplo, de Drive): no se borra lo creado; `Control` y el diálogo listan los libros ya creados, que ya están en su carpeta (sección 14).
 
 **Resultado**: `Control!F3` muestra `Cursos: n · Libros creados: n · Sin libro: n · Duración: n s.`. `F4` muestra una línea por curso (libro con conteos y enlace, o motivo sin libro), las advertencias generales de cada curso y, para los cursos sin libro, el detalle por estudiante. Un aviso (`toast`) indica el curso en curso. No hay jobs, colas, triggers ni cortes por tiempo: el rendimiento de los 8 cursos se mide en una prueba real.
 
@@ -295,7 +295,7 @@ Casos automatizados (sección 17 de `tests/run.js`; el ancho real del texto no s
 
 **Uso**: *Informes EPS > Exportar PDF de un libro de boletines* pide el link o ID de un libro de la generación por curso (o de varios cursos), ya revisado. Crea una carpeta nueva junto al libro, `<nombre del libro> - PDF <fecha y hora>`, con un PDF por hoja de estudiante (todas menos `Resumen`), con el nombre de la hoja. Si no se puede ver la carpeta del libro, la crea en Mi unidad.
 
-**Separación**: es una operación posterior y separada de la generación, en su propio archivo (`src/Exportar_PDF.gs`). `Generador_EPS.gs` sólo la nombra en el menú y no usa sus servicios. El libro sólo se lee: una falla de exportación nunca obliga a regenerarlo. Cada exportación crea su carpeta, así que volver a exportar no reemplaza ni mezcla PDF anteriores.
+**Separación**: es una operación posterior y separada de la generación, en su propio archivo (`src/Exportar_PDF.gs`). `Generador_EPS.gs` sólo la nombra en el menú y no usa sus servicios (`UrlFetchApp`, `ScriptApp`); usa `DriveApp` únicamente para guardar sus libros (sección 14). Como los libros quedan en la carpeta de su ciclo y período, las carpetas de PDF quedan ahí, junto al libro. El libro sólo se lee: una falla de exportación nunca obliga a regenerarlo. Cada exportación crea su carpeta, así que volver a exportar no reemplaza ni mezcla PDF anteriores.
 
 **Mecanismo**: la URL de exportación de Google Sheets (`/export?format=pdf&gid=…`), pedida con `UrlFetchApp` y el token del usuario. No está documentada oficialmente, por eso queda aislada en `urlExportacionPdf_` y `exportarHojaPdf_`. Cada pedido lleva la configuración de impresión completa (`CONFIG_PDF.PARAMETROS`), sin depender de lo guardado en el diálogo de impresión: `size=A4`, `portrait=true`, `fitw=true` y `scale=2` (ajustar al ancho), `top_margin`, `left_margin` y `right_margin` en 0, `bottom_margin=0.3937` (1 cm en pulgadas) y `fzr=true` (repetir filas inmovilizadas, la fila 1 de cada boletín; ver sección 9), sin cuadrícula, notas, título, nombre de hoja ni números de página.
 
@@ -312,6 +312,26 @@ Casos automatizados (sección 18 de `tests/run.js`, sobre el libro EPS2 de la ge
 - Fallas por hoja (HTTP 429, respuesta HTML y excepción): las demás se exportan, `Control` detalla cada una y el libro no cambia; volver a exportar da los 4 PDF.
 - Tiempo máximo: con 3 minutos por PDF se exportan 2 de 4 y las otras 2 quedan informadas.
 - Libro sin `Resumen`, libro sin hojas de estudiantes, cancelación y link inválido: no se crea carpeta ni se exporta.
-- `Generador_EPS.gs` no usa `UrlFetchApp`, `DriveApp` ni `ScriptApp`.
+- `Generador_EPS.gs` no usa `UrlFetchApp` ni `ScriptApp`, y de `DriveApp` sólo usa `getRootFolder` y `getFileById` (sección 14).
 
 **No cubierto por el arnés**: el PDF que produce Google (tamaño, márgenes, ajuste al ancho, repetición de la fila 1, cortes de página), la vigencia de los parámetros de la URL, los permisos y cuotas reales, los tiempos y la aparición de errores 429. Queda pendiente la validación en Google real que pide #21: un boletín de una página, uno de dos páginas, un curso completo, independencia de la configuración guardada en el diálogo de impresión y tiempos reales.
+
+### 14. Organización de los libros en Drive (#23)
+
+**Uso**: la generación por curso y la de varios cursos guardan cada libro en `Mi unidad > Boletines EPS > <ciclo> - <período>`, con el ciclo lectivo y el período de `Control` (por ejemplo, `2026 - 3º bimestre`). Es una carpeta por entrega: ahí quedan los libros de todos los cursos de ese período, las regeneraciones (cada libro conserva la fecha y hora en el nombre) y, como la exportación a PDF crea su carpeta junto al libro, también los PDF. Las carpetas se crean la primera vez; después se reutilizan las existentes con ese nombre, salvo las que están en la papelera. El diálogo final indica la carpeta; `Control` conserva el enlace de cada libro. La generación individual no crea libros ni usa Drive.
+
+**Mecanismo**: `SpreadsheetApp.create()` crea el libro en Mi unidad y `File.moveTo()` lo mueve a la carpeta. La carpeta se busca o se crea una sola vez por operación, después de validar todo y antes del primer libro, y sólo si se va a crear alguno (`carpetaLibros_`). Cada libro se mueve recién creado, antes de copiar los boletines (`moverLibro_`): si la ejecución se corta después (por ejemplo, por el límite de 6 minutos), el libro incompleto igual queda en la carpeta y no suelto en Mi unidad.
+
+**Errores**:
+- Si no se puede buscar o crear la carpeta: error en `Control` y en el diálogo, sin crear ningún libro.
+- Si no se puede mover un libro: la operación se detiene como ante cualquier otra falla de Drive. El error nombra la carpeta y el libro recién creado, que quedó vacío en Mi unidad, con su enlace para borrarlo; en varios cursos, además se listan los libros ya creados, que ya están en la carpeta.
+
+Casos automatizados (sección 19 de `tests/run.js`; Drive simulado con carpetas, papelera y `moveTo`):
+- Por curso: el libro queda en `Mi unidad > Boletines EPS > 2026 - 3º bimestre`, y las dos carpetas se crean al no existir. Se mueve con su única hoja inicial, antes de copiar los boletines. `Control` no cambia y el diálogo muestra la carpeta.
+- Carpetas existentes: se reutilizan sin crear otras; una con el mismo nombre en la papelera se ignora. Otro ciclo lectivo (`2027`) u otro período (`1º cuatrimestre`) usan su propia subcarpeta dentro de `Boletines EPS`.
+- Varios cursos: los 5 libros en la misma carpeta, con una sola búsqueda; el diálogo indica la carpeta después de la línea de cada curso. Si falla la creación del segundo libro, el primero ya está en la carpeta.
+- Sin estudiantes listos, errores globales o de configuración, cursos marcados sin libro y generación individual: no se usa Drive ni se crea ninguna carpeta.
+- Fallas: sin poder crear la carpeta, ningún libro; sin poder mover el libro, error con la carpeta y el enlace del libro vacío.
+- El libro organizado es idéntico al de la generación por curso.
+
+**No cubierto por el arnés**: el comportamiento real de Drive. En particular: si `getFoldersByName` devuelve carpetas de la papelera, el orden en que devuelve carpetas repetidas, el tiempo que agrega mover cada libro, y que la exportación a PDF cree su carpeta en la carpeta del período. Esto se valida en Google real.
