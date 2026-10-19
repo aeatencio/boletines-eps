@@ -112,6 +112,7 @@ class MockSheet {
     const sh = this;
     return {
       getDisplayValue: () => String(sh.get(r, c)),
+      getDisplayValues: () => Array.from({ length: h }, (_, i) => Array.from({ length: w }, (_, j) => String(sh.get(r + i, c + j)))),
       setValue: v => {
         for (let i = 0; i < h; i++) {
           for (let j = 0; j < w; j++) {
@@ -1156,10 +1157,11 @@ const menu = [];
 const genMenu = cargarGenerador();
 genMenu.SpreadsheetApp = { getUi: () => ({ createMenu: () => ({ addItem(t, f) { menu.push(t + "→" + f); return this; }, addSeparator() { menu.push("---"); return this; }, addToUi() {} }) }) };
 genMenu.onOpen();
-assert("Menú: conserva las generaciones y agrega, separada, la exportación a PDF",
+assert("Menú: conserva las generaciones y agrega, separadas, las exportaciones a PDF (un libro, cursos marcados, todos)",
   menu.join(", ") === "Generar informe actual→generarInformeActual, Generar boletines por curso→generarBoletinesPorCurso, "
     + "Generar boletines de los cursos marcados→generarBoletinesCursosMarcados, Generar boletines de todos los cursos→generarBoletinesTodosLosCursos, "
-    + "---, Exportar PDF de un libro de boletines→exportarPdfLibro",
+    + "---, Exportar PDF desde un libro o carpeta…→exportarPdfDesdeDrive, Exportar PDF de los cursos marcados→exportarPdfCursosMarcados, "
+    + "Exportar PDF de todos los cursos→exportarPdfTodosLosCursos",
   menu.join(", "));
 
 // 8.7. Resumen oculto: existe y conserva el detalle, pero no se imprime ni se exporta con el libro
@@ -1990,37 +1992,59 @@ const conAccesos = (obj, nombre, accesos) => new Proxy(obj, {
   }
 });
 
-// Ejecuta exportarPdfLibro() con los dos archivos de src cargados juntos, como en el proyecto de Apps Script.
+// Ejecuta exportarPdfDesdeDrive() (u otra operación) con los dos archivos de src cargados juntos, como en Apps Script.
 // responder(n, url, momento) da la respuesta del pedido n, hecho en ese momento; cada pedido avanza el reloj msPorPdf, y cada Utilities.sleep, lo que espera.
 // previas: carpetas que ya están junto al libro ({ nombre, descripcion, archivos, enPapelera, archivosEnPapelera, creada: ms antes }).
 // opcion: botón que se elige si se ofrece completar una exportación incompleta. msPrompt: lo que se tarda en pegar el link.
 // antes: código que se ejecuta antes (por ejemplo, para cambiar CONFIG_PDF).
-function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = PDF_OK, msPorPdf = 0, msPrompt = 0, padres, previas = [], opcion = "YES", antes = "" }) {
-  const ctrl = hojaControl({});
+// Varios cursos: libros ({ libro, creada: ms antes, enPapelera }) en la carpeta del libro, que es la del período
+// (Mi unidad > Boletines EPS > nombrePeriodo); control, valores de Control; ejecutar, la operación; confirmar, el botón.
+// Cada libro tiene su última modificación en Drive (modificado: ms antes; por defecto, 2 días antes, anterior a las
+// carpetas previas de los tests).
+function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = PDF_OK, msPorPdf = 0, msPrompt = 0, padres, previas = [],
+  opcion = "YES", antes = "", libros = [], control = {}, ejecutar = "exportarPdfDesdeDrive()", confirmar = "OK", msConfirmar = 0, nombrePeriodo = "Carpeta del curso",
+  modificado, idCarpeta = "ID_CARPETA_DEL_LIBRO_xxxxxxxxx" }) {
+  const ctrl = hojaControl(control);
   const generador = new MockSS([new MockSheet("Plantilla", tpl), ctrl]);
-  const alerts = [], preguntas = [], pedidos = [], carpetas = [], abiertos = [], esperas = [], accesos = new Set();
+  const alerts = [], preguntas = [], pedidos = [], carpetas = [], abiertos = [], esperas = [], consultasDrive = [], accesos = new Set();
   let reloj = Date.parse("2026-10-16T12:00:00Z");
   const iterador = lista => { let i = 0; return { hasNext: () => i < lista.length, next: () => lista[i++] }; };
+  let carpetasConId = 0;
+  const todasCarpetas = [];
   const carpetaMock = (nombre, padre, datos = {}) => {
     const c = {
-      nombre, padre, hijas: [], archivos: (datos.archivos || []).slice(), archivosEnPapelera: datos.archivosEnPapelera || [],
+      id: datos.id || "ID_CARPETA_" + String(++carpetasConId).padStart(4, "0") + "_xxxxxxxxxxxxx", nombre, padre, hijas: [], libros: [], archivos: (datos.archivos || []).slice(), archivosEnPapelera: datos.archivosEnPapelera || [],
       creada: reloj - (datos.creada || 0), enPapelera: !!datos.enPapelera, descripcion: datos.descripcion || "",
       getName: () => nombre,
+      getId: () => c.id,
       getUrl: () => "https://drive.google.com/drive/folders/" + encodeURIComponent(nombre),
       isTrashed: () => c.enPapelera,
       getDescription: () => c.descripcion,
       setDescription: d => { c.descripcion = d; return c; },
       getDateCreated: () => new Date(c.creada),
       getFolders: () => iterador(c.hijas),
+      getFoldersByName: n => iterador(c.hijas.filter(h => h.nombre === n)),
+      getFilesByType: tipo => iterador(c.libros.filter(l => l.getMimeType() === tipo)),
       getFiles: () => iterador(c.archivos.map(n => ({ getName: () => n, isTrashed: () => false }))
         .concat(c.archivosEnPapelera.map(n => ({ getName: () => n, isTrashed: () => true })))),
       createFolder: n => { const nueva = carpetaMock(n, nombre); c.hijas.push(nueva); carpetas.push(nueva); return nueva; },
       createFile: blob => { c.archivos.push(blob.getName()); return {}; }
     };
+    todasCarpetas.push(c);
     return c;
   };
-  const delCurso = carpetaMock("Carpeta del curso");
-  previas.forEach(p => delCurso.hijas.push(carpetaMock(p.nombre, "Carpeta del curso", p)));
+  const miUnidad = carpetaMock("Mi unidad");
+  const boletines = carpetaMock("Boletines EPS", "Mi unidad");
+  const delCurso = carpetaMock(nombrePeriodo, "Boletines EPS", { id: idCarpeta });
+  miUnidad.hijas.push(boletines);
+  boletines.hijas.push(delCurso);
+  previas.forEach(p => delCurso.hijas.push(carpetaMock(p.nombre, nombrePeriodo, p)));
+  const todosLibros = (libro ? [{ libro, modificado }] : []).concat(libros);
+  // Archivos de los libros en la carpeta del período, como los ve DriveApp.
+  libros.forEach(l => delCurso.libros.push({
+    getId: () => l.libro.getId(), getName: () => l.libro.getName(), isTrashed: () => !!l.enPapelera,
+    getDateCreated: () => new Date(reloj - (l.creada || 0)), getMimeType: () => l.tipo || "application/vnd.google-apps.spreadsheet"
+  }));
   const listaPadres = padres || [delCurso];
   const ctx = {
     SpreadsheetApp: {
@@ -2032,19 +2056,43 @@ function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = 
         alert: (titulo, mensaje, botones) => {
           if (!botones) return alerts.push(titulo);
           preguntas.push(mensaje);
-          return opcion;
+          if (botones !== "OK_CANCEL") return opcion;
+          reloj += msConfirmar;
+          return confirmar;
         }
       }),
+      // Como Apps Script: sólo abre planillas de Google (no carpetas ni otros archivos). abiertos: sólo las que abrió.
       openById: id => {
+        consultasDrive.push("openById " + id);
+        const l = todosLibros.find(x => x.libro.getId() === id);
+        if (!l || (l.tipo && l.tipo !== "application/vnd.google-apps.spreadsheet")) throw new Error("mock: no es una planilla " + id);
+        if (l.inaccesible) throw new Error("No tenés permiso para acceder a este documento.");
         abiertos.push(id);
-        if (id !== libro.getId()) throw new Error("mock: id inexistente " + id);
-        return conAccesos(libro, "libro", accesos);
+        return conAccesos(l.libro, "libro", accesos);
       }
     },
     DriveApp: {
-      getFileById: () => ({ getParents: () => iterador(listaPadres) }),
-      getRootFolder: () => carpetaMock("Mi unidad")
+      // Como lo documenta Apps Script: getFileById devuelve archivos y getFolderById, carpetas; cada uno rechaza el otro
+      // tipo. No se simula que getFileById encuentre carpetas ni dé su tipo (conducta no documentada).
+      getFileById: id => {
+        consultasDrive.push("getFileById " + id);
+        if (todasCarpetas.some(c => c.id === id)) throw new Error("mock: getFileById no acepta carpetas " + id);
+        const l = todosLibros.find(x => x.libro.getId() === id);
+        if (!l) throw new Error("mock: archivo inexistente " + id);
+        return {
+          getName: () => l.libro.getName(),
+          getParents: () => iterador(listaPadres), getLastUpdated: () => new Date(reloj - (l.modificado === undefined ? 2 * 86400000 : l.modificado))
+        };
+      },
+      getFolderById: id => {
+        consultasDrive.push("getFolderById " + id);
+        const carpeta = todasCarpetas.find(c => c.id === id);
+        if (!carpeta) throw new Error("mock: no es una carpeta " + id);
+        return carpeta;
+      },
+      getRootFolder: () => miUnidad
     },
+    MimeType: { GOOGLE_SHEETS: "application/vnd.google-apps.spreadsheet" },
     ScriptApp: { getOAuthToken: () => "TOKEN_FICTICIO" },
     UrlFetchApp: {
       fetch: (url, opciones) => {
@@ -2066,12 +2114,12 @@ function runExportar({ libro, respuesta = LINK_LIBRO, boton = "OK", responder = 
   ["src/Generador_EPS.gs", "src/Exportar_PDF.gs"].forEach(f => vm.runInContext(fs.readFileSync(path.join(ROOT, f), "utf8"), ctx));
   let error = null;
   try {
-    vm.runInContext(antes + "exportarPdfLibro()", ctx);
+    vm.runInContext(antes + ejecutar, ctx);
   } catch (e) {
     error = e.message;
   }
   return {
-    error, alerts, preguntas, pedidos, carpetas, abiertos, esperas, accesos: [...accesos].sort(), generador, delCurso,
+    error, alerts, preguntas, pedidos, carpetas, abiertos, esperas, consultasDrive, contexto: ctx, accesos: [...accesos].sort(), generador, delCurso,
     archivos: carpetas.length ? carpetas[0].archivos : [],
     resultado: ctrl.get(3, 6), advertencias: ctrl.get(4, 6), toasts: generador.toasts || []
   };
@@ -2083,7 +2131,7 @@ const fotoLibroPdf = fotoLibro(libroPdf);
 const HOJAS_PDF = HOJAS_EPS2.slice(1); // sin Resumen
 const CARPETA_PDF = NOMBRE_LIBRO_EPS2 + " - PDF <fecha>";
 const parametrosPdf = url => Object.fromEntries(new URL(url).searchParams);
-const LECTURAS_LIBRO = ["hoja.getName", "hoja.getSheetId", "libro.getId", "libro.getName", "libro.getSheetByName", "libro.getSheets"];
+const LECTURAS_LIBRO = ["hoja.getName", "hoja.getRange", "hoja.getSheetId", "libro.getId", "libro.getName", "libro.getSheetByName", "libro.getSheets"];
 const soloLeyo = r => r.accesos.every(a => LECTURAS_LIBRO.includes(a));
 
 // 18.1. Libro completo: un PDF por hoja de estudiante, con la configuración de impresión validada
@@ -2211,7 +2259,10 @@ assert("PDF con tiempo máximo: con margen para el primer pedido, se exporta lo 
 
 // 18.4. Libros que no son de la generación por curso, cancelación y link inválido: no se crea nada
 const sinCambios = r => r.carpetas.length === 0 && r.pedidos.length === 0;
-const otroLibro = (id, hojas) => { const l = new MockSS(hojas.map(n => new MockSheet(n, [["x"]])), "Otro libro"); l.id = id; return l; };
+// Un Resumen terminado, como lo deja la generación: título y, debajo, el curso (ver hojasEstudiantesLibro_ y cursoDelLibro_).
+const resumenTerminado = (hojaOrigen = "EPSI", nivel = "EPS9", periodo = P3B, ciclo = "2026") => new MockSheet("Resumen",
+  [[CELDAS_CONTROL.TITULO_RESUMEN], ["Hoja origen", hojaOrigen], ["Nivel", nivel], ["Período", periodo], ["Ciclo lectivo", ciclo]]);
+const otroLibro = (id, hojas) => { const l = new MockSS(hojas.map(n => n === "Resumen" ? resumenTerminado() : new MockSheet(n, [["x"]])), "Otro libro"); l.id = id; return l; };
 let rPdfGenerador = runExportar({ libro: otroLibro("ID_GENERADOR_xxxxxxxxxxxxxxxx", ["Control", "Plantilla", "Informe_actual"]),
   respuesta: "ID_GENERADOR_xxxxxxxxxxxxxxxx" });
 assert("PDF: un libro sin Resumen (por ejemplo, el generador) se rechaza sin crear carpeta ni exportar",
@@ -2236,7 +2287,7 @@ assert("PDF: si no se puede ver la carpeta del libro, la carpeta de PDF se crea 
 // 18.5. Separación: la generación no usa la exportación ni sus servicios (DriveApp, sólo para guardar sus libros; sección 19)
 const codigoGenerador = fs.readFileSync(path.join(ROOT, "src/Generador_EPS.gs"), "utf8");
 assert("PDF: Generador_EPS.gs no usa UrlFetchApp ni ScriptApp; sólo nombra la exportación en el menú",
-  !/UrlFetchApp|ScriptApp/.test(codigoGenerador) && (codigoGenerador.match(/exportarPdfLibro/g) || []).length === 1);
+  !/UrlFetchApp|ScriptApp/.test(codigoGenerador) && (codigoGenerador.match(/exportarPdf\w*/g) || []).join(",") === "exportarPdfDesdeDrive,exportarPdfCursosMarcados,exportarPdfTodosLosCursos");
 assert("PDF: Generador_EPS.gs usa de DriveApp sólo la raíz (carpeta de los libros) y getFileById (mover el libro nuevo)",
   JSON.stringify((codigoGenerador.match(/DriveApp\.\w+/g) || []).sort()) === JSON.stringify(["DriveApp.getFileById", "DriveApp.getRootFolder"]),
   (codigoGenerador.match(/DriveApp\.\w+/g) || []).join(", "));
@@ -2246,7 +2297,7 @@ assert("PDF: Generador_EPS.gs usa de DriveApp sólo la raíz (carpeta de los lib
 // resto (los rechazados no cuentan). Reproduce lo observado en producción con pedidos seguidos: 6 PDF y 9 rechazos en ~24 s.
 const ID_LIBRO_15 = "ID_LIBRO_15_HOJAS_xxxxxxxxxxx";
 const HOJAS_15 = Array.from({ length: 15 }, (_, i) => "Ficticio, Estudiante " + String(i + 1).padStart(2, "0"));
-const libro15 = new MockSS([new MockSheet("Resumen", [["x"]])].concat(HOJAS_15.map(n => new MockSheet(n, [["x"]]))), "Libro sintético de 15");
+const libro15 = new MockSS([resumenTerminado()].concat(HOJAS_15.map(n => new MockSheet(n, [["x"]]))), "Libro sintético de 15");
 libro15.id = ID_LIBRO_15;
 const limiteVentana = (maximo, ventanaMs) => {
   const aceptados = [];
@@ -2443,6 +2494,519 @@ assert("Drive: si no se puede mover el libro nuevo, la generación se detiene y 
 // 19.6. La organización no cambia el contenido del libro
 assert("Drive: el libro organizado es idéntico al de la generación por curso sin carpetas previas",
   fotoLibro(libroDe(rCarpetaExistente)) === fotoLibro(libroDe(rCurso)) && fotoLibro(libroDe(rEnPapelera)) === fotoLibro(libroDe(rCurso)));
+
+// =============================================================================
+// 20. Exportación a PDF de varios cursos (#23)
+// =============================================================================
+// Los libros están en la carpeta del período (Mi unidad > Boletines EPS > 2026 - 3º bimestre). Drive y la URL de
+// exportación se simulan; los tiempos y el límite reales se validan en Google.
+const PERIODO_PDF = "2026 - 3º bimestre";
+const ctlPdf = marcasCtl => Object.assign({ B5: P3B, B8: "2026" }, marcasCtl || {});
+// Los 5 libros que generó "todos los cursos" (sección 16), con sus nombres reales y en el orden en que se crearon.
+const LIBROS_TODOS = rTodos.creados.map((libro, i) => ({ libro, creada: 600000 - i * 1000 }));
+const fotosTodos = rTodos.creados.map(fotoLibro);
+const hojasPdfDe = libro => libro.getSheets().map(h => h.getName()).filter(n => n !== "Resumen").map(n => n + ".pdf");
+const runPdfCursos = opciones => runExportar(Object.assign({
+  libros: LIBROS_TODOS, nombrePeriodo: PERIODO_PDF, control: ctlPdf(), ejecutar: "exportarPdfTodosLosCursos()"
+}, opciones));
+// Lo que quedó en la carpeta del período al terminar, como carpetas previas de la ejecución siguiente.
+const INICIO_RELOJ = Date.parse("2026-10-16T12:00:00Z");
+const quedaEnDrive = r => r.delCurso.hijas.map(c => ({
+  nombre: c.nombre, descripcion: c.descripcion, archivos: c.archivos.slice(), creada: INICIO_RELOJ - c.creada + 3600000
+}));
+const carpetaDeLibro = (r, libro) => r.delCurso.hijas.filter(c => c.descripcion.includes(libro.getId()));
+const pedidosDeLibro = (r, libro) => r.pedidos.filter(p => p.url.includes("/d/" + libro.getId() + "/export?")).length;
+
+// 20.1. Todos los cursos, sin PDF previos: un libro por curso con libro, todo en una ejecución
+let rPdfTodos = runPdfCursos({});
+assert("PDF de todos: se confirma una vez, con una línea por curso (los cursos sin libro, informados)",
+  rPdfTodos.preguntas.length === 1
+    && rPdfTodos.preguntas[0].includes("\n- EPSI EPS1 (libro <fecha>): 1 PDF a exportar.\n- EPSI EPS2 (libro <fecha>): 4 PDF a exportar.\n- EPSI EPS3: sin libro del período.")
+    && rPdfTodos.preguntas[0].includes("PDF a exportar: 8. Cada ejecución avanza hasta 5 minutos; si no termina, volver a ejecutar la misma opción"),
+  rPdfTodos.preguntas.join(" / "));
+assert("PDF de todos: cada libro tiene su carpeta nueva junto a él, con su ID en la descripción y un PDF por hoja",
+  !rPdfTodos.error && rPdfTodos.carpetas.length === 5
+    && rTodos.creados.every(l => carpetaDeLibro(rPdfTodos, l).length === 1
+      && JSON.stringify(carpetaDeLibro(rPdfTodos, l)[0].archivos) === JSON.stringify(hojasPdfDe(l))
+      && carpetaDeLibro(rPdfTodos, l)[0].nombre === l.getName() + " - PDF <fecha>"),
+  rPdfTodos.error || rPdfTodos.carpetas.map(c => c.nombre + ":" + c.archivos.length).join(", "));
+assert("PDF de todos: 8 pedidos (uno por hoja de estudiante), con la configuración validada; la pausa sigue entre un libro y otro",
+  rPdfTodos.pedidos.length === 8 && rTodos.creados.every(l => pedidosDeLibro(rPdfTodos, l) === hojasPdfDe(l).length)
+    && rPdfTodos.pedidos.every(p => parametrosPdf(p.url).size === "A4" && parametrosPdf(p.url).fzr === "true")
+    && JSON.stringify(rPdfTodos.esperas) === JSON.stringify(Array(7).fill(3000)),
+  JSON.stringify(rPdfTodos.esperas));
+assert("PDF de todos: Control resume cursos completos y PDF, con una línea por curso y el enlace de cada carpeta",
+  rPdfTodos.resultado.startsWith("PDF de varios cursos (3º bimestre 2026): cursos completos: 5 de 5 con libro · PDF exportados ahora: 8 · Con error: 0 · Reintentos por HTTP 429: 0 · Duración: ")
+    && !rPdfTodos.resultado.includes("Faltan PDF")
+    && rPdfTodos.advertencias.split("\n")[1].startsWith("EPSI EPS2 (libro <fecha>): 4 de 4 PDF (4 exportados ahora). https://drive.google.com/drive/folders/")
+    && rPdfTodos.advertencias.split("\n")[2] === "EPSI EPS3: sin libro del período."
+    && rPdfTodos.alerts.length === 1 && rPdfTodos.alerts[0].includes("Las carpetas de PDF están junto a cada libro, en Mi unidad > Boletines EPS > 2026 - 3º bimestre."),
+  rPdfTodos.resultado + "\n" + rPdfTodos.advertencias);
+assert("PDF de todos: los libros no se modifican y sólo se leen",
+  JSON.stringify(rTodos.creados.map(fotoLibro)) === JSON.stringify(fotosTodos) && soloLeyo(rPdfTodos), rPdfTodos.accesos.join(", "));
+
+// 20.2. Volver a ejecutar con todo completo: no se repite nada ni se pregunta
+let rPdfTodosOtraVez = runPdfCursos({ previas: quedaEnDrive(rPdfTodos) });
+assert("PDF de todos, otra vez: con todo completo no se pide ningún PDF, no se crean carpetas ni se pide confirmación",
+  !rPdfTodosOtraVez.error && rPdfTodosOtraVez.pedidos.length === 0 && rPdfTodosOtraVez.carpetas.length === 0 && rPdfTodosOtraVez.preguntas.length === 0
+    && rPdfTodosOtraVez.resultado.startsWith("PDF de varios cursos (3º bimestre 2026): cursos completos: 5 de 5 con libro · PDF exportados ahora: 0 · Con error: 0 ")
+    && !/Faltan PDF|no se puede exportar/.test(rPdfTodosOtraVez.resultado)
+    && rPdfTodosOtraVez.advertencias.split("\n")[0].startsWith("EPSI EPS1 (libro <fecha>): ya estaba completo (1 de 1 PDF). https://drive.google.com/"),
+  rPdfTodosOtraVez.error || rPdfTodosOtraVez.resultado + "\n" + rPdfTodosOtraVez.advertencias);
+
+// 20.3. Cursos marcados
+let rPdfMarcados = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "SÍ", "EPSG EPS3": "Si", "EPSI EPS1": "NO" })), ejecutar: "exportarPdfCursosMarcados()" });
+assert("PDF de marcados: sólo los cursos con SÍ, en orden fijo",
+  !rPdfMarcados.error && rPdfMarcados.carpetas.length === 2 && rPdfMarcados.pedidos.length === 5
+    && rPdfMarcados.preguntas[0].includes("\n- EPSI EPS2 (libro <fecha>): 4 PDF a exportar.\n- EPSG EPS3 (libro <fecha>): 1 PDF a exportar.\n\n")
+    && rPdfMarcados.resultado.includes("cursos completos: 2 de 2 con libro"),
+  rPdfMarcados.error || rPdfMarcados.resultado);
+let rPdfSinMarcas = runPdfCursos({ control: ctlPdf(), ejecutar: "exportarPdfCursosMarcados()" });
+assert("PDF de marcados: sin cursos marcados, error que sugiere exportar todos, sin crear nada",
+  rPdfSinMarcas.error === "No hay cursos marcados con SÍ en Control!B15:B22. Para exportar los 8, usar Informes EPS > Exportar PDF de todos los cursos."
+    && rPdfSinMarcas.carpetas.length === 0 && rPdfSinMarcas.abiertos.length === 0
+    && rPdfSinMarcas.resultado === "Error al exportar PDF de varios cursos: " + rPdfSinMarcas.error,
+  rPdfSinMarcas.error);
+let rPdfMarcaMala = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "x" })), ejecutar: "exportarPdfCursosMarcados()" });
+assert("PDF de marcados: una marca no admitida es un error, como en la generación",
+  /^La marca de EPSI EPS2 \(Control!B16\) tiene un valor no admitido/.test(rPdfMarcaMala.error || "") && rPdfMarcaMala.carpetas.length === 0,
+  rPdfMarcaMala.error);
+let rPdfSinPeriodo = runPdfCursos({ control: { B5: "" } });
+assert("PDF de varios cursos: sin período en Control, error claro sin abrir libros",
+  /^Falta indicar el período en Control!B5/.test(rPdfSinPeriodo.error || "") && rPdfSinPeriodo.abiertos.length === 0, rPdfSinPeriodo.error);
+
+// 20.4. Varios libros del mismo curso: se usa el más reciente
+const ID_EPS2 = rTodos.creados[1].getId();
+const libroCopia = (original, id, nombre) => { const l = new MockSS(original.getSheets().map(h => new MockSheet(h.getName(), h.grid)), nombre || original.getName()); l.id = id; return l; };
+const viejoEps2 = libroCopia(rTodos.creados[1], "ID_LIBRO_EPS2_VIEJO_xxxxxxxxxx", NOMBRE_LIBRO("EPSI EPS2").replace("<fecha>", "2026-10-15 09:00"));
+const gemeloEps2 = libroCopia(rTodos.creados[1], "ID_LIBRO_EPS2_GEMELO_NUEVO_xxx");
+const enPapeleraEps2 = libroCopia(rTodos.creados[1], "ID_LIBRO_EPS2_PAPELERA_xxxxxx");
+const pdfConNombreEps2 = libroCopia(rTodos.creados[1], "ID_PDF_CON_NOMBRE_xxxxxxxxxxx");
+let rPdfVarios = runPdfCursos({
+  control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()",
+  libros: [
+    { libro: viejoEps2, creada: 86400000 }, { libro: rTodos.creados[1], creada: 600000 },
+    { libro: gemeloEps2, creada: 300000 }, // mismo nombre exacto, creado después: es el más reciente
+    { libro: enPapeleraEps2, creada: 1000, enPapelera: true }, { libro: pdfConNombreEps2, creada: 1000, tipo: "application/pdf" }
+  ]
+});
+assert("Varios libros del curso: se exporta sólo el creado más recientemente (aun con el mismo nombre), fuera de la papelera y que sea una planilla",
+  !rPdfVarios.error && rPdfVarios.carpetas.length === 1 && rPdfVarios.carpetas[0].descripcion.includes("ID_LIBRO_EPS2_GEMELO_NUEVO_xxx")
+    && rPdfVarios.pedidos.every(p => p.url.includes("/d/ID_LIBRO_EPS2_GEMELO_NUEVO_xxx/"))
+    // Se abren las planillas de la carpeta para reconocerlas por su Resumen; ni la de la papelera ni el PDF.
+    && JSON.stringify(rPdfVarios.abiertos) === JSON.stringify(["ID_LIBRO_EPS2_VIEJO_xxxxxxxxxx", ID_EPS2, "ID_LIBRO_EPS2_GEMELO_NUEVO_xxx"]),
+  rPdfVarios.error || JSON.stringify(rPdfVarios.abiertos));
+assert("Varios libros del curso: la confirmación y Control dicen cuál se usa y cuántos hay",
+  rPdfVarios.preguntas[0].includes("- EPSI EPS2 (libro <fecha>, el más reciente de 3): 4 PDF a exportar.")
+    && rPdfVarios.advertencias.startsWith("EPSI EPS2 (libro <fecha>, el más reciente de 3): 4 de 4 PDF"),
+  rPdfVarios.preguntas.join(" / "));
+
+// 20.5. Una exportación incompleta de un curso se completa sin preguntar aparte; las carpetas de otro libro no cuentan
+const libroEps2 = rTodos.creados[1];
+const previaEps2 = { nombre: libroEps2.getName() + " - PDF 2026-10-16 08:00", descripcion: "PDF del libro de boletines " + ID_EPS2,
+  archivos: hojasPdfDe(libroEps2).slice(0, 2), creada: 3600000 };
+const previaDeOtroLibro = { nombre: libroEps2.getName() + " - PDF 2026-10-16 08:30", descripcion: "PDF del libro de boletines OTRO_ID_xxxxxxxxxxxxxx",
+  archivos: hojasPdfDe(libroEps2).slice(0, 3), creada: 1800000 };
+let rPdfIncompleta = runPdfCursos({ previas: [previaEps2, previaDeOtroLibro] });
+const previaEps2Final = rPdfIncompleta.delCurso.hijas.find(c => c.nombre === previaEps2.nombre);
+assert("Incompleta: la confirmación anuncia que se completa, y no hay otra pregunta",
+  rPdfIncompleta.preguntas.length === 1 && rPdfIncompleta.preguntas[0].includes("- EPSI EPS2 (libro <fecha>): faltan 2 de 4 PDF, se completa su carpeta.")
+    && rPdfIncompleta.preguntas[0].includes("PDF a exportar: 6."),
+  rPdfIncompleta.preguntas.join(" / "));
+assert("Incompleta: se piden sólo las 2 hojas que faltaban y van a esa carpeta; la del otro libro no se toca",
+  !rPdfIncompleta.error && pedidosDeLibro(rPdfIncompleta, libroEps2) === 2 && rPdfIncompleta.carpetas.length === 4
+    && JSON.stringify(previaEps2Final.archivos.slice().sort()) === JSON.stringify(hojasPdfDe(libroEps2).slice().sort())
+    && rPdfIncompleta.delCurso.hijas.find(c => c.nombre === previaDeOtroLibro.nombre).archivos.length === 3
+    && rPdfIncompleta.advertencias.split("\n")[1].startsWith("EPSI EPS2 (libro <fecha>): 4 de 4 PDF (2 exportados ahora).")
+    && rPdfIncompleta.resultado.includes("cursos completos: 5 de 5 con libro · PDF exportados ahora: 6 "),
+  rPdfIncompleta.error || rPdfIncompleta.advertencias);
+
+// 20.6. Corte por tiempo y continuación: tres cursos de 15 hojas no entran en una ejecución
+const libroSintetico = (curso, id, n) => {
+  const l = new MockSS([resumenTerminado(...curso.split(" "))].concat(Array.from({ length: n }, (_, i) =>
+    new MockSheet("Ficticio, " + curso.replace(" ", "") + " Estudiante " + String(i + 1).padStart(2, "0"), [["x"]]))),
+    NOMBRE_LIBRO(curso).replace("<fecha>", "2026-10-19 10:00"));
+  l.id = id;
+  return l;
+};
+const LIBROS_GRANDES = [["EPSI EPS1", "ID_GRANDE_EPSI_EPS1_xxxxxxxxx"], ["EPSI EPS2", "ID_GRANDE_EPSI_EPS2_xxxxxxxxx"], ["EPSG EPS1", "ID_GRANDE_EPSG_EPS1_xxxxxxxxx"]]
+  .map(([curso, id], i) => ({ libro: libroSintetico(curso, id, 15), creada: 600000 - i }));
+// 10 s por pedido + 3 s de pausa: unos 23 PDF por ejecución; los 45 necesitan 2 o 3 ejecuciones.
+const corridas = [];
+let previasGrandes = [];
+for (let n = 0; n < 5; n++) {
+  const r = runPdfCursos({ libros: LIBROS_GRANDES, msPorPdf: 10000, previas: previasGrandes });
+  corridas.push(r);
+  previasGrandes = quedaEnDrive(r);
+  if (!r.resultado.includes("Faltan PDF")) break;
+}
+const [corrida1, corrida2] = corridas;
+const ultimaCorrida = corridas[corridas.length - 1];
+const pedidosTotales = [].concat(...corridas.map(r => r.pedidos.map(p => p.url)));
+assert("Continuación: la primera ejecución termina por tiempo, con el tercer libro sin empezar y sin carpeta vacía",
+  !corrida1.error && corridas.length > 1 && corrida1.resultado.includes("Faltan PDF: volver a ejecutar la misma opción para continuar.")
+    && corrida1.carpetas.length === 2 && carpetaDeLibro(corrida1, LIBROS_GRANDES[2].libro).length === 0
+    && corrida1.advertencias.includes("EPSG EPS1 (libro <fecha>): no se empezó por el tiempo máximo; faltan 15 de 15 PDF.")
+    && /EPSI EPS2 \(libro <fecha>\): \d+ de 15 PDF \(\d+ exportados ahora, \d+ sin exportar por el tiempo máximo\); faltan \d+\./.test(corrida1.advertencias)
+    && corrida1.pedidos.every(p => p.momento - INICIO_RELOJ < 5 * 60 * 1000),
+  corrida1.error || corrida1.resultado + "\n" + corrida1.advertencias);
+assert("Continuación: la segunda ejecución completa la carpeta del libro a medias y empieza el que faltaba",
+  !corrida2.error && /- EPSI EPS2 \(libro <fecha>\): faltan \d+ de 15 PDF, se completa su carpeta\./.test(corrida2.preguntas[0])
+    && corrida2.preguntas[0].includes("- EPSI EPS1 (libro <fecha>): completo (15 de 15 PDF), se omite.")
+    && corrida2.preguntas[0].includes("- EPSG EPS1 (libro <fecha>): 15 PDF a exportar."),
+  corrida2.preguntas.join(" / "));
+assert("Continuación: al final, una sola carpeta por libro con sus 15 PDF y ninguna hoja pedida dos veces (45 pedidos en " + corridas.length + " ejecuciones)",
+  !ultimaCorrida.error && ultimaCorrida.resultado.includes("cursos completos: 3 de 3 con libro") && !ultimaCorrida.resultado.includes("Faltan PDF")
+    && LIBROS_GRANDES.every(l => carpetaDeLibro(ultimaCorrida, l.libro).length === 1
+      && JSON.stringify(carpetaDeLibro(ultimaCorrida, l.libro)[0].archivos.slice().sort()) === JSON.stringify(hojasPdfDe(l.libro).slice().sort()))
+    && pedidosTotales.length === 45 && new Set(pedidosTotales).size === 45,
+  ultimaCorrida.resultado + " / pedidos: " + pedidosTotales.length);
+
+// 20.7. Errores: una hoja que falla se reintenta en la ejecución siguiente; un libro ilegible no frena a los demás
+const ID_EPS1 = rTodos.creados[0].getId();
+let rPdfFallaHoja = runPdfCursos({ responder: (n, url) => url.includes("/d/" + ID_EPS2 + "/") && parametrosPdf(url).gid === String(libroEps2.getSheets()[2].getSheetId())
+  ? respuestaMock(500, "text/html") : PDF_OK() });
+const hojaFallida = libroEps2.getSheets()[2].getName();
+assert("Error en una hoja: el curso queda incompleto, Control detalla la hoja y pide volver a ejecutar",
+  !rPdfFallaHoja.error && rPdfFallaHoja.resultado.includes("cursos completos: 4 de 5 con libro · PDF exportados ahora: 7 · Con error: 1 ")
+    && rPdfFallaHoja.resultado.endsWith("Faltan PDF: volver a ejecutar la misma opción para continuar.")
+    && rPdfFallaHoja.advertencias.includes("EPSI EPS2 (libro <fecha>): 3 de 4 PDF (3 exportados ahora, 1 con error); faltan 1.")
+    && rPdfFallaHoja.advertencias.includes("\n  EPSI EPS2 · Error · " + hojaFallida + ": Google respondió HTTP 500."),
+  rPdfFallaHoja.resultado + "\n" + rPdfFallaHoja.advertencias);
+let rPdfReintentoHoja = runPdfCursos({ previas: quedaEnDrive(rPdfFallaHoja) });
+assert("Error en una hoja: la ejecución siguiente pide sólo esa hoja y completa el curso",
+  !rPdfReintentoHoja.error && rPdfReintentoHoja.pedidos.length === 1 && parametrosPdf(rPdfReintentoHoja.pedidos[0].url).gid === String(libroEps2.getSheets()[2].getSheetId())
+    && rPdfReintentoHoja.resultado.includes("cursos completos: 5 de 5 con libro"),
+  rPdfReintentoHoja.error || rPdfReintentoHoja.resultado);
+const sinResumen = new MockSS([new MockSheet("Hoja suelta", [["x"]])], rTodos.creados[0].getName());
+sinResumen.id = "ID_SIN_RESUMEN_xxxxxxxxxxxxxx";
+let rPdfIlegible = runPdfCursos({ libros: [{ libro: sinResumen, creada: 1000 }].concat(LIBROS_TODOS) });
+assert("Libro que no es de la generación (sin Resumen), el más reciente de su curso: cuenta como problema y los demás cursos se exportan",
+  !rPdfIlegible.error && rPdfIlegible.carpetas.length === 4 && carpetaDeLibro(rPdfIlegible, sinResumen).length === 0
+    && rPdfIlegible.advertencias.startsWith("EPSI EPS1 (libro <fecha>, el más reciente de 2): no se puede exportar: El libro \"" + sinResumen.getName() + "\" no tiene la hoja Resumen")
+    && rPdfIlegible.resultado.includes("cursos completos: 4 de 5 con libro · Con libro que no se puede exportar: 1 · PDF exportados ahora: 7 ")
+    && rPdfIlegible.resultado.endsWith(" Hay cursos cuyo libro no se puede exportar: ver el detalle, corregirlo y volver a ejecutar.")
+    && !rPdfIlegible.resultado.includes("Faltan PDF"),
+  rPdfIlegible.error || rPdfIlegible.advertencias);
+let rPdfSinCarpetaPeriodo = runPdfCursos({ nombrePeriodo: "2026 - 1º cuatrimestre" });
+assert("Sin carpeta del período: ningún curso tiene libro, se informa sin crear ni pedir nada",
+  !rPdfSinCarpetaPeriodo.error && rPdfSinCarpetaPeriodo.pedidos.length === 0 && rPdfSinCarpetaPeriodo.carpetas.length === 0
+    && rPdfSinCarpetaPeriodo.resultado.startsWith("PDF de varios cursos (3º bimestre 2026): cursos completos: 0 de 0 con libro · ")
+    && rPdfSinCarpetaPeriodo.resultado.endsWith(" Ningún curso elegido tiene libro en Mi unidad > Boletines EPS > 2026 - 3º bimestre.")
+    && rPdfSinCarpetaPeriodo.preguntas.length === 0
+    && rPdfSinCarpetaPeriodo.advertencias.split("\n").every(l => l.endsWith(": sin libro del período.")),
+  rPdfSinCarpetaPeriodo.error || rPdfSinCarpetaPeriodo.advertencias);
+let rPdfCancelaCursos = runPdfCursos({ confirmar: "CANCEL" });
+assert("Cancelar la confirmación: no se pide ni crea nada, y Control no cambia",
+  !rPdfCancelaCursos.error && rPdfCancelaCursos.pedidos.length === 0 && rPdfCancelaCursos.carpetas.length === 0
+    && rPdfCancelaCursos.resultado === "" && rPdfCancelaCursos.alerts.length === 0);
+let rPdfConfirmaTarde = runPdfCursos({ msConfirmar: 5 * 60 * 1000 + 1000 });
+assert("Confirmación abierta más de 5 minutos: no se empieza ningún libro ni se crea ninguna carpeta; se pide volver a ejecutar",
+  !rPdfConfirmaTarde.error && rPdfConfirmaTarde.pedidos.length === 0 && rPdfConfirmaTarde.carpetas.length === 0
+    && rPdfConfirmaTarde.resultado.includes("cursos completos: 0 de 5 con libro") && rPdfConfirmaTarde.resultado.endsWith("para continuar."),
+  rPdfConfirmaTarde.error || rPdfConfirmaTarde.resultado);
+
+// 20.8. Ritmo compartido: tras dos 429 en un libro, el siguiente empieza con la pausa ajustada, no sin pausa ni con 3 s
+let rPdfRitmo = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS1": "SÍ", "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()",
+  responder: (() => { let rechazos = 0; return (n, url) => url.includes("/d/" + ID_EPS1 + "/") && rechazos++ < 2 ? HTTP_429() : PDF_OK(); })() });
+assert("Ritmo compartido: dos 429 en el primer libro (6 y 12 s); el PDF baja la pausa a 9 s y el segundo libro empieza con 9 s",
+  !rPdfRitmo.error && JSON.stringify(rPdfRitmo.esperas) === JSON.stringify([6000, 12000, 9000, 6000, 3000, 3000])
+    && rPdfRitmo.resultado.includes("Reintentos por HTTP 429: 2"),
+  rPdfRitmo.error || JSON.stringify(rPdfRitmo.esperas));
+
+// 20.9. Libro inválido sin nada más para exportar: no se informa como "sin pendientes"
+let rPdfSoloProblema = runPdfCursos({ previas: quedaEnDrive(rPdfTodos), libros: [{ libro: sinResumen, creada: 1000 }].concat(LIBROS_TODOS) });
+assert("Libro inválido y los demás completos: sin confirmación ni pedidos, pero el resultado lo marca como problema pendiente",
+  !rPdfSoloProblema.error && rPdfSoloProblema.pedidos.length === 0 && rPdfSoloProblema.preguntas.length === 0
+    && rPdfSoloProblema.resultado.startsWith("PDF de varios cursos (3º bimestre 2026): cursos completos: 4 de 5 con libro · Con libro que no se puede exportar: 1 · PDF exportados ahora: 0 ")
+    && rPdfSoloProblema.resultado.endsWith("Hay cursos cuyo libro no se puede exportar: ver el detalle, corregirlo y volver a ejecutar.")
+    && rPdfSoloProblema.alerts[0].startsWith(rPdfSoloProblema.resultado),
+  rPdfSoloProblema.error || rPdfSoloProblema.resultado);
+
+// 20.10. Generación cortada (regresión): el libro más reciente del curso tiene Resumen pero la generación no terminó
+// Con el generador real: se corta antes de escribir Resumen (como un corte por tiempo después de copiar las hojas).
+let rCortada = runTest("Generación cortada", { control: ctlCurso("EPS2"), sources: srcCurso, templateGrid: tpl,
+  ejecutar: "escribirResumen_ = () => { throw new Error('corte simulado'); }; generarBoletinesPorCurso()" });
+const libroCortado = rCortada.creados[0];
+libroCortado.id = "ID_LIBRO_CORTADO_xxxxxxxxxxxxx";
+assert("Generación cortada: el generador real deja un libro con Resumen vacío y sus hojas de estudiantes",
+  rCortada.error === "corte simulado" && libroCortado.getSheetByName("Resumen") && rect(libroCortado.getSheetByName("Resumen").grid).length === 0
+    && libroCortado.getSheets().length === HOJAS_EPS2.length,
+  rCortada.error);
+let rPdfCortadoIndividual = runExportar({ libro: libroCortado, respuesta: libroCortado.getId() });
+assert("Generación cortada: la exportación de un libro lo rechaza sin crear carpeta ni pedir PDF",
+  rPdfCortadoIndividual.error === "El libro \"" + libroCortado.getName() + "\" no terminó de generarse (su hoja Resumen está incompleta): "
+      + "volver a generar el curso y mandar ese libro a la papelera."
+    && rPdfCortadoIndividual.carpetas.length === 0 && rPdfCortadoIndividual.pedidos.length === 0,
+  rPdfCortadoIndividual.error);
+// Estado descrito en la revisión: Resumen (vacío) y sólo algunas hojas de estudiantes, más reciente que un libro completo.
+const cortadoParcial = new MockSS([new MockSheet("Resumen", [])].concat(libroEps2.getSheets().slice(1, 3).map(h => new MockSheet(h.getName(), h.grid))), libroEps2.getName());
+cortadoParcial.id = "ID_LIBRO_CORTADO_PARCIAL_xxxxx";
+let rPdfCortado = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()",
+  libros: [{ libro: libroEps2, creada: 600000 }, { libro: cortadoParcial, creada: 1000 }] });
+assert("Generación cortada (varios cursos): el libro más reciente queda como problema; no se exportan sus pocas hojas ni se usa en silencio el anterior",
+  !rPdfCortado.error && rPdfCortado.pedidos.length === 0 && rPdfCortado.carpetas.length === 0
+    && JSON.stringify(rPdfCortado.abiertos) === JSON.stringify([libroEps2.getId(), cortadoParcial.getId()])
+    && rPdfCortado.advertencias.startsWith("EPSI EPS2 (libro <fecha>, el más reciente de 2): no se puede exportar: El libro \"" + libroEps2.getName() + "\" no terminó de generarse")
+    && rPdfCortado.resultado.includes("cursos completos: 0 de 1 con libro · Con libro que no se puede exportar: 1 "),
+  rPdfCortado.error || rPdfCortado.resultado + "\n" + rPdfCortado.advertencias);
+
+// 20.11. Libro modificado después de exportar: la carpeta anterior no está vigente
+// La carpeta previa se creó hace 1 h; el libro se modificó hace 30 min (getLastUpdated).
+const conModificado = (ms) => LIBROS_TODOS.map(l => l.libro === libroEps2 ? Object.assign({}, l, { modificado: ms }) : l);
+const previaCompletaEps2 = Object.assign({}, previaEps2, { archivos: hojasPdfDe(libroEps2) });
+let rPdfModParcial = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()",
+  libros: conModificado(30 * 60000), previas: [previaEps2] });
+const nuevaEps2 = r => r.carpetas.find(c => c.descripcion.includes(ID_EPS2));
+assert("Modificado tras una exportación parcial: no se completa; la confirmación lo dice y se exporta todo en una carpeta nueva",
+  !rPdfModParcial.error && rPdfModParcial.preguntas[0].includes("- EPSI EPS2 (libro <fecha>): cambió después de su última exportación ("
+      + previaEps2.nombre + "), se exportan sus 4 PDF en una carpeta nueva.")
+    && rPdfModParcial.carpetas.length === 1 && JSON.stringify(nuevaEps2(rPdfModParcial).archivos) === JSON.stringify(hojasPdfDe(libroEps2))
+    && rPdfModParcial.pedidos.length === 4
+    && rPdfModParcial.delCurso.hijas.find(c => c.nombre === previaEps2.nombre).archivos.length === 2,
+  rPdfModParcial.error || rPdfModParcial.preguntas.join(" / "));
+let rPdfModCompleta = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()",
+  libros: conModificado(30 * 60000), previas: [previaCompletaEps2] });
+assert("Modificado tras una exportación completa: no se omite como vigente; se exporta todo en una carpeta nueva",
+  !rPdfModCompleta.error && rPdfModCompleta.preguntas.length === 1
+    && rPdfModCompleta.preguntas[0].includes("cambió después de su última exportación")
+    && rPdfModCompleta.carpetas.length === 1 && nuevaEps2(rPdfModCompleta).archivos.length === 4 && rPdfModCompleta.pedidos.length === 4
+    && rPdfModCompleta.resultado.includes("cursos completos: 1 de 1 con libro"),
+  rPdfModCompleta.error || rPdfModCompleta.resultado);
+let rPdfNoModCompleta = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()",
+  libros: conModificado(2 * 3600000), previas: [previaCompletaEps2] });
+assert("Modificado antes de la exportación completa: sigue vigente y se omite",
+  !rPdfNoModCompleta.error && rPdfNoModCompleta.pedidos.length === 0 && rPdfNoModCompleta.carpetas.length === 0
+    && rPdfNoModCompleta.advertencias.startsWith("EPSI EPS2 (libro <fecha>): ya estaba completo (4 de 4 PDF)."),
+  rPdfNoModCompleta.error || rPdfNoModCompleta.advertencias);
+// quedaEnDrive pasa la ejecución anterior 1 h al pasado: la modificación del libro (30 min antes de ella) también.
+let rPdfTrasModificar = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()",
+  libros: conModificado(90 * 60000), previas: quedaEnDrive(rPdfModParcial) });
+assert("Modificado: la carpeta nueva, creada después del cambio, queda vigente y la ejecución siguiente la da por completa",
+  !rPdfTrasModificar.error && rPdfTrasModificar.pedidos.length === 0 && rPdfTrasModificar.carpetas.length === 0
+    && rPdfTrasModificar.resultado.includes("cursos completos: 1 de 1 con libro"),
+  rPdfTrasModificar.error || rPdfTrasModificar.resultado);
+let rPdfModIndividual = runExportar({ libro: libroPdf, previas: [previaIncompleta()], modificado: 30 * 60000 });
+assert("Modificado (exportación de un libro): no se ofrece completar la carpeta anterior; se exporta todo en una nueva",
+  !rPdfModIndividual.error && rPdfModIndividual.preguntas.length === 0 && rPdfModIndividual.carpetas.length === 1
+    && rPdfModIndividual.archivos.length === 4 && previaDe(rPdfModIndividual).archivos.length === 2,
+  rPdfModIndividual.error || rPdfModIndividual.preguntas.join(" / "));
+assert("Sin modificar (exportación de un libro): se sigue ofreciendo completar, y No sigue rehaciendo todo en una carpeta nueva",
+  runExportar({ libro: libroPdf, previas: [previaIncompleta()], modificado: 2 * 3600000, opcion: "CANCEL" }).preguntas.length === 1
+    && (r => !r.error && r.carpetas.length === 1 && r.archivos.length === 4)(runExportar({ libro: libroPdf, previas: [previaIncompleta()], opcion: "NO" })));
+
+// =============================================================================
+// 21. Exportar PDF desde un libro o carpeta de Drive
+// =============================================================================
+// Una carpeta cualquiera, elegida a mano, sin Control: el curso, el período y el ciclo salen del Resumen de cada libro.
+const ID_CARPETA_MANUAL = "ID_CARPETA_ELEGIDA_A_MANO_xxxx";
+const URL_CARPETA = "https://drive.google.com/drive/folders/" + ID_CARPETA_MANUAL + "?usp=sharing";
+const runCarpeta = opciones => runExportar(Object.assign({
+  libros: LIBROS_TODOS, nombrePeriodo: "Boletines para revisar", idCarpeta: ID_CARPETA_MANUAL, respuesta: URL_CARPETA, control: {}
+}, opciones));
+const descripcionDe = libro => "PDF del libro de boletines " + libro.getId();
+const previaCompletaDe = (libro, extra) => Object.assign({ nombre: libro.getName() + " - PDF 2026-10-16 08:00", descripcion: descripcionDe(libro),
+  archivos: hojasPdfDe(libro), creada: 3600000 }, extra);
+const intro = r => (r.preguntas[0] || "").split("\n\n- ")[0];
+
+// 21.1. Entrada libro: por cualquier forma de link o ID se exporta exactamente ese libro (el resto, en la sección 18)
+let rLibroOpenId = runExportar({ libro: libroPdf, respuesta: "https://drive.google.com/open?id=" + ID_LIBRO });
+assert("Desde Drive, libro: un link open?id= se reconoce como libro y exporta sus 4 PDF junto a él, sin confirmación de carpeta",
+  !rLibroOpenId.error && rLibroOpenId.archivos.length === 4 && rLibroOpenId.preguntas.length === 0
+    && rLibroOpenId.pedidos.every(p => p.url.includes("/d/" + ID_LIBRO + "/")),
+  rLibroOpenId.error);
+let rLibroCompletoOtraVez = runExportar({ libro: libroPdf, previas: [previaCompletaDe(libroPdf)] });
+assert("Desde Drive, libro: con su exportación completa y vigente, elegirlo a mano rehace todo en una carpeta nueva (deliberado)",
+  !rLibroCompletoOtraVez.error && rLibroCompletoOtraVez.carpetas.length === 1 && rLibroCompletoOtraVez.archivos.length === 4
+    && rLibroCompletoOtraVez.preguntas.length === 0,
+  rLibroCompletoOtraVez.error);
+
+// 21.2. Entrada carpeta con varios cursos, sin depender de Control
+let rCarpeta = runCarpeta({});
+assert("Desde Drive, carpeta: el link de carpeta se reconoce y la confirmación resume libros, cursos y qué se hará",
+  !rCarpeta.error && rCarpeta.preguntas.length === 1
+    && intro(rCarpeta) === "Carpeta: Boletines para revisar.\nLibros de boletines: 5, de 5 cursos. Se usa el más reciente de cada curso; se omiten 0 regeneraciones anteriores.\n"
+      + "Completos, se omiten: 0 · Se completan: 0 · Se rehacen porque el libro cambió: 0 · Se exportan enteros: 5 · Con problema: 0."
+    && rCarpeta.preguntas[0].includes("\n- EPSI EPS1 · 3º bimestre 2026 (libro <fecha>): 1 PDF a exportar.\n- EPSI EPS2 · 3º bimestre 2026 (libro <fecha>): 4 PDF a exportar.")
+    && rCarpeta.preguntas[0].includes("PDF a exportar: 8. Cada ejecución avanza hasta 5 minutos; si no termina, volver a exportar la misma carpeta"),
+  rCarpeta.error || rCarpeta.preguntas.join(" / "));
+assert("Desde Drive, carpeta: sin período ni cursos en Control, cada libro tiene su carpeta de PDF en la carpeta elegida, con su ID",
+  rTodos.creados.every(l => carpetaDeLibro(rCarpeta, l).length === 1 && JSON.stringify(carpetaDeLibro(rCarpeta, l)[0].archivos) === JSON.stringify(hojasPdfDe(l)))
+    && rCarpeta.carpetas.every(c => c.padre === "Boletines para revisar") && rCarpeta.pedidos.length === 8
+    && rCarpeta.resultado.startsWith("PDF de la carpeta \"Boletines para revisar\": cursos completos: 5 de 5 con libro · PDF exportados ahora: 8 · Con error: 0 ")
+    && rCarpeta.alerts[0].includes("Las carpetas de PDF están junto a cada libro, en la carpeta \"Boletines para revisar\".")
+    && JSON.stringify(rTodos.creados.map(fotoLibro)) === JSON.stringify(fotosTodos) && soloLeyo(rCarpeta),
+  rCarpeta.resultado);
+assert("Desde Drive, carpeta: también con el link /drive/u/0/folders/ o con el ID solo",
+  ["https://drive.google.com/drive/u/0/folders/" + ID_CARPETA_MANUAL, ID_CARPETA_MANUAL].every(respuesta =>
+    (r => !r.error && r.preguntas.length === 1 && r.preguntas[0].startsWith("Carpeta: Boletines para revisar."))(runCarpeta({ respuesta, confirmar: "CANCEL" }))));
+
+// 21.3. Regeneraciones, otro período, planillas que no son libros y archivos que no son planillas
+const libro1C = libroCopia(rTodos.creados[0], "ID_LIBRO_EPS1_1C_xxxxxxxxxxxxx"); // mismo nombre que el de 3B: decide el Resumen
+libro1C.getSheetByName("Resumen").set(4, 2, "1º cuatrimestre");
+const planillaAjena = new MockSS([new MockSheet("Asistencia", [["x"]])], "Planilla de asistencia sintética");
+planillaAjena.id = "ID_PLANILLA_AJENA_xxxxxxxxxxxx";
+const pdfSuelto = libroCopia(rTodos.creados[0], "ID_PDF_SUELTO_xxxxxxxxxxxxxxxx");
+let rMezcla = runCarpeta({ libros: LIBROS_TODOS.concat([
+  { libro: viejoEps2, creada: 86400000 }, { libro: libro1C, creada: 1000 },
+  { libro: planillaAjena, creada: 1000 }, { libro: pdfSuelto, creada: 1000, tipo: "application/pdf" }
+]) });
+assert("Carpeta con mezcla: agrupa por el curso del Resumen (no por el nombre), usa el más reciente e ignora lo que no es un libro",
+  !rMezcla.error && intro(rMezcla).startsWith("Carpeta: Boletines para revisar.\nLibros de boletines: 7, de 6 cursos. Se usa el más reciente de cada curso; "
+      + "se omiten 1 regeneraciones anteriores. Otras planillas, que no son libros de boletines: 1, se ignoran.")
+    && rMezcla.preguntas[0].includes("\n- EPSI EPS1 · 1º cuatrimestre 2026 (libro <fecha>): 1 PDF a exportar.\n- EPSI EPS1 · 3º bimestre 2026 (libro <fecha>): 1 PDF a exportar.")
+    && rMezcla.preguntas[0].includes("- EPSI EPS2 · 3º bimestre 2026 (libro <fecha>, el más reciente de 2): 4 PDF a exportar.")
+    && carpetaDeLibro(rMezcla, viejoEps2).length === 0 && carpetaDeLibro(rMezcla, libro1C).length === 1
+    && carpetaDeLibro(rMezcla, planillaAjena).length === 0 && !rMezcla.abiertos.includes(pdfSuelto.getId())
+    && rMezcla.resultado.includes("cursos completos: 6 de 6 con libro"),
+  rMezcla.error || rMezcla.preguntas.join(" / "));
+
+// 21.4. Libro más reciente incompleto o que no se puede abrir: problema informado, sin usar el anterior
+const sinAcceso = libroCopia(rTodos.creados[4], "ID_SIN_ACCESO_xxxxxxxxxxxxxxx", "Planilla compartida sintética");
+let rCarpetaCortada = runCarpeta({ libros: [{ libro: libroEps2, creada: 600000 }, { libro: cortadoParcial, creada: 1000 },
+  { libro: rTodos.creados[0], creada: 500000 }, { libro: sinAcceso, creada: 1000, inaccesible: true }] });
+assert("Carpeta con el libro más reciente cortado: el curso queda con problema y no se exporta el anterior; los demás sí",
+  !rCarpetaCortada.error && carpetaDeLibro(rCarpetaCortada, libroEps2).length === 0 && carpetaDeLibro(rCarpetaCortada, rTodos.creados[0]).length === 1
+    && rCarpetaCortada.preguntas[0].includes("- EPSI EPS2 · 3º bimestre 2026 (libro <fecha>, el más reciente de 2): no se puede exportar: El libro \"" + libroEps2.getName() + "\" no terminó de generarse")
+    && rCarpetaCortada.resultado.includes("cursos completos: 1 de 3 con libro · Con libro que no se puede exportar: 2 "),
+  rCarpetaCortada.error || rCarpetaCortada.resultado);
+assert("Carpeta con una planilla que no se puede abrir: se informa como problema, no se ignora en silencio",
+  rCarpetaCortada.preguntas[0].includes("- Planilla \"Planilla compartida sintética\" (libro <fecha>): no se puede exportar: no se pudo abrir: No tenés permiso")
+    && rCarpetaCortada.advertencias.includes("Planilla \"Planilla compartida sintética\""),
+  rCarpetaCortada.preguntas.join(" / "));
+
+// 21.5. Carpeta sin libros de boletines
+let rCarpetaVacia = runCarpeta({ libros: [{ libro: planillaAjena, creada: 1000 }, { libro: pdfSuelto, creada: 1000, tipo: "application/pdf" }] });
+assert("Carpeta sin libros de boletines: se informa, sin confirmación, pedidos ni carpetas",
+  !rCarpetaVacia.error && rCarpetaVacia.preguntas.length === 0 && rCarpetaVacia.pedidos.length === 0 && rCarpetaVacia.carpetas.length === 0
+    && rCarpetaVacia.resultado.startsWith("PDF de la carpeta \"Boletines para revisar\": cursos completos: 0 de 0 con libro · ")
+    && rCarpetaVacia.resultado.endsWith(" La carpeta no tiene libros de boletines."),
+  rCarpetaVacia.error || rCarpetaVacia.resultado);
+
+// 21.6. Exportaciones previas completas, incompletas y de un libro modificado después
+const libroEps4 = rTodos.creados[2];
+let rCarpetaPrevias = runCarpeta({
+  libros: LIBROS_TODOS.map(l => l.libro === libroEps4 ? Object.assign({}, l, { modificado: 30 * 60000 }) : l),
+  previas: [previaCompletaDe(rTodos.creados[0]), previaEps2, previaCompletaDe(libroEps4)]
+});
+assert("Carpeta con exportaciones previas: completa vigente se omite, incompleta se completa, la del libro modificado se rehace",
+  !rCarpetaPrevias.error && intro(rCarpetaPrevias).endsWith("Completos, se omiten: 1 · Se completan: 1 · Se rehacen porque el libro cambió: 1 · Se exportan enteros: 2 · Con problema: 0.")
+    && pedidosDeLibro(rCarpetaPrevias, rTodos.creados[0]) === 0 && pedidosDeLibro(rCarpetaPrevias, libroEps2) === 2
+    && pedidosDeLibro(rCarpetaPrevias, libroEps4) === 1 && carpetaDeLibro(rCarpetaPrevias, libroEps4).length === 2
+    && rCarpetaPrevias.resultado.includes("cursos completos: 5 de 5 con libro · PDF exportados ahora: 5 "),
+  rCarpetaPrevias.error || intro(rCarpetaPrevias) + "\n" + rCarpetaPrevias.resultado);
+
+// 21.7. Corte por tiempo y continuación, sin repetir pedidos
+const corridasCarpeta = [];
+let previasCarpeta = [];
+for (let n = 0; n < 5; n++) {
+  const r = runCarpeta({ libros: LIBROS_GRANDES, msPorPdf: 10000, previas: previasCarpeta });
+  corridasCarpeta.push(r);
+  previasCarpeta = quedaEnDrive(r);
+  if (!r.resultado.includes("Faltan PDF")) break;
+}
+const pedidosCarpeta = [].concat(...corridasCarpeta.map(r => r.pedidos.map(p => p.url)));
+assert("Carpeta, continuación: la primera ejecución pide volver a exportar la misma carpeta; al final, 45 PDF sin pedidos repetidos y una carpeta por libro",
+  corridasCarpeta.length > 1 && corridasCarpeta[0].resultado.endsWith("Faltan PDF: volver a exportar la misma carpeta para continuar.")
+    && corridasCarpeta[1].preguntas[0].includes("se completa su carpeta.")
+    && pedidosCarpeta.length === 45 && new Set(pedidosCarpeta).size === 45
+    && LIBROS_GRANDES.every(l => carpetaDeLibro(corridasCarpeta[corridasCarpeta.length - 1], l.libro).length === 1)
+    && corridasCarpeta[corridasCarpeta.length - 1].resultado.includes("cursos completos: 3 de 3 con libro"),
+  corridasCarpeta.map(r => r.resultado).join("\n"));
+
+// 21.8. Coexistencia con las opciones desde Control: las dos ven el mismo progreso en Drive
+const runPeriodoComoCarpeta = opciones => runExportar(Object.assign({ libros: LIBROS_TODOS, nombrePeriodo: PERIODO_PDF,
+  idCarpeta: ID_CARPETA_MANUAL, respuesta: URL_CARPETA, control: ctlPdf() }, opciones));
+let rCarpetaTrasControl = runPeriodoComoCarpeta({ previas: quedaEnDrive(rPdfTodos) });
+assert("Coexistencia: después de exportar todos los cursos desde Control, la misma carpeta desde Drive no tiene nada pendiente",
+  !rCarpetaTrasControl.error && rCarpetaTrasControl.pedidos.length === 0 && rCarpetaTrasControl.carpetas.length === 0
+    && rCarpetaTrasControl.resultado.includes("cursos completos: 5 de 5 con libro · PDF exportados ahora: 0 "),
+  rCarpetaTrasControl.error || rCarpetaTrasControl.resultado);
+let rCarpetaDelPeriodo = runPeriodoComoCarpeta({});
+let rControlTrasCarpeta = runPdfCursos({ previas: quedaEnDrive(rCarpetaDelPeriodo) });
+assert("Coexistencia: después de exportar la carpeta del período desde Drive, todos los cursos desde Control no tiene nada pendiente",
+  !rCarpetaDelPeriodo.error && rCarpetaDelPeriodo.pedidos.length === 8
+    && !rControlTrasCarpeta.error && rControlTrasCarpeta.pedidos.length === 0 && rControlTrasCarpeta.carpetas.length === 0
+    && rControlTrasCarpeta.resultado.includes("cursos completos: 5 de 5 con libro"),
+  rControlTrasCarpeta.error || rControlTrasCarpeta.resultado);
+
+// 21.9. Entradas que no son un libro ni una carpeta
+let rEsPdf = runCarpeta({ libros: [{ libro: pdfSuelto, tipo: "application/pdf" }], respuesta: pdfSuelto.getId() });
+assert("Desde Drive: el ID de un archivo que no es planilla ni carpeta da un error claro, sin abrir ni crear nada",
+  rEsPdf.error === "\"" + pdfSuelto.getName() + "\" no es un libro de Google Sheets ni una carpeta de Drive."
+    && rEsPdf.abiertos.length === 0 && rEsPdf.carpetas.length === 0 && rEsPdf.resultado === "Error al exportar PDF: " + rEsPdf.error,
+  rEsPdf.error);
+let rPdfPorLink = runCarpeta({ libros: [{ libro: pdfSuelto, tipo: "application/pdf" }], respuesta: "https://drive.google.com/file/d/" + pdfSuelto.getId() + "/view" });
+assert("Desde Drive: el link /file/d/ de un archivo que no es planilla da el mismo error, sin buscarlo como carpeta",
+  rPdfPorLink.error === rEsPdf.error && !rPdfPorLink.consultasDrive.some(c => c.startsWith("getFolderById")),
+  rPdfPorLink.error);
+let rNoExiste = runCarpeta({ respuesta: "ID_QUE_NO_EXISTE_xxxxxxxxxxxx" });
+assert("Desde Drive: un ID que no está en Drive da un error claro",
+  rNoExiste.error === "No se encontró en Drive un libro ni una carpeta con ese link o ID, o no hay acceso." && rNoExiste.carpetas.length === 0,
+  rNoExiste.error);
+let rCarpetaNoExiste = runCarpeta({ respuesta: "https://drive.google.com/drive/folders/" + ID_LIBRO });
+assert("Desde Drive: un link de carpeta con el ID de un libro no lo abre como libro: error de carpeta no encontrada",
+  rCarpetaNoExiste.error === "No se encontró en Drive una carpeta con ese link o ID, o no hay acceso." && rCarpetaNoExiste.abiertos.length === 0,
+  rCarpetaNoExiste.error);
+
+// 21.10. Regresión: getFileById no acepta IDs de carpetas (como en Apps Script) y la entrada por carpeta funciona igual
+const getFileByIdDeCarpeta = r => vm.runInContext("(() => { try { DriveApp.getFileById('" + ID_CARPETA_MANUAL + "'); return 'aceptado'; } "
+  + "catch (e) { return 'rechazado'; } })()", r.contexto);
+// Las consultas de cada ejecución se copian antes de sondear el mock (la sonda también queda anotada).
+const entradasCarpeta = [URL_CARPETA, ID_CARPETA_MANUAL, "https://drive.google.com/open?id=" + ID_CARPETA_MANUAL]
+  .map(respuesta => runCarpeta({ respuesta })).map(r => Object.assign(r, { consultas: r.consultasDrive.slice() }));
+assert("Regresión: el mock de getFileById rechaza el ID de una carpeta, y aun así la carpeta se exporta por link, por ID solo y por ?id=",
+  entradasCarpeta.every(r => getFileByIdDeCarpeta(r) === "rechazado" && !r.error && r.pedidos.length === 8 && r.carpetas.length === 5
+    && r.consultas.includes("getFolderById " + ID_CARPETA_MANUAL)
+    && !r.consultas.includes("getFileById " + ID_CARPETA_MANUAL)),
+  entradasCarpeta.map(r => r.error || r.consultas.filter(c => c.includes(ID_CARPETA_MANUAL)).join(",")).join(" / "));
+assert("Regresión: un link de carpeta va directo a getFolderById; un ID solo se prueba primero como planilla y después como carpeta",
+  JSON.stringify(entradasCarpeta[0].consultas.filter(c => c.includes(ID_CARPETA_MANUAL))) === JSON.stringify(["getFolderById " + ID_CARPETA_MANUAL])
+    && JSON.stringify(entradasCarpeta[1].consultas.filter(c => c.includes(ID_CARPETA_MANUAL)))
+      === JSON.stringify(["openById " + ID_CARPETA_MANUAL, "getFolderById " + ID_CARPETA_MANUAL]),
+  entradasCarpeta.map(r => r.consultas.filter(c => c.includes(ID_CARPETA_MANUAL)).join(",")).join(" / "));
+assert("Regresión: un libro por link /d/ o por ID solo se abre como planilla, sin pasar por getFolderById",
+  [LINK_LIBRO, ID_LIBRO].every(respuesta => (r => !r.error && r.archivos.length === 4 && !r.consultasDrive.some(c => c.startsWith("getFolderById")))(
+    runExportar({ libro: libroPdf, respuesta }))));
+
+// 21.11. Regresión: una planilla que no puede abrirse, con el nombre que le da la generación, participa de la elección
+// del más reciente de su curso. Mismo nombre que el libro de EPSI EPS2; sin acceso (openById falla).
+const eps2SinAcceso = libroCopia(libroEps2, "ID_EPS2_SIN_ACCESO_xxxxxxxxxxx");
+const problemaSinAcceso = "no se puede exportar: no se pudo abrir: No tenés permiso para acceder a este documento.";
+const sinAccesoMasReciente = [{ libro: libroEps2, creada: 600000 }, { libro: eps2SinAcceso, creada: 1000, inaccesible: true }];
+let rSinAccesoCarpeta = runCarpeta({ libros: sinAccesoMasReciente });
+let rSinAccesoControl = runPdfCursos({ libros: sinAccesoMasReciente, control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()" });
+assert("Regresión, sin acceso más reciente (carpeta): el curso queda con problema y no se exporta el libro válido anterior",
+  !rSinAccesoCarpeta.error && rSinAccesoCarpeta.pedidos.length === 0 && rSinAccesoCarpeta.carpetas.length === 0
+    && rSinAccesoCarpeta.advertencias.startsWith("EPSI EPS2 · 3º bimestre 2026 (libro <fecha>, el más reciente de 2): " + problemaSinAcceso)
+    && rSinAccesoCarpeta.resultado.includes("cursos completos: 0 de 1 con libro · Con libro que no se puede exportar: 1 "),
+  rSinAccesoCarpeta.error || rSinAccesoCarpeta.resultado + "\n" + rSinAccesoCarpeta.advertencias);
+assert("Regresión, sin acceso más reciente (Control): el curso marcado queda con problema y no se exporta el libro válido anterior",
+  !rSinAccesoControl.error && rSinAccesoControl.pedidos.length === 0 && rSinAccesoControl.carpetas.length === 0
+    && rSinAccesoControl.advertencias.startsWith("EPSI EPS2 (libro <fecha>, el más reciente de 2): " + problemaSinAcceso)
+    && rSinAccesoControl.resultado.includes("cursos completos: 0 de 1 con libro · Con libro que no se puede exportar: 1 "),
+  rSinAccesoControl.error || rSinAccesoControl.resultado + "\n" + rSinAccesoControl.advertencias);
+const sinAccesoAnterior = [{ libro: eps2SinAcceso, creada: 600000, inaccesible: true }, { libro: libroEps2, creada: 1000 }];
+let rSinAccesoViejoCarpeta = runCarpeta({ libros: sinAccesoAnterior });
+let rSinAccesoViejoControl = runPdfCursos({ libros: sinAccesoAnterior, control: ctlPdf(marcas({ "EPSI EPS2": "SÍ" })), ejecutar: "exportarPdfCursosMarcados()" });
+assert("Regresión, sin acceso anterior: el libro válido más reciente se usa y se exporta, desde la carpeta y desde Control",
+  [rSinAccesoViejoCarpeta, rSinAccesoViejoControl].every(r => !r.error && carpetaDeLibro(r, libroEps2).length === 1
+    && pedidosDeLibro(r, libroEps2) === 4 && r.resultado.includes("cursos completos: 1 de 1 con libro · PDF exportados ahora: 4 ")
+    && !r.resultado.includes("no se puede exportar") && r.advertencias.includes("(libro <fecha>, el más reciente de 2): 4 de 4 PDF")),
+  [rSinAccesoViejoCarpeta, rSinAccesoViejoControl].map(r => r.error || r.resultado).join(" / "));
+// Sin acceso y con un nombre que no identifica un curso: problema propio en la carpeta; desde Control no se atribuye a ningún curso.
+const ajenaSinAcceso = [{ libro: sinAcceso, creada: 1000, inaccesible: true }];
+let rAjenaCarpeta = runCarpeta({ libros: LIBROS_TODOS.concat(ajenaSinAcceso) });
+let rAjenaControl = runPdfCursos({ libros: LIBROS_TODOS.concat(ajenaSinAcceso) });
+assert("Regresión, sin acceso y nombre irreconocible: en la carpeta se informa como problema propio, sin afectar a ningún curso",
+  !rAjenaCarpeta.error && rAjenaCarpeta.pedidos.length === 8
+    && rAjenaCarpeta.advertencias.includes("Planilla \"Planilla compartida sintética\" (libro <fecha>): no se puede exportar: no se pudo abrir:")
+    && rAjenaCarpeta.resultado.includes("cursos completos: 5 de 6 con libro · Con libro que no se puede exportar: 1 "),
+  rAjenaCarpeta.error || rAjenaCarpeta.resultado);
+assert("Regresión, sin acceso y nombre irreconocible: desde Control no se atribuye a ningún curso y los 5 se exportan completos",
+  !rAjenaControl.error && rAjenaControl.pedidos.length === 8 && !rAjenaControl.advertencias.includes("Planilla compartida sintética")
+    && rAjenaControl.resultado.includes("cursos completos: 5 de 5 con libro") && !rAjenaControl.resultado.includes("no se puede exportar"),
+  rAjenaControl.error || rAjenaControl.resultado);
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

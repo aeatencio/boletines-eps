@@ -13,6 +13,9 @@ const CONFIG_EPS = {
   HOJA_PLANTILLA: 'Plantilla',
   HOJA_SALIDA: 'Informe_actual',
   HOJA_RESUMEN: 'Resumen',
+  // Primera celda de Resumen. Se escribe al final de la generación del libro, junto con todo el Resumen: la exportación
+  // a PDF la usa para reconocer un libro cuya generación terminó (ver hojasEstudiantesLibro_).
+  TITULO_RESUMEN: 'Boletines EPS por curso',
 
   // Hora local del nombre de los libros de la generación por curso.
   ZONA_HORARIA: 'America/Argentina/Buenos_Aires',
@@ -108,8 +111,10 @@ function onOpen() {
     .addItem('Generar boletines de los cursos marcados', 'generarBoletinesCursosMarcados')
     .addItem('Generar boletines de todos los cursos', 'generarBoletinesTodosLosCursos')
     .addSeparator()
-    // Operación separada, en Exportar_PDF.gs: no forma parte de la generación.
-    .addItem('Exportar PDF de un libro de boletines', 'exportarPdfLibro')
+    // Operaciones separadas, en Exportar_PDF.gs: no forman parte de la generación.
+    .addItem('Exportar PDF desde un libro o carpeta…', 'exportarPdfDesdeDrive')
+    .addItem('Exportar PDF de los cursos marcados', 'exportarPdfCursosMarcados')
+    .addItem('Exportar PDF de todos los cursos', 'exportarPdfTodosLosCursos')
     .addToUi();
 }
 
@@ -226,7 +231,8 @@ function generarBoletinesVariosCursos_(todos) {
 }
 
 // Cursos con SÍ en su celda de Control, en el orden de CONFIG_EPS.CURSOS. NO o vacío no lo incluye.
-function leerCursosMarcados_(control) {
+// sugerencia: qué hacer si no hay ninguno (la generación y la exportación a PDF tienen su opción para todos).
+function leerCursosMarcados_(control, sugerencia) {
   const cursos = CONFIG_EPS.CURSOS.filter(curso => {
     const marca = normalizarTexto_(control.getRange(curso.celda).getDisplayValue());
     if (marca && marca !== 'SI' && marca !== 'NO') {
@@ -238,7 +244,7 @@ function leerCursosMarcados_(control) {
   if (!cursos.length) {
     const celdas = CONFIG_EPS.CURSOS.map(curso => curso.celda);
     throw new Error('No hay cursos marcados con SÍ en ' + CONFIG_EPS.HOJA_CONTROL + '!' + celdas[0] + ':' + celdas[celdas.length - 1] +
-      '. Para generar los 8, usar Informes EPS > Generar boletines de todos los cursos.');
+      '. ' + (sugerencia || 'Para generar los 8, usar Informes EPS > Generar boletines de todos los cursos.'));
   }
   return cursos;
 }
@@ -423,7 +429,12 @@ function seleccionarEstudiantesCurso_(principal, nivel) {
 // La hora del nombre es siempre la de Buenos Aires, sin depender de la zona del libro, del proyecto ni de la cuenta.
 function nombreLibroCurso_(config) {
   const fecha = Utilities.formatDate(new Date(), CONFIG_EPS.ZONA_HORARIA, 'yyyy-MM-dd HH:mm');
-  return ['Boletines EPS', config.hojaOrigen, config.nivel, config.periodo + ' ' + config.cicloLectivo, fecha].join(' - ');
+  return prefijoLibroCurso_(config) + fecha;
+}
+
+// Todo el nombre del libro salvo la fecha: identifica los libros de un curso y período (la exportación de varios cursos).
+function prefijoLibroCurso_(config) {
+  return ['Boletines EPS', config.hojaOrigen, config.nivel, config.periodo + ' ' + config.cicloLectivo, ''].join(' - ');
 }
 
 /**
@@ -434,14 +445,18 @@ function nombreLibroCurso_(config) {
  */
 function carpetaLibros_(tandas) {
   if (!tandas.some(t => t.estudiantes.some(e => e.informe))) return null;
-  return nombresCarpetaLibros_(tandas[0].config).reduce((padre, nombre) => {
-    const existentes = padre.getFoldersByName(nombre);
-    while (existentes.hasNext()) {
-      const carpeta = existentes.next();
-      if (!carpeta.isTrashed()) return carpeta;
-    }
-    return padre.createFolder(nombre);
-  }, DriveApp.getRootFolder());
+  return nombresCarpetaLibros_(tandas[0].config)
+    .reduce((padre, nombre) => buscarSubcarpeta_(padre, nombre) || padre.createFolder(nombre), DriveApp.getRootFolder());
+}
+
+// La primera carpeta con ese nombre dentro de padre, fuera de la papelera, o null.
+function buscarSubcarpeta_(padre, nombre) {
+  const existentes = padre.getFoldersByName(nombre);
+  while (existentes.hasNext()) {
+    const carpeta = existentes.next();
+    if (!carpeta.isTrashed()) return carpeta;
+  }
+  return null;
 }
 
 function nombresCarpetaLibros_(config) {
@@ -497,7 +512,7 @@ function limpiarNombreHoja_(nombre) {
 function escribirResumen_(hoja, config, estudiantes, advertencias) {
   const columnas = 7;
   const filas = [
-    ['Boletines EPS por curso'],
+    [CONFIG_EPS.TITULO_RESUMEN],
     ['Hoja origen', config.hojaOrigen],
     ['Nivel', config.nivel],
     ['Período', config.periodo],
@@ -526,7 +541,7 @@ function leerConfiguracion_(control, modo) {
   const hojaOrigen = modo === 'cursos' ? '' : normalizarHojaOrigen_(control.getRange(CONFIG_EPS.CELDA_HOJA_ORIGEN).getDisplayValue());
   const dni = individual ? normalizarDni_(control.getRange(CONFIG_EPS.CELDA_DNI).getDisplayValue()) : '';
   const nivel = porCurso ? normalizarNivel_(control.getRange(CONFIG_EPS.CELDA_NIVEL).getDisplayValue()) : '';
-  const cicloLectivo = texto_(control.getRange(CONFIG_EPS.CELDA_CICLO).getDisplayValue()) || '2026';
+  const cicloLectivo = leerCicloLectivo_(control);
   const fuente1B = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_1B).getDisplayValue());
   const fuente1C = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_1C).getDisplayValue());
   const fuente3B = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_3B).getDisplayValue());
@@ -1213,6 +1228,10 @@ function normalizarTexto_(valor) {
 function texto_(valor) {
   if (valor === null || valor === undefined) return '';
   return String(valor).trim();
+}
+
+function leerCicloLectivo_(control) {
+  return texto_(control.getRange(CONFIG_EPS.CELDA_CICLO).getDisplayValue()) || '2026';
 }
 
 function registrarEstado_(control, resultado, advertencias) {
