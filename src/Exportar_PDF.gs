@@ -8,7 +8,9 @@
  * Los pedidos se espacian y se reintentan ante el límite de Google (HTTP 429): ver CONFIG_PDF.PAUSA_MS.
  * Varios libros (los cursos de Control, o una carpeta elegida a mano) se exportan con la misma lógica, el libro más
  * reciente de cada curso, en tantas ejecuciones como haga falta: cada una continúa desde lo que ya está en Drive
- * (exportarPlanesPdf_). Un libro elegido a mano usa el mismo plan por libro (planLibro_).
+ * (confirmacionPlanesPdf_, ejecutarPlanesPdf_ y resultadoPlanesPdf_). Un libro elegido a mano usa el mismo plan por
+ * libro (planLibro_). La exportación desde un libro o carpeta usa un diálogo HTML (Exportar_PDF_UI.html) para que la
+ * espera de la persona no ocurra dentro de la ejecución que exporta (exportarPdfDesdeDrive).
  *
  * Usa la URL de exportación de Google Sheets, un mecanismo no documentado oficialmente: queda aislado en
  * urlExportacionPdf_ y exportarHojaPdf_ para reemplazarlo si deja de funcionar.
@@ -53,32 +55,89 @@ const CONFIG_PDF = {
 };
 
 /**
- * Exportar PDF desde un libro o carpeta: operación manual, independiente de Control. Pide el link o ID de un libro de
- * boletines (se exporta ese libro: exportarPdfLibro_) o de una carpeta de Drive (el libro más reciente de cada curso
- * que contenga: exportarPdfCarpeta_). Los cursos marcados o todos, desde Control, están en exportarPdfVariosCursos_.
+ * Exportar PDF desde un libro o carpeta: operación manual, independiente de Control, en un diálogo HTML
+ * (Exportar_PDF_UI.html). La interacción y la exportación son ejecuciones distintas de Apps Script, para que el tiempo que
+ * se tarda en buscar el link o en revisar lo que se va a hacer no se descuente del tiempo máximo de la exportación:
+ * el menú sólo abre el diálogo; "Analizar" llama a previsualizarExportacionPdf, que no exporta; "Exportar" llama a
+ * exportarPdfConfirmado, una ejecución nueva que vuelve a mirar Drive antes de actuar. No hay estado guardado entre
+ * ellas: el diálogo devuelve el link y la opción elegida.
+ * Un libro: se exporta ese libro. Una carpeta: el libro más reciente de cada curso que contenga.
+ * Los cursos marcados o todos, desde Control, están en exportarPdfVariosCursos_.
  */
 function exportarPdfDesdeDrive() {
+  const html = HtmlService.createHtmlOutputFromFile('Exportar_PDF_UI').setWidth(680).setHeight(560);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Exportar PDF desde un libro o carpeta');
+}
+
+/**
+ * Vista previa, desde el diálogo: qué se encontró y qué se haría. Sólo lee: no exporta, no crea carpetas ni archivos,
+ * no modifica libros y no escribe en Control, en ningún camino. Sin nada pendiente, lo dice y no ofrece opciones; si el
+ * análisis falla, el error llega al diálogo sin registrarse en Control (todavía no hubo un intento de exportación).
+ * Devuelve { entrada, texto, opciones: [{ modo, etiqueta }], firma }. firma resume el plan, para que la exportación
+ * avise si encontró otro estado en Drive.
+ */
+function previsualizarExportacionPdf(entrada) {
+  const elegido = elementoDrive_(entrada);
+  if (elegido.carpeta) {
+    const carpeta = planCarpetaPdf_(elegido.carpeta);
+    const pendientes = carpeta.planes.reduce((n, p) => n + p.faltan.length, 0);
+    return {
+      entrada, texto: confirmacionPlanesPdf_(carpeta.planes, carpeta.contexto), firma: firmaPlanesPdf_(carpeta.planes),
+      opciones: pendientes ? [{ modo: 'carpeta', etiqueta: 'Exportar ' + pendientes + ' PDF' }] : []
+    };
+  }
+  const plan = planLibro_({}, elegido.libro, carpetaDelLibro_(elegido.libro));
+  const opciones = plan.carpeta && plan.faltan.length
+    ? [{ modo: 'completar', etiqueta: 'Completar (' + plan.faltan.length + ' PDF)' },
+      { modo: 'rehacer', etiqueta: 'Exportar todo en una carpeta nueva (' + plan.hojas.length + ' PDF)' }]
+    : [{ modo: 'rehacer', etiqueta: 'Exportar ' + plan.hojas.length + ' PDF' }];
+  return { entrada, texto: vistaLibroPdf_(plan), firma: vistaLibroPdf_(plan), opciones };
+}
+
+/**
+ * Exportación, desde el diálogo, en una ejecución propia: el tiempo máximo se cuenta desde acá. No confía en la vista
+ * previa: vuelve a resolver la entrada y a calcular el plan con el estado actual de Drive, y si no es el que se vio,
+ * lo avisa. modo: 'completar' o 'rehacer' para un libro (exportarLibroPdf_); una carpeta no tiene opciones. Una
+ * exportación por vez y por usuario (LockService), para no duplicar PDF con dos diálogos abiertos.
+ * Devuelve { texto } con el resultado, que también queda en Control.
+ */
+function exportarPdfConfirmado(entrada, modo, firma) {
   const inicioEjecucion = Date.now();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
-  const control = ss.getSheetByName(CONFIG_EPS.HOJA_CONTROL);
+  return conRegistroPdf_(() => {
+    const cerrojo = LockService.getUserLock();
+    if (!cerrojo.tryLock(0)) throw new Error('Ya hay una exportación de PDF en curso: esperar a que termine y volver a analizar.');
+    try {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const elegido = elementoDrive_(entrada);
+      let actual, final;
+      if (elegido.carpeta) {
+        const carpeta = planCarpetaPdf_(elegido.carpeta);
+        actual = firmaPlanesPdf_(carpeta.planes);
+        final = resultadoPlanesPdf_(carpeta.planes, carpeta.contexto, ejecutarPlanesPdf_(ss, carpeta.planes, inicioEjecucion));
+      } else {
+        const plan = planLibro_({}, elegido.libro, carpetaDelLibro_(elegido.libro));
+        actual = vistaLibroPdf_(plan);
+        final = exportarLibroPdf_(ss, plan, modo, inicioEjecucion);
+      }
+      registrarEstado_(controlPdf_(), final.resultado, final.detalle);
+      return { texto: (actual !== firma ? 'Lo que hay en Drive cambió desde la vista previa: se usó el estado actual.\n\n' : '') + final.texto };
+    } finally {
+      cerrojo.releaseLock();
+    }
+  });
+}
 
-  const respuesta = ui.prompt('Exportar PDF desde un libro o carpeta',
-    'Link o ID de un libro de boletines ya generado y revisado, o de una carpeta de Drive con libros de boletines.\n\n' +
-    'Libro: se exporta ese libro, un PDF por hoja de estudiante, en una carpeta nueva junto a él.\n' +
-    'Carpeta: se exporta el libro más reciente de cada curso que contenga; antes se muestra qué se va a hacer.\n' +
-    'Los libros no se modifican.',
-    ui.ButtonSet.OK_CANCEL);
-  // Comparación como en la documentación de Apps Script (los botones son enums del servicio).
-  if (respuesta.getSelectedButton() != ui.Button.OK) return;
+function controlPdf_() {
+  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG_EPS.HOJA_CONTROL);
+}
 
+// Un error de la exportación confirmada queda también en Control, y llega al diálogo para mostrarlo.
+function conRegistroPdf_(operacion) {
   try {
-    const elegido = elementoDrive_(respuesta.getResponseText());
-    if (elegido.carpeta) exportarPdfCarpeta_(ss, ui, control, elegido.carpeta, inicioEjecucion);
-    else exportarPdfLibro_(ss, ui, control, elegido.libro, inicioEjecucion);
+    return operacion();
   } catch (err) {
+    const control = controlPdf_();
     if (control) registrarEstado_(control, 'Error al exportar PDF: ' + err.message, []);
-    ui.alert('No se pudo exportar a PDF.\n\n' + err.message);
     throw err;
   }
 }
@@ -125,31 +184,35 @@ function referenciaDrive_(entrada) {
   throw new Error('No pude reconocer el ID. Pegá el link completo o el ID de un libro de boletines o de una carpeta de Drive.');
 }
 
-/**
- * Un libro elegido a mano. Si su última exportación vigente quedó incompleta, se pregunta si completarla o rehacer todo;
- * si está completa, o el libro cambió después (no vigente), se exporta todo en una carpeta nueva: elegir un libro
- * a mano es una decisión deliberada de exportarlo.
- */
-function exportarPdfLibro_(ss, ui, control, libro, inicioEjecucion) {
-  const plan = planLibro_({}, libro, carpetaDelLibro_(libro));
-  const hojas = plan.hojas;
-  let completar = false;
+// Qué se haría con un libro elegido a mano (vista previa). Elegirlo a mano es una decisión deliberada de exportarlo:
+// si su última exportación está completa, o el libro cambió después, se exporta todo en una carpeta nueva; si quedó
+// incompleta y vigente, se elige entre completarla o exportar todo.
+function vistaLibroPdf_(plan) {
+  const total = plan.hojas.length;
+  const libro = 'Libro: ' + plan.libro.getName() + ' (' + total + ' hojas de estudiantes).\n\n';
   if (plan.carpeta && plan.faltan.length) {
-    const opcion = ui.alert('Exportación incompleta',
-      'La última exportación de este libro quedó incompleta: ' + plan.carpeta.getName() + ' tiene ' +
-      plan.yaHabia + ' de ' + hojas.length + ' PDF.\n\n' +
-      'Sí: completar esa carpeta, exportando sólo las ' + plan.faltan.length + ' hojas que faltan.\n' +
-      'No: exportar todas las hojas en una carpeta nueva.\n' +
-      'Cancelar: no exportar nada.',
-      ui.ButtonSet.YES_NO_CANCEL);
-    if (opcion != ui.Button.YES && opcion != ui.Button.NO) return;
-    completar = opcion == ui.Button.YES;
+    return libro + 'La última exportación de este libro quedó incompleta: ' + plan.carpeta.getName() + ' tiene ' +
+      plan.yaHabia + ' de ' + total + ' PDF.\n\n' +
+      'Completar: completar esa carpeta, exportando sólo las ' + plan.faltan.length + ' hojas que faltan.\n' +
+      'Exportar todo: exportar todas las hojas en una carpeta nueva.';
   }
-  if (!completar) Object.assign(plan, { carpeta: null, faltan: hojas, yaHabia: 0 });
-  // Sin margen para el primer pedido (los diálogos estuvieron abiertos casi 5 minutos) no se crea una carpeta vacía.
-  if (!hayTiempoPdf_(inicioEjecucion, nuevoRitmoPdf_())) {
-    throw new Error('No queda tiempo en esta ejecución para empezar la exportación: los diálogos estuvieron abiertos ' +
-      'casi 5 minutos. No se creó ninguna carpeta; volver a exportar el libro.');
+  if (plan.carpeta) return libro + 'Su última exportación está completa (' + plan.carpeta.getName() + '): se exportan de nuevo sus ' + total + ' PDF en una carpeta nueva.';
+  if (plan.desactualizada) return libro + 'El libro cambió después de su última exportación (' + plan.desactualizada.getName() + '): se exportan sus ' + total + ' PDF en una carpeta nueva.';
+  return libro + 'Se exportan sus ' + total + ' PDF en una carpeta nueva junto al libro.';
+}
+
+/**
+ * Exporta un libro según lo elegido y el estado actual de Drive (plan): 'completar' completa su carpeta si sigue
+ * vigente (si ya está completa, no exporta nada); en cualquier otro caso, o si la carpeta dejó de ser vigente, se
+ * exporta todo en una carpeta nueva. Devuelve resultado (Control!F3), detalle (F4) y texto.
+ */
+function exportarLibroPdf_(ss, plan, modo, inicioEjecucion) {
+  const libro = plan.libro;
+  const hojas = plan.hojas;
+  if (!(modo === 'completar' && plan.carpeta)) Object.assign(plan, { carpeta: null, faltan: hojas, yaHabia: 0 });
+  // Sin margen para el primer pedido no se crea una carpeta vacía.
+  if (plan.faltan.length && !hayTiempoPdf_(inicioEjecucion, nuevoRitmoPdf_())) {
+    throw new Error('No queda tiempo en esta ejecución para empezar la exportación. No se creó ninguna carpeta; volver a intentar.');
   }
 
   const inicio = Date.now();
@@ -165,38 +228,48 @@ function exportarPdfLibro_(ss, ui, control, libro, inicioEjecucion) {
   const resultado = 'PDF exportados: ' + exportados + ' de ' + plan.faltan.length +
     (plan.faltan.length < hojas.length ? ' que faltaban' : '') + ' · Con error: ' + contar('Error') +
     ' · Sin exportar: ' + contar('Sin exportar') + ' · Reintentos por HTTP 429: ' + ritmo.reintentos +
-    ' · Duración: ' + segundos + ' s' +
+    ' · Tiempo de exportación: ' + segundos + ' s' +
     (exportados ? ' (' + Math.round(segundos / exportados * 10) / 10 + ' s por PDF)' : '') + '.' +
     ' La carpeta tiene ' + enCarpeta + ' de ' + hojas.length + ' PDF.';
   const detalle = resultados.filter(r => r.estado !== 'Exportado').map(r => r.estado + ' · ' + r.hoja + ': ' + r.detalle);
-
-  registrarEstado_(control, resultado + ' Libro: ' + libro.getName() + ' · Carpeta: ' + carpeta.getUrl(), detalle);
-  ui.alert(resultado + '\n\nLibro: ' + libro.getName() + '\nCarpeta: ' + carpeta.getName() + '\n' + carpeta.getUrl() +
-    (detalle.length ? '\n\n- ' + detalle.join('\n- ') : '') +
-    (enCarpeta < hojas.length ? '\n\nEl libro no se modificó. Para completar la carpeta, volver a exportar el mismo libro ' +
-      'y elegir Sí: se exportan sólo los PDF que faltan.' : ''));
+  return {
+    resultado: resultado + ' Libro: ' + libro.getName() + ' · Carpeta: ' + carpeta.getUrl(),
+    detalle,
+    texto: resultado + '\n\nLibro: ' + libro.getName() + '\nCarpeta: ' + carpeta.getName() + '\n' + carpeta.getUrl() +
+      (detalle.length ? '\n\n- ' + detalle.join('\n- ') : '') +
+      (enCarpeta < hojas.length ? '\n\nEl libro no se modificó. Para completar la carpeta, volver a analizar el mismo libro ' +
+        'y elegir Completar: se exportan sólo los PDF que faltan.' : '')
+  };
 }
 
 /**
  * Una carpeta elegida a mano: el libro más reciente de cada curso que contenga (librosPorCursoEnCarpeta_), con la misma
  * lógica que los cursos de Control, pero sin depender de Control: el curso, el período y el ciclo salen de cada libro.
+ * Devuelve los planes y el contexto de exportarPlanesPdf_.
  */
-function exportarPdfCarpeta_(ss, ui, control, carpeta, inicioEjecucion) {
+function planCarpetaPdf_(carpeta) {
   const encontrados = librosPorCursoEnCarpeta_(carpeta);
   const planes = encontrados.grupos.map(grupo => planGrupoPdf_(grupo.etiqueta, grupo, carpeta))
     .concat(encontrados.sinAbrir.map(s => ({ curso: 'Planilla "' + s.archivo.getName() + '"', libros: 1, fecha: fechaPdf_(s.archivo.getDateCreated()),
       libro: null, hojas: null, carpeta: null, faltan: [], yaHabia: 0, error: 'no se pudo abrir: ' + s.error })));
   const anteriores = encontrados.grupos.reduce((n, g) => n + g.libros.length - 1, 0);
   const nombre = carpeta.getName();
-  exportarPlanesPdf_(ss, ui, control, planes, inicioEjecucion, {
-    titulo: 'PDF de la carpeta "' + nombre + '"',
-    intro: 'Carpeta: ' + nombre + '.\nLibros de boletines: ' + encontrados.libros + ', de ' + encontrados.grupos.length +
-      ' cursos. Se usa el más reciente de cada curso; se omiten ' + anteriores + ' regeneraciones anteriores.' +
-      (encontrados.ignoradas ? ' Otras planillas, que no son libros de boletines: ' + encontrados.ignoradas + ', se ignoran.' : ''),
-    donde: 'la carpeta "' + nombre + '"',
-    repetir: 'volver a exportar la misma carpeta',
-    sinLibros: 'La carpeta no tiene libros de boletines.'
-  });
+  return {
+    planes,
+    contexto: {
+      titulo: 'PDF de la carpeta "' + nombre + '"',
+      intro: 'Carpeta: ' + nombre + '.\nLibros de boletines: ' + encontrados.libros + ', de ' + encontrados.grupos.length +
+        ' cursos. Se usa el más reciente de cada curso; se omiten ' + anteriores + ' regeneraciones anteriores.' +
+        (encontrados.ignoradas ? ' Otras planillas, que no son libros de boletines: ' + encontrados.ignoradas + ', se ignoran.' : ''),
+      donde: 'la carpeta "' + nombre + '"',
+      repetir: 'volver a analizar y exportar la misma carpeta',
+      sinLibros: 'La carpeta no tiene libros de boletines.'
+    }
+  };
+}
+
+function firmaPlanesPdf_(planes) {
+  return planes.map(p => lineaCursoPdf_(p, false)).join('\n');
 }
 
 /**
@@ -257,35 +330,52 @@ function exportarPdfVariosCursos_(todos) {
 function exportarPlanesPdf_(ss, ui, control, planes, inicioEjecucion, contexto) {
   // Sin nada para exportar no se pregunta ni se pide nada, pero el resultado se informa igual: un curso con un
   // libro que no se puede exportar sigue siendo un problema pendiente.
-  const pendientes = planes.filter(p => p.faltan.length);
-  const ritmo = nuevoRitmoPdf_();
-  let inicio = Date.now();
-  if (pendientes.length) {
-    const cuantos = condicion => planes.filter(condicion).length;
-    const confirmacion = ui.alert('Exportar PDF de varios libros',
-      contexto.intro + '\n' +
-      'Completos, se omiten: ' + cuantos(p => p.hojas && !p.faltan.length) +
-      ' · Se completan: ' + cuantos(p => p.yaHabia && p.faltan.length) +
-      ' · Se rehacen porque el libro cambió: ' + cuantos(p => p.desactualizada) +
-      ' · Se exportan enteros: ' + cuantos(p => p.faltan.length && !p.yaHabia && !p.desactualizada) +
-      ' · Con problema: ' + cuantos(p => p.error) + '.\n\n- ' +
-      planes.map(p => lineaCursoPdf_(p, false)).join('\n- ') + '\n\n' +
-      'PDF a exportar: ' + pendientes.reduce((n, p) => n + p.faltan.length, 0) + '. Cada ejecución avanza hasta ' +
-      CONFIG_PDF.TIEMPO_MAXIMO_MS / 60000 + ' minutos; si no termina, ' + contexto.repetir + ': continúa donde ' +
-      'quedó, sin repetir los PDF ya exportados. Los libros no se modifican.',
-      ui.ButtonSet.OK_CANCEL);
+  let ejecucion = { ritmo: nuevoRitmoPdf_(), inicio: Date.now() };
+  if (planes.some(p => p.faltan.length)) {
+    const confirmacion = ui.alert('Exportar PDF de varios libros', confirmacionPlanesPdf_(planes, contexto), ui.ButtonSet.OK_CANCEL);
     if (confirmacion != ui.Button.OK) return;
-
-    inicio = Date.now();
-    pendientes.forEach((plan, i) => {
-      // Sin margen para el primer pedido de este libro, no se empieza ni se crea su carpeta: queda para la próxima.
-      if (!hayTiempoPdf_(inicioEjecucion, ritmo)) return;
-      ss.toast('Libro ' + (i + 1) + ' de ' + pendientes.length + ': ' + plan.curso + '.', 'Informes EPS');
-      exportarPlanPdf_(ss, plan, inicioEjecucion, ritmo);
-    });
+    ejecucion = ejecutarPlanesPdf_(ss, planes, inicioEjecucion);
   }
+  const final = resultadoPlanesPdf_(planes, contexto, ejecucion);
+  registrarEstado_(control, final.resultado, final.detalle);
+  ui.alert(final.texto);
+}
 
-  const todosResultados = [].concat(...pendientes.map(p => p.resultados || []));
+// Lo que se va a hacer con cada libro, para confirmarlo antes de exportar. Sin PDF pendientes (sólo en la vista previa
+// de una carpeta: Control no confirma en ese caso), lo dice en lugar de pedir confirmación.
+function confirmacionPlanesPdf_(planes, contexto) {
+  const cuantos = condicion => planes.filter(condicion).length;
+  const pendientes = planes.reduce((n, p) => n + p.faltan.length, 0);
+  return contexto.intro + '\n' +
+    'Completos, se omiten: ' + cuantos(p => p.hojas && !p.faltan.length) +
+    ' · Se completan: ' + cuantos(p => p.yaHabia && p.faltan.length) +
+    ' · Se rehacen porque el libro cambió: ' + cuantos(p => p.desactualizada) +
+    ' · Se exportan enteros: ' + cuantos(p => p.faltan.length && !p.yaHabia && !p.desactualizada) +
+    ' · Con problema: ' + cuantos(p => p.error) + '.' +
+    (planes.length ? '\n\n- ' + planes.map(p => lineaCursoPdf_(p, false)).join('\n- ') : '') + '\n\n' +
+    (pendientes
+      ? 'PDF a exportar: ' + pendientes + '. Cada ejecución avanza hasta ' + CONFIG_PDF.TIEMPO_MAXIMO_MS / 60000 +
+        ' minutos; si no termina, ' + contexto.repetir + ': continúa donde quedó, sin repetir los PDF ya exportados. ' +
+        'Los libros no se modifican.'
+      : 'No hay PDF para exportar' + (planes.some(p => p.libros) ? '.' : ': ' + contexto.sinLibros));
+}
+
+// Exporta los libros con PDF pendientes, en orden y con un único ritmo, hasta el tiempo máximo de esta ejecución.
+function ejecutarPlanesPdf_(ss, planes, inicioEjecucion) {
+  const pendientes = planes.filter(p => p.faltan.length);
+  const ejecucion = { ritmo: nuevoRitmoPdf_(), inicio: Date.now() };
+  pendientes.forEach((plan, i) => {
+    // Sin margen para el primer pedido de este libro, no se empieza ni se crea su carpeta: queda para la próxima.
+    if (!hayTiempoPdf_(inicioEjecucion, ejecucion.ritmo)) return;
+    ss.toast('Libro ' + (i + 1) + ' de ' + pendientes.length + ': ' + plan.curso + '.', 'Informes EPS');
+    exportarPlanPdf_(ss, plan, inicioEjecucion, ejecucion.ritmo);
+  });
+  return ejecucion;
+}
+
+// Resultado de varios libros: resultado (Control!F3), detalle (F4) y texto (para mostrar).
+function resultadoPlanesPdf_(planes, contexto, ejecucion) {
+  const todosResultados = [].concat(...planes.map(p => p.resultados || []));
   const contar = estado => todosResultados.filter(r => r.estado === estado).length;
   // Con libro: todo curso para el que se encontró un libro, se pueda exportar o no.
   const conLibro = planes.filter(p => p.libros);
@@ -295,7 +385,7 @@ function exportarPlanesPdf_(ss, ui, control, planes, inicioEjecucion, contexto) 
   const resultado = contexto.titulo + ': cursos completos: ' +
     completos + ' de ' + conLibro.length + ' con libro' + (conProblema ? ' · Con libro que no se puede exportar: ' + conProblema : '') +
     ' · PDF exportados ahora: ' + contar('Exportado') + ' · Con error: ' + contar('Error') +
-    ' · Reintentos por HTTP 429: ' + ritmo.reintentos + ' · Duración: ' + Math.round((Date.now() - inicio) / 1000) + ' s.' +
+    ' · Reintentos por HTTP 429: ' + ejecucion.ritmo.reintentos + ' · Tiempo de exportación: ' + Math.round((Date.now() - ejecucion.inicio) / 1000) + ' s.' +
     (faltanPdf ? ' Faltan PDF: ' + contexto.repetir + ' para continuar.' : '') +
     (conProblema ? ' Hay cursos cuyo libro no se puede exportar: ver el detalle, corregirlo y volver a ejecutar.' : '') +
     (conLibro.length ? '' : ' ' + contexto.sinLibros);
@@ -304,11 +394,10 @@ function exportarPlanesPdf_(ss, ui, control, planes, inicioEjecucion, contexto) 
     detalle.push(lineaCursoPdf_(p, true) + (p.carpeta ? ' ' + p.carpeta.getUrl() : ''));
     (p.resultados || []).filter(r => r.estado === 'Error').forEach(r => detalle.push('  ' + p.curso + ' · Error · ' + r.hoja + ': ' + r.detalle));
   });
-
-  registrarEstado_(control, resultado, detalle);
-  ui.alert(resultado + (planes.length ? '\n\n- ' + planes.map(p => lineaCursoPdf_(p, true)).join('\n- ') : '') +
+  const texto = resultado + (planes.length ? '\n\n- ' + planes.map(p => lineaCursoPdf_(p, true)).join('\n- ') : '') +
     '\n\nLas carpetas de PDF están junto a cada libro, en ' + contexto.donde + '. El detalle, con los enlaces, queda en ' +
-    CONFIG_EPS.HOJA_CONTROL + '.');
+    CONFIG_EPS.HOJA_CONTROL + '.';
+  return { resultado, detalle, texto };
 }
 
 // Período y ciclo de Control: lo único que necesita la exportación de varios cursos (no lee las grillas).
