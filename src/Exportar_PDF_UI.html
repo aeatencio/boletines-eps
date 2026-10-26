@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <!--
+      Diálogo de "Exportar PDF desde un libro o carpeta" (exportarPdfDesdeDrive, en Exportar_PDF.gs).
+      Mientras se busca el link o se revisa la vista previa no corre ninguna ejecución de Apps Script: la exportación
+      empieza recién con "Exportar", en una ejecución nueva (exportarPdfConfirmado) que vuelve a mirar Drive.
+      Una sola operación por vez: los botones se desactivan mientras se espera al servidor, y una vista previa sirve
+      para una sola exportación.
+    -->
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; margin: 0; color: #202124; }
+      label { display: block; margin-bottom: 4px; }
+      input { width: 100%; box-sizing: border-box; padding: 6px; font-size: 13px; }
+      button { margin: 8px 8px 0 0; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+      button:disabled { cursor: default; opacity: .5; }
+      pre { white-space: pre-wrap; background: #f8f9fa; border: 1px solid #dadce0; padding: 8px; max-height: 210px; overflow: auto; }
+      pre:empty { display: none; }
+      #estado { margin-top: 8px; color: #5f6368; }
+      #estado.error { color: #b3261e; }
+    </style>
+  </head>
+  <body>
+    <label for="entrada">Link o ID de un libro de boletines, o de una carpeta de Drive con libros de boletines</label>
+    <input id="entrada" autocomplete="off">
+    <button id="analizar">Analizar</button>
+    <div id="estado">Analizar no exporta nada: muestra qué se encontró y qué se va a hacer. Los libros no se modifican.</div>
+    <pre id="vista"></pre>
+    <div id="opciones"></div>
+    <pre id="resultado"></pre>
+    <script>
+      const elemento = id => document.getElementById(id);
+      let ocupado = false;
+      let vista = null;
+
+      function mostrarEstado(texto, esError) {
+        elemento('estado').textContent = texto;
+        elemento('estado').className = esError ? 'error' : '';
+      }
+
+      // Mientras el servidor trabaja, nada se puede volver a pedir.
+      function ocupar(texto) {
+        ocupado = true;
+        elemento('analizar').disabled = true;
+        elemento('opciones').querySelectorAll('button').forEach(boton => { boton.disabled = true; });
+        mostrarEstado(texto, false);
+      }
+
+      function liberar() {
+        ocupado = false;
+        elemento('analizar').disabled = false;
+      }
+
+      function limpiarVista() {
+        vista = null;
+        elemento('vista').textContent = '';
+        elemento('opciones').replaceChildren();
+      }
+
+      function analizar() {
+        if (ocupado) return;
+        limpiarVista();
+        elemento('resultado').textContent = '';
+        ocupar('Analizando… (no se exporta nada)');
+        google.script.run.withSuccessHandler(mostrarVista).withFailureHandler(mostrarError)
+          .previsualizarExportacionPdf(elemento('entrada').value);
+      }
+
+      function mostrarVista(respuesta) {
+        liberar();
+        vista = respuesta;
+        elemento('vista').textContent = respuesta.texto;
+        respuesta.opciones.forEach(opcion => {
+          const boton = document.createElement('button');
+          boton.textContent = opcion.etiqueta;
+          boton.onclick = () => exportar(opcion.modo);
+          elemento('opciones').appendChild(boton);
+        });
+        mostrarEstado(respuesta.opciones.length
+          ? 'Revisá lo que se va a hacer y, cuando quieras, exportá. Al empezar se vuelve a mirar Drive.'
+          : 'No hay nada para exportar.', false);
+      }
+
+      // La vista previa se consume: para volver a exportar hay que analizar de nuevo.
+      function exportar(modo) {
+        if (ocupado || !vista) return;
+        const elegida = vista;
+        vista = null;
+        ocupar('Exportando… puede tardar hasta 5 minutos. Se puede cerrar este diálogo: la exportación sigue.');
+        google.script.run.withSuccessHandler(mostrarResultado).withFailureHandler(mostrarError)
+          .exportarPdfConfirmado(elegida.entrada, modo, elegida.firma);
+      }
+
+      function mostrarResultado(respuesta) {
+        liberar();
+        elemento('resultado').textContent = respuesta.texto;
+        mostrarEstado('Terminó. El resultado también queda en Control.', false);
+      }
+
+      function mostrarError(error) {
+        liberar();
+        mostrarEstado('Error: ' + (error && error.message ? error.message : error), true);
+      }
+
+      elemento('analizar').onclick = analizar;
+      // Cambiar el link invalida la vista previa: nunca se exporta algo distinto de lo que se ve.
+      elemento('entrada').oninput = () => { if (!ocupado) limpiarVista(); };
+    </script>
+  </body>
+</html>

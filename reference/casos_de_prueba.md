@@ -1,6 +1,6 @@
 # Casos de prueba del generador EPS
 
-Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), y la sección 11, la generación de varios cursos (#20).
+Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20); la sección 13, la exportación a PDF (#21), la sección 14, la organización de los libros en Drive (#23); la sección 15, la exportación a PDF de varios cursos (#23); la sección 16, la exportación desde un libro o una carpeta de Drive, y la sección 17, su diálogo.
 
 ## Arnés de pruebas local
 
@@ -9,7 +9,7 @@ Para facilitar la reproducibilidad sin requerir interacción manual con Google S
 ### Características y funcionamiento del arnés
 
 - **Ejecución de código real**: `tests/run.js` carga y ejecuta el archivo de código fuente real `src/Generador_EPS.gs` dentro de un contexto aislado (`node:vm`).
-- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`).
+- **Mocks locales mínimos**: Emula exclusivamente la superficie mínima de Google Apps Script requerida por la lógica de negocio (`SpreadsheetApp.getActiveSpreadsheet()`, `SpreadsheetApp.openById()`, `SpreadsheetApp.create()`, `Utilities.formatDate()`, `Sheet`, `Range`, `Ui.alert()`, `Ui.createMenu()`; para guardar los libros, `DriveApp` con carpetas, papelera y `moveTo()`; para la exportación de varios libros, también `Folder.getFilesByType()`, `DriveApp.getFolderById()`, el tipo de cada archivo y `MimeType`; para la exportación a PDF, también `Ui.prompt()`, `UrlFetchApp.fetch()`, `DriveApp` y `ScriptApp.getOAuthToken()`).
 - **Consumo directo de fixtures vigentes**: En cada ejecución se vacía el directorio de trabajo temporal `tmp/unzipped/` y se extraen directamente los archivos XLSX y TSV que existen en `reference/fixtures/`. Si falta algún fixture o se modifica, el runner valida estrictamente el estado actual del disco y no reutiliza extracciones de corridas previas.
 - **Requisito de plataforma y shell**: El runner debe ejecutarse en un entorno **Windows** desde **PowerShell** o **`cmd`**, dependiendo exclusivamente del comando `tar.exe` provisto por el sistema operativo en `%SystemRoot%\System32` (bsdtar nativo de Windows). **No debe asumirse que funciona desde Git Bash**, ya que en dicho entorno `tar.exe` puede resolverse al binario provisto por MSYS y fallar al abrir los archivos XLSX empaquetados.
 
@@ -21,7 +21,7 @@ El arnés local valida la lógica de lectura tabular, normalización, acumulaci�
 3. Aspectos visuales y de formato del workbook: tipografías, alineación, bordes, anchos de columna y altos de fila efectivos en Google Sheets.
 4. Evaluación del formato condicional en tiempo real en la interfaz de Google Sheets.
 5. Importación real de planillas en formato nativo de Google Sheets.
-6. Presentación final para impresión ni generación de PDF.
+6. Presentación final para impresión ni el PDF que produce Google: la exportación se prueba hasta el pedido (URL, parámetros y manejo de la respuesta).
 
 Por estas razones, la tarea **#4 (verificación manual en entorno real de Google Sheets)** sigue siendo estrictamente necesaria para validar visualización, menús de usuario, permisos y la experiencia operativa completa antes de cualquier liberación.
 
@@ -144,7 +144,7 @@ El mock de fuentes del arnés sólo expone lectura (`getDataRange().getDisplayVa
 
 ### 7. Generación por curso (#12)
 
-**Uso**: en `Control`, además del período, la hoja origen, el ciclo lectivo y las fuentes, se elige el nivel en `B9` (*Nivel / curso*, selector `EPS1`…`EPS4` incluido en el workbook versionado; también se acepta sólo el número). *Informes EPS > Generar boletines por curso* crea un libro nuevo `Boletines EPS - <hoja origen> - <nivel> - <período> <ciclo> - <aaaa-mm-dd hh:mm>` con la hoja `Resumen` y una hoja por estudiante generado. La hora es siempre la de `America/Argentina/Buenos_Aires`, sin depender de la zona horaria del libro generador, del proyecto ni de la cuenta. El libro se crea en Mi unidad, y su organización posterior en carpetas queda a cargo del usuario. El DNI de `B7` no se usa. La generación individual ignora `B9` y no cambia.
+**Uso**: en `Control`, además del período, la hoja origen, el ciclo lectivo y las fuentes, se elige el nivel en `B9` (*Nivel / curso*, selector `EPS1`…`EPS4` incluido en el workbook versionado; también se acepta sólo el número). *Informes EPS > Generar boletines por curso* crea un libro nuevo `Boletines EPS - <hoja origen> - <nivel> - <período> <ciclo> - <aaaa-mm-dd hh:mm>` con la hoja `Resumen` y una hoja por estudiante generado. La hora es siempre la de `America/Argentina/Buenos_Aires`, sin depender de la zona horaria del libro generador, del proyecto ni de la cuenta. El libro se guarda en `Mi unidad > Boletines EPS > <ciclo> - <período>` (sección 14). El DNI de `B7` no se usa. La generación individual ignora `B9` y no cambia.
 
 **Selección**: sólo desde la fuente principal ya leída. El nivel de cada fila es el último marcador `EPSn` de la columna A. Se selecciona una fila del nivel con DNI cuyo `LISTO PARA EXPORTAR` resulta `SÍ` según la tabla de la sección 6 (una forma no canónica como `Si` cuenta como `SÍ` y queda advertida). `NO`, vacío o inválido se omite con su motivo. `EXPORTADO` se informa en el `Resumen` pero no selecciona. Una fila del nivel con `LISTO PARA EXPORTAR = SÍ` y sin DNI se informa como error.
 
@@ -174,7 +174,7 @@ Casos automatizados (grillas reales sintéticas con bloques agregados en el test
 
 **Cambio en la generación individual**: el contenido del informe no cambia. Las advertencias de las fuentes (falta de una fuente anterior, fuente anterior ilegible, encabezados de la cola) ahora aparecen antes que las del estudiante.
 
-**No cubierto por el arnés** (queda para la validación manual de #11): copia real de `Plantilla` a otro libro (imágenes, celdas combinadas, formato condicional, anchos y altos), permisos de creación en Drive, tiempos y límites de Apps Script con un curso completo, y PDF e impresión del libro.
+**No cubierto por el arnés** (queda para la validación manual de #11): copia real de `Plantilla` a otro libro (imágenes, celdas combinadas, formato condicional, anchos y altos), permisos de creación en Drive (y de carpetas, sección 14), tiempos y límites de Apps Script con un curso completo, y PDF e impresión del libro.
 
 ### 8. Orientación por período (#15)
 
@@ -263,7 +263,7 @@ Casos automatizados (sección 15 de `tests/run.js`):
 - Configuración (ningún curso marcado, una marca distinta de `SÍ`, `NO` o vacío, falta de período o de fuente principal) y estructura (fuente principal ilegible, falta de `LISTO PARA EXPORTAR`, nivel sin marcador en la hoja de su orientación): abortan antes de crear el primer libro, aunque el curso con problemas sea el último.
 - Por estudiante: como en la generación por curso; no afecta a los demás estudiantes ni a otros cursos.
 - Curso sin estudiantes listos: no genera libro y los demás se procesan.
-- Falla inesperada al crear libros (por ejemplo, de Drive): no se borra lo creado; `Control` y el diálogo listan los libros ya creados.
+- Falla inesperada al crear libros (por ejemplo, de Drive): no se borra lo creado; `Control` y el diálogo listan los libros ya creados, que ya están en su carpeta (sección 14).
 
 **Resultado**: `Control!F3` muestra `Cursos: n · Libros creados: n · Sin libro: n · Duración: n s.`. `F4` muestra una línea por curso (libro con conteos y enlace, o motivo sin libro), las advertencias generales de cada curso y, para los cursos sin libro, el detalle por estudiante. Un aviso (`toast`) indica el curso en curso. No hay jobs, colas, triggers ni cortes por tiempo: el rendimiento de los 8 cursos se mide en una prueba real.
 
@@ -290,3 +290,192 @@ Casos automatizados (sección 17 de `tests/run.js`; el ancho real del texto no s
 - `EQUIVALENCIA` en 7 en el informe individual, en el libro por curso y en el de varios cursos; ninguna otra celda cambia de tamaño. Un boletín sin `EQUIVALENCIA` no cambia ningún tamaño.
 
 **Validación manual**: comprobar en Google Sheets, y en el PDF, que un nombre largo se vea completo y que `EQUIVALENCIA` quede en una línea en las columnas de 1º bimestre, 1º cuatrimestre y 3º bimestre.
+
+### 13. Exportación a PDF de un libro ya generado (#21)
+
+**Uso**: *Informes EPS > Exportar PDF desde un libro o carpeta…* abre un diálogo (sección 17) donde se pega el link o ID de un libro de la generación por curso (o de varios cursos), ya revisado, o de una carpeta (sección 16). Crea una carpeta nueva junto al libro, `<nombre del libro> - PDF <fecha y hora>`, con un PDF por hoja de estudiante (todas menos `Resumen`), con el nombre de la hoja. Si no se puede ver la carpeta del libro, la crea en Mi unidad. Si la última carpeta de PDF del libro quedó incompleta, la vista previa ofrece completarla (sección *Recuperación*).
+
+**Separación**: es una operación posterior y separada de la generación, en su propio archivo (`src/Exportar_PDF.gs`). `Generador_EPS.gs` sólo la nombra en el menú y no usa sus servicios (`UrlFetchApp`, `ScriptApp`); usa `DriveApp` únicamente para guardar sus libros (sección 14). Como los libros quedan en la carpeta de su ciclo y período, las carpetas de PDF quedan ahí, junto al libro. El libro sólo se lee: una falla de exportación nunca obliga a regenerarlo. Cada exportación completa crea su carpeta, así que volver a exportar todo no reemplaza ni mezcla PDF anteriores; sólo completar una exportación incompleta agrega PDF a una carpeta existente.
+
+**Mecanismo**: la URL de exportación de Google Sheets (`/export?format=pdf&gid=…`), pedida con `UrlFetchApp` y el token del usuario. No está documentada oficialmente, por eso queda aislada en `urlExportacionPdf_` y `exportarHojaPdf_`. Cada pedido lleva la configuración de impresión completa (`CONFIG_PDF.PARAMETROS`), sin depender de lo guardado en el diálogo de impresión: `size=A4`, `portrait=true`, `fitw=true` y `scale=2` (ajustar al ancho), `top_margin`, `left_margin` y `right_margin` en 0, `bottom_margin=0.3937` (1 cm en pulgadas) y `fzr=true` (repetir filas inmovilizadas, la fila 1 de cada boletín; ver sección 9), sin cuadrícula, notas, título, nombre de hoja ni números de página.
+
+**Errores**:
+- Link no reconocible, libro sin `Resumen` (por ejemplo, el propio generador) o sin hojas de estudiantes: error claro, sin crear la carpeta.
+- Generación que no terminó: `Resumen` se escribe al final de la generación, en una sola operación y después de copiar todas las hojas, así que su primera celda (`CONFIG_EPS.TITULO_RESUMEN`) indica que el libro está completo. Un libro con `Resumen` vacío, de una generación cortada (por ejemplo, por tiempo), se rechaza: sus hojas no son el curso completo. Vale también para los libros generados antes de este cambio.
+- Límite de Google (HTTP 429): en la prueba real con un curso de 15 hojas, los pedidos seguidos dieron 6 PDF y 9 rechazos 429 en 24 s. Ahora entre un pedido y el siguiente se espera una pausa que empieza en 3 s (`CONFIG_PDF.PAUSA_MS`). Ante un 429 se duplica, hasta 30 s (`PAUSA_MAXIMA_MS`), y se reintenta la misma hoja, hasta 4 pedidos en total (`INTENTOS_POR_HOJA`). Cada PDF exportado la vuelve a bajar 3 s. Google no publica el límite: los valores son iniciales y se ajustan con los reintentos y tiempos que registra `Control`.
+- Por hoja: el 429 en el último intento, otra respuesta HTTP distinta de 200, una respuesta que no es PDF o una excepción del pedido se registran en esa hoja, y las demás se exportan igual. Sólo el 429 se reintenta.
+- Tiempo: pasados 5 minutos (`CONFIG_PDF.TIEMPO_MAXIMO_MS`) desde el inicio de la ejecución que exporta, no se empieza otra exportación ni otra pausa, y las hojas que faltan se informan como sin exportar. Desde el diálogo, esa ejecución empieza al elegir *Exportar*: el tiempo de buscar el link y de revisar la vista previa no cuenta, porque no corre ninguna ejecución mientras tanto (sección 17). En las exportaciones desde `Control`, la confirmación con `ui.alert` sí ocurre dentro de la ejecución y cuenta. Sin margen para el primer pedido no se crea una carpeta vacía.
+
+**Recuperación**: cada carpeta de PDF lleva en su descripción de Drive el ID del libro exportado (`PDF del libro de boletines <ID>`). Al exportar un libro, se busca junto a él su última carpeta de PDF: la creada más recientemente, fuera de la papelera, con el ID de ese libro en la descripción. No se usa el nombre, porque dos libros distintos pueden llamarse igual (dos regeneraciones del mismo curso en el mismo minuto). Una carpeta sin esa descripción, como las de exportaciones anteriores a este cambio, no se ofrece para completar. Si le faltan PDF de alguna hoja (los de la papelera cuentan como faltantes), la vista previa ofrece dos botones: *Completar* pide sólo las hojas que faltan y las agrega a esa carpeta; *Exportar todo en una carpeta nueva* rehace todo, por ejemplo para un libro corregido. Cerrar el diálogo no hace nada. Si la última carpeta está completa, o no hay ninguna, el único botón exporta todo en una carpeta nueva. Tampoco se ofrece completar si el libro se modificó en Drive (`getLastUpdated`) después de crearse esa carpeta: completarla mezclaría PDF de dos versiones del libro, así que se exporta todo en una carpeta nueva. La exportación vuelve a comprobar todo esto al empezar (sección 17).
+
+**Resultado**: `Control!F3` muestra `PDF exportados: n de n · Con error: n · Sin exportar: n · Reintentos por HTTP 429: n · Tiempo de exportación: n s (n s por PDF). La carpeta tiene n de n PDF.`, el libro y el enlace a la carpeta. Al completar una carpeta, el primer total son las hojas que faltaban (`n de n que faltaban`). Si la carpeta queda incompleta, el diálogo explica cómo completarla. `F4` lista cada hoja con error o sin exportar, con el motivo. Un aviso (`toast`) indica la hoja en curso.
+
+Casos automatizados (sección 18 de `tests/run.js`, sobre el libro EPS2 de la generación por curso):
+- Libro completo: carpeta junto al libro, 4 PDF en el orden del libro y sin `Resumen`, un pedido por hoja con su `gid`, configuración de impresión validada e idéntica en todos los pedidos, token del usuario y `muteHttpExceptions`.
+- El libro no cambia (hojas, valores, formatos, visibilidad, filas inmovilizadas) y sólo se usan métodos de lectura.
+- Pausa de 3 s entre pedidos, el primero sin espera; sin carpeta anterior incompleta, no se pregunta nada.
+- Fallas por hoja (429 en los 4 intentos, respuesta HTML y excepción): las demás se exportan, `Control` detalla cada una con los intentos y el libro no cambia. La pausa se duplica con cada 429 (6, 12, 24 s) y queda para las hojas siguientes. Un 429 seguido de éxito exporta la hoja, y cada PDF baja la pausa 3 s, sin bajar de 3.
+- Tiempo máximo: con 3 minutos por PDF se exportan 2 de 4 y las otras 2 quedan informadas. Con 4 minutos hasta analizar, 10 hasta exportar y 30 s por PDF, se exportan los 4: la espera en el diálogo no cuenta (sección 17).
+- Límite de Google, con un modelo supuesto (hasta 6 pedidos aceptados en cualquier ventana de 60 s) y un libro sintético de 15 hojas: sin pausa ni reintentos, como antes, reproduce la prueba real (6 de 15, 9 rechazos 429, 24 s); con la pausa adaptativa se exportan los 15 dentro del tiempo máximo.
+- Recuperación: con una carpeta anterior incompleta, la vista previa muestra cuántos PDF tiene y ofrece *Completar* o *Exportar todo en una carpeta nueva*. *Completar* pide sólo las hojas que faltan y las agrega a esa carpeta; *Exportar todo* exporta todo en una nueva sin tocar la anterior; cerrar no hace nada. Sólo cuenta la última carpeta del libro fuera de la papelera, y un PDF en la papelera cuenta como faltante. El libro se reconoce por el ID en la descripción: una carpeta renombrada se ofrece y una sin descripción, no. Regresión: con dos libros distintos, de IDs distintos y exactamente el mismo nombre en la misma carpeta, la exportación incompleta de uno no se ofrece ni se completa al exportar el otro, que crea su propia carpeta; al exportar el libro al que pertenece, sí se ofrece. Si la última está completa, se exporta todo en una carpeta nueva sin preguntar.
+- Recuperación de punta a punta con un límite más estricto (3 por minuto): la primera corrida queda incompleta por tiempo y lo informa; la segunda pide sólo las hojas que faltaban y completa los 15 PDF.
+- Libro sin `Resumen`, libro sin hojas de estudiantes, cancelación y link inválido: no se crea carpeta ni se exporta.
+- `Generador_EPS.gs` no usa `UrlFetchApp` ni `ScriptApp`, y de `DriveApp` sólo usa `getRootFolder` y `getFileById` (sección 14).
+
+**No cubierto por el arnés**: el PDF que produce Google (tamaño, márgenes, ajuste al ancho, repetición de la fila 1, cortes de página), la vigencia de los parámetros de la URL, los permisos y cuotas reales, los tiempos y el límite real de la URL de exportación (el modelo de 6 por minuto sólo reproduce lo observado; la pausa adaptativa debe probarse con un curso real), y el comportamiento real de `getFolders`, `getFiles`, `getDateCreated`, `setDescription` y `getDescription` en la carpeta del libro. Queda pendiente la validación en Google real que pide #21: un boletín de una página, uno de dos páginas, un curso completo, independencia de la configuración guardada en el diálogo de impresión y tiempos reales.
+
+### 14. Organización de los libros en Drive (#23)
+
+**Uso**: la generación por curso y la de varios cursos guardan cada libro en `Mi unidad > Boletines EPS > <ciclo> - <período>`, con el ciclo lectivo y el período de `Control` (por ejemplo, `2026 - 3º bimestre`). Es una carpeta por entrega: ahí quedan los libros de todos los cursos de ese período, las regeneraciones (cada libro conserva la fecha y hora en el nombre) y, como la exportación a PDF crea su carpeta junto al libro, también los PDF. Las carpetas se crean la primera vez; después se reutilizan las existentes con ese nombre, salvo las que están en la papelera. El diálogo final indica la carpeta; `Control` conserva el enlace de cada libro. La generación individual no crea libros ni usa Drive.
+
+**Mecanismo**: `SpreadsheetApp.create()` crea el libro en Mi unidad y `File.moveTo()` lo mueve a la carpeta. La carpeta se busca o se crea una sola vez por operación, después de validar todo y antes del primer libro, y sólo si se va a crear alguno (`carpetaLibros_`). Cada libro se mueve recién creado, antes de copiar los boletines (`moverLibro_`): si la ejecución se corta después (por ejemplo, por el límite de 6 minutos), el libro incompleto igual queda en la carpeta y no suelto en Mi unidad.
+
+**Errores**:
+- Si no se puede buscar o crear la carpeta: error en `Control` y en el diálogo, sin crear ningún libro.
+- Si no se puede mover un libro: la operación se detiene como ante cualquier otra falla de Drive. El error nombra la carpeta y el libro recién creado, que quedó vacío en Mi unidad, con su enlace para borrarlo; en varios cursos, además se listan los libros ya creados, que ya están en la carpeta.
+
+Casos automatizados (sección 19 de `tests/run.js`; Drive simulado con carpetas, papelera y `moveTo`):
+- Por curso: el libro queda en `Mi unidad > Boletines EPS > 2026 - 3º bimestre`, y las dos carpetas se crean al no existir. Se mueve con su única hoja inicial, antes de copiar los boletines. `Control` no cambia y el diálogo muestra la carpeta.
+- Carpetas existentes: se reutilizan sin crear otras; una con el mismo nombre en la papelera se ignora. Otro ciclo lectivo (`2027`) u otro período (`1º cuatrimestre`) usan su propia subcarpeta dentro de `Boletines EPS`.
+- Varios cursos: los 5 libros en la misma carpeta, con una sola búsqueda; el diálogo indica la carpeta después de la línea de cada curso. Si falla la creación del segundo libro, el primero ya está en la carpeta.
+- Sin estudiantes listos, errores globales o de configuración, cursos marcados sin libro y generación individual: no se usa Drive ni se crea ninguna carpeta.
+- Fallas: sin poder crear la carpeta, ningún libro; sin poder mover el libro, error con la carpeta y el enlace del libro vacío.
+- El libro organizado es idéntico al de la generación por curso.
+
+**No cubierto por el arnés**: el comportamiento real de Drive. En particular: si `getFoldersByName` devuelve carpetas de la papelera, el orden en que devuelve carpetas repetidas, el tiempo que agrega mover cada libro, y que la exportación a PDF cree su carpeta en la carpeta del período. Esto se valida en Google real.
+
+### 15. Exportación a PDF de varios cursos (#23)
+
+**Problema**: con los tiempos reales (un curso de 15 hojas: 104 s, 6,9 s por PDF, con pausas y reintentos por el límite de Google), los 8 cursos llevan unos 14 minutos, más que una ejecución de Apps Script. La exportación de un libro por vez obligaba a buscar, copiar y pegar el link de cada uno.
+
+**Uso**: *Informes EPS > Exportar PDF de los cursos marcados* toma los cursos con `SÍ` en `B15:B22`, las mismas marcas de la generación de varios cursos. *Exportar PDF de todos los cursos* toma los 8. Ambas usan el período (`B5`) y el ciclo lectivo (`B8`) de `Control`, pero no las fuentes, porque no leen las grillas.
+
+**Selección del libro**: para cada curso, se toma el libro más reciente (`getDateCreated`) de la carpeta del período (`Mi unidad > Boletines EPS > <ciclo> - <período>`). Los libros se reconocen y agrupan como en una carpeta elegida a mano (sección 16, `librosPorCursoEnCarpeta_`): por el curso que la generación escribe en `Resumen` y, si la generación no terminó, por el nombre que le dio. Si hay varios libros del curso (regeneraciones, aun con el mismo nombre), se usa sólo el más reciente, y la confirmación y `Control` dicen de cuántos. Un curso sin libro queda informado. Si el libro más reciente no se puede exportar (no es de la generación, o su generación no terminó: `Resumen` vacío), el curso queda como problema: no se usa en su lugar un libro anterior, no se exportan sus hojas y no frena a los demás cursos.
+
+**Qué se hace con cada curso** (`ultimaExportacion_`, la misma recuperación de la exportación de un libro, asociada al libro por su ID):
+- Última carpeta de PDF completa y vigente (el libro no se modificó en Drive después de crearla): se omite.
+- Incompleta y vigente: se completa con las hojas que faltan, sin preguntar aparte; la confirmación lo anuncia.
+- No vigente (el libro cambió después de crearse la carpeta), completa o no: no se da por buena ni se completa, porque mezclaría versiones. Se exportan todas las hojas en una carpeta nueva, y la confirmación lo anuncia. Esa carpeta nueva es vigente, así que la ejecución siguiente la continúa o la da por completa.
+- Para rehacer a propósito un libro sin cambios, se usa la exportación desde un libro y se elige *Exportar todo en una carpeta nueva*.
+- Sin carpeta: se exporta todo en una carpeta nueva junto al libro.
+
+**Confirmación**: antes de empezar, un diálogo resume cuántos cursos se omiten por completos, se completan, se rehacen porque el libro cambió, se exportan enteros o tienen problema, lista lo que se hará con cada curso y cuántos PDF se van a exportar; *Cancelar* no hace nada. Si no hay nada para exportar, no se pregunta ni se pide nada, pero el resultado se informa igual (ver *Resultado*): un curso con un libro que no se puede exportar sigue figurando como problema.
+
+**Varias ejecuciones sin estado propio**: cada ejecución avanza hasta el tiempo máximo (5 minutos desde el inicio, con el diálogo incluido). No se empieza un libro, ni se crea su carpeta, si no entra su primer pedido con la pausa. La ejecución siguiente vuelve a calcular desde Drive qué falta y continúa sin repetir PDF ya exportados. No hay triggers, colas ni registro de progreso fuera de las carpetas de PDF. Las hojas con error quedan faltantes y se vuelven a pedir en la ejecución siguiente. La pausa adaptativa sigue de un libro al siguiente dentro de la ejecución, porque el límite de Google es por usuario.
+
+**Resultado**: `Control!F3` muestra `PDF de varios cursos (<período> <ciclo>): cursos completos: n de n con libro · PDF exportados ahora: n · Con error: n · Reintentos por HTTP 429: n · Tiempo de exportación: n s.` Si faltan PDF, se agrega `Faltan PDF: volver a ejecutar la misma opción para continuar.` El total *con libro* incluye los cursos cuyo libro no se puede exportar; si hay alguno, el resultado agrega `Con libro que no se puede exportar: n` y pide corregirlo. Se informa aunque no haya nada para exportar (entonces sin confirmación ni pedidos), así que un curso con un libro inválido nunca queda como si no hubiera pendientes. Si ningún curso elegido tiene libro, se dice explícitamente. `F4` muestra una línea por curso (cuántos PDF tiene su carpeta y cuántos se exportaron ahora, o por qué no) con el enlace de la carpeta, y las hojas con error.
+
+Casos automatizados (sección 20 de `tests/run.js`; los libros de la sección 16, con sus nombres de la generación, y libros sintéticos de 15 hojas):
+- Todos, sin PDF previos: una confirmación con una línea por curso, una carpeta nueva por libro con su ID y un PDF por hoja, 8 pedidos con la configuración validada, y la pausa también entre libros. `Control` con una línea y un enlace por curso, y los cursos sin libro informados. Los libros sólo se leen.
+- Otra vez, con todo completo: ningún pedido ni carpeta, sin confirmación, y el resultado con todos los cursos completos.
+- Marcados: sólo los cursos con `SÍ`. Sin marcas, error que sugiere *todos*; marca no admitida y período ausente, error claro.
+- Varios libros del curso: se usa el creado más recientemente, aun con exactamente el mismo nombre que otro. No cuentan los libros en la papelera ni un archivo que no es planilla.
+- Exportación incompleta de un curso: se completa (sólo las hojas que faltan, en esa carpeta), y la carpeta de otro libro con nombre parecido no se toca.
+- Corte y continuación: tres libros de 15 hojas con 10 s por pedido. La primera ejecución exporta 24 PDF y deja el tercer libro sin empezar y sin carpeta; la segunda completa el libro a medias y exporta el tercero. En total hay 45 pedidos, ninguno repetido, y una carpeta por libro.
+- Error en una hoja: el curso queda incompleto con la hoja detallada; la ejecución siguiente pide sólo esa hoja. Un libro sin `Resumen` cuenta como problema en el total (4 de 5) y los demás se exportan. Con los demás ya completos, el libro inválido sigue marcado como problema, sin confirmación ni pedidos. Sin carpeta del período, se informa que ningún curso tiene libro.
+- Generación cortada (regresión): el generador real, cortado antes de escribir `Resumen`, deja un libro que la exportación de un libro rechaza. En varios cursos, un libro así (con `Resumen` vacío y sólo 2 de las 4 hojas) que es el más reciente del curso queda como problema: no se exporta y no se usa en silencio el libro completo anterior.
+- Libro modificado después de exportar (regresión): tras una exportación parcial, no se completa y se exporta todo en una carpeta nueva, sin tocar la anterior; tras una completa, no se omite y se exporta todo en una nueva. Modificado antes de la exportación, sigue vigente y se omite. La ejecución siguiente da por completa la carpeta nueva. En la exportación de un libro, con el libro modificado no se ofrece completar; sin modificar, se sigue ofreciendo, y *No* sigue rehaciendo todo.
+- Cancelar la confirmación: nada. Confirmación abierta más de 5 minutos: ningún libro ni carpeta.
+- Ritmo compartido: después de dos 429 en un libro, el siguiente empieza con la pausa ajustada.
+
+**No cubierto por el arnés**: los tiempos reales con varios cursos y cuántas ejecuciones hacen falta para los 8; si el límite de Google cambia con exportaciones de varios libros seguidas; `getFilesByType` y `getDateCreated` reales en la carpeta del período; que `getLastUpdated` del libro cambie sólo cuando se modifica su contenido (no al abrirlo, exportarlo ni moverlo) y su precisión frente a `getDateCreated` de la carpeta; y el aspecto del diálogo de confirmación con 8 líneas.
+
+### 16. Exportar PDF desde un libro o carpeta de Drive
+
+**Rol**: la operación manual. La exportación de un libro (sección 13) se amplió para aceptar también una carpeta, sin depender de `Control`: el período, el ciclo y los cursos salen de los libros. Desde `Control` quedan *Exportar PDF de los cursos marcados* y *de todos los cursos* (sección 15).
+
+**Entrada**: el diálogo acepta un link de planilla (`/d/<id>`), de carpeta (`/folders/<id>`, también `/drive/u/0/folders/<id>`), con `?id=<id>`, o el ID solo. Sólo se usan operaciones documentadas, cada una para su tipo:
+- **Link de carpeta:** se busca sólo como carpeta (`DriveApp.getFolderById`).
+- **Link de archivo:** se abre sólo como planilla (`SpreadsheetApp.openById`).
+- **ID solo, o `?id=`:** primero como planilla y, si no lo es, como carpeta. Cada operación falla con un ID del otro tipo, así que el resultado no es ambiguo.
+
+Si no es ninguna de las dos, se da un error claro. `DriveApp.getFileById`, que está documentado para archivos y no para carpetas, sólo se usa para nombrar en ese error un archivo que no es planilla. Un ID que no está en Drive, o sin acceso, también da error.
+
+**Modelo común**: cada libro se convierte en un plan (`planLibro_`): sus hojas (si es un libro de boletines terminado), su última carpeta de PDF vigente y lo que falta. Los tres caminos usan ese plan; lo que cambia es cómo se arma la lista:
+- **Un libro:** ese libro; si la última exportación vigente quedó incompleta, la vista previa ofrece *Completar* o *Exportar todo en una carpeta nueva*. Si está completa, o el libro cambió después, se exporta todo en una carpeta nueva: elegir un libro a mano es la forma deliberada de rehacerlo.
+- **Una carpeta:** el libro más reciente de cada curso que contenga (`librosPorCursoEnCarpeta_`).
+- **`Control`:** la misma búsqueda en la carpeta del período, filtrada por los cursos marcados o todos, con el período y el ciclo de `Control`.
+
+Varios libros (carpeta o `Control`) se exportan con una sola función (`exportarPlanesPdf_`), que hace la confirmación, el ritmo compartido, el corte por tiempo, la continuación desde Drive y el resultado.
+
+**Reconocimiento de libros en una carpeta**: se recorren las planillas de Google fuera de la papelera (los demás archivos no se miran):
+- **`Resumen` terminado:** el curso es el que la generación escribió en `A2:B5` (hoja origen, nivel, período y ciclo), no el nombre del archivo.
+- **`Resumen` sin terminar, o sin hoja `Resumen`:** el curso sale del nombre que le da la generación (`Boletines EPS - <hoja> - <nivel> - <período> <ciclo> - <fecha>`), así que la generación cortada se agrupa con su curso. Con hoja `Resumen` pero sin nombre reconocible, queda sola como problema.
+- **Las demás planillas:** no son libros de boletines; se ignoran y se cuentan.
+- **Las que no se pueden abrir:** si su nombre es el que da la generación, se agrupan con su curso por ese nombre y compiten por ser la más reciente; si no, se informan como problema propio en la operación manual. Desde `Control` no se atribuyen a ningún curso, porque no hay forma fundada de hacerlo.
+
+De cada curso (hoja origen, nivel, período y ciclo) se elige el libro creado más recientemente. Las regeneraciones anteriores se omiten y se cuentan. El elegido puede ser un libro terminado, uno incompleto o uno que no pudo abrirse. En los dos últimos casos el curso queda como problema, sin volver a uno anterior. Las carpetas de PDF se crean en la carpeta elegida, junto a los libros.
+
+**Confirmación**: carpeta, cantidad de libros de boletines y de cursos, regeneraciones anteriores que se omiten y planillas ignoradas; cuántos cursos se omiten por completos, se completan, se rehacen, se exportan enteros o tienen problema; una línea por curso (con su período) y los PDF a exportar. El resultado (`PDF de la carpeta "<nombre>": cursos completos: …`) tiene la misma forma que el de los cursos de `Control`, y si falta algo pide volver a exportar la misma carpeta.
+
+Casos automatizados (sección 21 de `tests/run.js`):
+- **Libro:** con un link `open?id=` se exporta exactamente ese libro. Con su exportación completa y vigente, elegirlo a mano lo rehace en una carpeta nueva. El resto, en la sección 18, que ya usa esta opción.
+- **Carpeta con varios cursos**, sin período ni cursos en `Control`: confirmación con el resumen, una carpeta por libro en la carpeta elegida y con su ID, 8 PDF, y libros sólo leídos. También con `/drive/u/0/folders/` y con el ID solo.
+- **Mezcla:**
+  - una regeneración anterior (omitida);
+  - un libro de otro período con el mismo nombre que uno de 3º bimestre (agrupado por su `Resumen`, en su propio curso);
+  - una planilla ajena (ignorada);
+  - un archivo que no es planilla (ni se abre).
+- **Problemas:** el libro más reciente cortado deja su curso como problema y no se exporta el anterior. Una planilla que no se puede abrir se informa como problema.
+- **Carpeta sin libros de boletines:** la vista previa lo dice, sin opciones de exportar, pedidos ni escritura en `Control`.
+- **Exportaciones previas:** completa vigente (se omite), incompleta (se completa) y de un libro modificado después (se rehace en una carpeta nueva).
+- **Corte y continuación:** 45 PDF en varias ejecuciones, sin pedidos repetidos y con una carpeta por libro.
+- **Coexistencia:** después de exportar todos los cursos desde `Control`, la carpeta del período desde Drive no tiene nada pendiente, y al revés.
+- **Entradas inválidas:** un archivo que no es planilla ni carpeta (por ID y por link `/file/d/`, sin buscarlo como carpeta), un ID inexistente, y un link de carpeta con el ID de un libro (no se abre como libro).
+- **Regresión:** el mock de `getFileById` rechaza IDs de carpeta, como lo documenta Apps Script; aun así la carpeta se exporta por link, por ID solo y por `?id=`, sin pedir nunca la carpeta a `getFileById`. Un link de carpeta va directo a `getFolderById`; un ID solo se prueba primero como planilla. Un libro, por link o por ID, no pasa por `getFolderById`.
+- **Mocks:** `openById` sólo abre planillas y `getFolderById` sólo carpetas, como en Apps Script.
+- **Regresión, planillas que no se pueden abrir:** con un libro válido anterior y una regeneración más reciente del mismo curso sin acceso (mismo nombre), el curso queda como problema y no se exporta el anterior, desde la carpeta y desde `Control`. Con la planilla sin acceso como la anterior, se usa y exporta el libro válido más reciente. Una sin acceso y con nombre irreconocible se informa como problema propio en la carpeta y no afecta a ningún curso desde `Control`.
+
+**No cubierto por el arnés**:
+- que `SpreadsheetApp.openById` falle con el ID de una carpeta y `DriveApp.getFolderById` con el de un archivo, como dice la documentación, y cuánto tarda el intento fallido con un ID solo de carpeta;
+- que `getDisplayValues` de `Resumen!A1:B5` devuelva el ciclo como texto igual al de `Control` (por ejemplo, `2026` y no `2.026`);
+- el tiempo de abrir cada planilla de una carpeta con muchos libros antes de la confirmación (se descuenta de los 5 minutos);
+- el aspecto de la confirmación con muchas líneas.
+
+### 17. Diálogo de la exportación desde un libro o carpeta
+
+**Problema**: la exportación desde Drive pedía el link con `ui.prompt` y confirmaba con `ui.alert` dentro de la misma ejecución que exportaba. Esos diálogos dejan la ejecución esperando, y el límite de 6 minutos de Apps Script sigue corriendo. En una prueba real, con los diálogos abiertos varios minutos, quedaron 3 de 20 PDF sin exportar: se exportaron 17 en 95 s, sin errores ni 429, y se alcanzó el tiempo máximo.
+
+**Diseño**: un diálogo HTML (`src/Exportar_PDF_UI.html`, `HtmlService`; en Apps Script, el archivo HTML `Exportar_PDF_UI`, porque no puede llamarse igual que `Exportar_PDF.gs`) que separa la interacción de la exportación en ejecuciones distintas, sin estado guardado entre ellas:
+- El menú (`exportarPdfDesdeDrive`) sólo abre el diálogo y termina.
+- *Analizar* llama a `previsualizarExportacionPdf(entrada)`: resuelve el link, arma el plan y devuelve el texto de la vista previa, las opciones y una firma del plan. Sólo lee, en todos los caminos: no exporta, no crea carpetas ni archivos, no modifica libros y no escribe en `Control`. Si en una carpeta no hay nada para exportar, la vista previa lo dice y no ofrece exportar. Si el análisis falla (link no reconocible, archivo que no es planilla, libro inválido o sin acceso), el error se muestra en el diálogo y no se registra en `Control`, porque todavía no hubo un intento de exportación. `Control` registra sólo las exportaciones confirmadas, con su resultado o su error.
+- Mientras se revisa la vista previa no corre ninguna ejecución.
+- *Exportar* (o *Completar* / *Exportar todo en una carpeta nueva*) llama a `exportarPdfConfirmado(entrada, modo, firma)`: una ejecución nueva, cuyo tiempo máximo se cuenta desde ese momento. No confía en la vista previa: vuelve a resolver la entrada y a calcular el plan con el estado actual de Drive, actúa según ese estado y avisa si cambió respecto de lo visto.
+- Una sola exportación por vez y por usuario (`LockService.getUserLock()`), por ejemplo con dos diálogos abiertos. El cerrojo se libera al terminar, también con error.
+- El diálogo desactiva sus botones mientras espera al servidor. Una vista previa sirve para una sola exportación, y cambiar el link la borra.
+
+Las exportaciones desde `Control` (cursos marcados y todos) no cambian: siguen confirmando con `ui.alert` dentro de su ejecución. Comparten con el diálogo la confirmación, la ejecución y el resultado (`confirmacionPlanesPdf_`, `ejecutarPlanesPdf_`, `resultadoPlanesPdf_`).
+
+**Cuando Drive cambia entre la vista previa y la exportación**, se usa el estado nuevo:
+- Una carpeta que otra exportación completó mientras tanto no se vuelve a exportar.
+- Si se eligió *Completar* pero el libro se modificó, no se completa la carpeta vieja: se exporta todo en una nueva.
+- Si la carpeta a completar ya se completó, no se pide nada.
+- Si el libro dejó de estar accesible, se da un error claro.
+
+Casos automatizados (sección 22 de `tests/run.js`; en la sección 18 y siguientes, el arnés simula el diálogo: menú, espera, vista previa, espera y exportación, cada una como ejecución propia):
+- El menú abre `Exportar_PDF_UI.html` sin `ui.prompt`. Garantía general, medida al terminar la vista previa: *Analizar* deja `Control` igual, sin carpetas, archivos ni pedidos de PDF, y los libros sólo leídos. Se comprueba con:
+  - libro y carpeta con pendientes, y libro con exportación incompleta;
+  - carpeta sin pendientes (vacía, ya completa o con un problema);
+  - errores de análisis: link no reconocible, archivo que no es planilla, ID inexistente, libro sin `Resumen` y generación cortada;
+  - ejecuciones que después sí exportaron.
+
+  Los errores de análisis llegan al diálogo sin registrarse. Las exportaciones confirmadas sí registran su resultado y sus errores (también con el cerrojo tomado), y marcados y todos siguen registrando como antes. La vista de un libro dice si se exporta por primera vez, si su exportación está completa o si el libro cambió.
+- Tiempo: con 4 y 10 minutos de espera se exportan los 4 PDF. Las tres ejecuciones son distintas, y los pedidos entran en los 5 minutos de la que exporta.
+- Estado nuevo: los cuatro casos de arriba, y sin cambios no hay aviso.
+- Cerrojo: con otra exportación en curso, error y nada exportado; al terminar, con o sin error, el cerrojo queda libre.
+- `Control`: marcados y todos no abren el diálogo ni pasan por la vista previa.
+- Cliente, con un DOM mínimo:
+  - sólo llama a las dos funciones públicas del servidor;
+  - *Analizar* pide una sola vez y se desactiva;
+  - cambiar el link borra la vista previa;
+  - *Exportar* llama una sola vez, con el link y la firma de la vista, y bloquea todo mientras espera;
+  - una vista previa ya usada no permite volver a exportar;
+  - un libro incompleto ofrece las dos opciones;
+  - un error se muestra y deja volver a analizar.
+
+**No cubierto por el arnés**:
+- el diálogo real en Google Sheets: aspecto, tamaño y comportamiento de `google.script.run`;
+- que una llamada de `google.script.run` pueda durar hasta el límite de 6 minutos y que su resultado llegue al diálogo;
+- que `ss.toast` se vea durante esa llamada;
+- que `LockService.getUserLock()` funcione como se espera;
+- qué pasa si se cierra el diálogo durante la exportación (la ejecución debería seguir, sin mostrar el resultado; queda en `Control`).
