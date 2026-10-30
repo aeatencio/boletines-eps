@@ -1,6 +1,6 @@
 # Casos de prueba del generador EPS
 
-Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20); la sección 13, la exportación a PDF (#21), la sección 14, la organización de los libros en Drive (#23); la sección 15, la exportación a PDF de varios cursos (#23); la sección 16, la exportación desde un libro o una carpeta de Drive, y la sección 17, su diálogo.
+Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20); la sección 13, la exportación a PDF (#21), la sección 14, la organización de los libros en Drive (#23); la sección 15, la exportación a PDF de varios cursos (#23); la sección 16, la exportación desde un libro o una carpeta de Drive; la sección 17, su diálogo, y la sección 18, la generación por DNI.
 
 ## Arnés de pruebas local
 
@@ -479,3 +479,41 @@ Casos automatizados (sección 22 de `tests/run.js`; en la sección 18 y siguient
 - que `ss.toast` se vea durante esa llamada;
 - que `LockService.getUserLock()` funcione como se espera;
 - qué pasa si se cierra el diálogo durante la exportación (la ejecución debería seguir, sin mostrar el resultado; queda en `Control`).
+
+### 18. Generación por DNI
+
+**Uso**: *Informes EPS > Generar boletines por DNI…* abre un diálogo (`src/Generar_DNI_UI.html`; en Apps Script, el archivo HTML `Generar_DNI_UI`) con un área de texto para pegar los DNI, uno por línea o separados por espacios, comas o punto y coma. *Generar* llama a `generarLibroPorDni(entrada)` en una ejecución nueva. Se usan el período, el ciclo lectivo y las fuentes de `Control`. `B6`, `B7` y `B9` se ignoran.
+
+**Entrada**: cada parte se normaliza como los DNI de las grillas (`normalizarDni_`, sólo dígitos: `12.345.678` vale). Un DNI repetido se pide una vez. Lo que no tiene dígitos se ignora. Las dos cosas se informan. Sin ningún DNI, error, sin leer fuentes.
+
+**Búsqueda**: cada DNI se busca en la columna de DNI de las hojas `EPSI` y `EPSG` de la fuente principal, sin interpretar su estructura. Después, sólo las orientaciones con algún DNI pedido se leen completas (`leerFuentes_`, una vez cada una). Así, una orientación sin DNI pedidos, con estructura ilegible o sin `LISTO PARA EXPORTAR`, no impide la generación. Si falta una hoja, sus DNI no se buscan: quedan *No encontrado* y se advierte. Si la orientación de un DNI pedido tiene un error de estructura, la operación se interrumpe antes de crear el libro. Un DNI que no figura en ninguna de las dos hojas queda como *No encontrado*.
+
+**Selección**: no hay reglas nuevas. Cada estudiante encontrado se prepara como en la generación individual (`construirDatosEstudiante_`), en la orientación donde figura. `LISTO PARA EXPORTAR` no se mira, porque esa marca elige estudiantes en las generaciones masivas y acá el estudiante se pidió explícitamente. Su valor en la grilla se informa en el `Resumen` y, si no es `SÍ`, en el diálogo. Los errores son los de la generación individual: DNI repetido en la fuente, o presente en EPSI y EPSG (un solo error, sin hoja). La generación por curso no cambia.
+
+**Libro**: un único libro, `Boletines EPS - Por DNI - <período> <ciclo> - <fecha>`, con una hoja por estudiante generado, en el orden pedido. Las hojas se crean con el mismo código que las del libro del curso (`crearHojasEstudiantes_`) y son idénticas a ellas y al `Informe_actual` de la generación individual. Va en *Mi unidad > Boletines EPS > <ciclo> - <período> > Por DNI*. Su `Resumen`, oculto, empieza con `Boletines EPS por DNI` (`CONFIG_EPS.TITULO_RESUMEN_DNI`). Tiene una fila por estudiante, con su curso, `LISTO PARA EXPORTAR` y `EXPORTADO`, y una por DNI no encontrado. Sin ningún estudiante para generar, no se crea libro y Drive no se toca.
+
+**PDF**: se exporta con *Exportar PDF desde un libro o carpeta…* y el link del libro, como uno de curso (`hojasEstudiantesLibro_` acepta los dos títulos), incluida la continuación de exportaciones incompletas. Por su título, no se reconoce como libro de un curso: la exportación de cursos marcados o de todos lo ignora, aunque esté en la carpeta del período y sea el más reciente. Al exportar una carpeta elegida a mano que lo contenga, va aparte, como un libro más. La subcarpeta *Por DNI* no se recorre al exportar la carpeta del período.
+
+**Resultado**: el diálogo muestra los conteos, los estudiantes generados o con error, los DNI no encontrados, los repetidos e ignorados de la entrada y el link del libro, para revisarlo y para exportarlo. `Control!F3` y `F4` registran lo mismo.
+
+Casos automatizados (sección 23 de `tests/run.js`, sobre las grillas de la sección 16):
+- Un DNI: libro con su hoja, idéntica a la del libro de su curso. Carpeta *Por DNI* creada la primera vez y reutilizada después. `Resumen` oculto, con su título, período, ciclo, DNI pedidos y detalle. Texto del diálogo, link y `Control`. Fuentes intactas y de sólo lectura. La otra orientación sólo se mira para buscar.
+- Varios del mismo curso: sólo los pedidos, en el orden pedido. Homónimos distinguidos con el DNI.
+- Cursos y orientaciones distintos (EPSG EPS3, EPSI EPS1, EPSI EPS4, EPSG EPS1): un solo libro, cada hoja idéntica a la de su curso. La principal se abre una vez para buscar, y cada orientación se lee completa una vez.
+- DNI inexistente o sólo presente en una fuente anterior: sin libro ni carpetas, informado como no encontrado. Sólo se buscó en la principal.
+- DNI repetido en la entrada (también con puntos): un solo boletín, informado.
+- `LISTO PARA EXPORTAR` en `NO`, vacío o no válido, de las dos orientaciones: se generan. Cada hoja es idéntica al `Informe_actual` individual, con las mismas advertencias. La grilla se informa. La generación por curso los sigue omitiendo.
+- Mezcla de listos, no listos, inexistentes y texto sin dígitos.
+- Entrada vacía o sin dígitos: error, sin leer fuentes ni crear nada.
+- DNI en EPSI y EPSG: un error y ninguna hoja; el resto se genera.
+- Orientaciones y configuración:
+  - otra orientación sin `LISTO PARA EXPORTAR` o con estructura ilegible: no impide generar;
+  - orientación ilegible con un DNI pedido: error antes de crear el libro;
+  - fuente sin hoja `EPSG`: se generan los de EPSI y los de EPSG quedan no encontrados, con advertencia;
+  - fuente principal que no abre o falta: error;
+  - hoja que no puede crearse: `Resumen` visible con el error.
+- PDF: el libro por DNI se exporta desde su link (un PDF por hoja, sin `Resumen`, sin modificar el libro) y su exportación incompleta se completa. La exportación de todos los cursos no lo toma. Una carpeta elegida a mano lo exporta aparte, sin cambiar los cursos.
+- La generación por curso produce el mismo libro de siempre. El menú agrega la opción, que sólo abre el diálogo.
+- Cliente, con un DOM mínimo: llama sólo a `generarLibroPorDni`, con el texto pegado tal cual y una vez por vez; muestra el resultado y el link (y no lo muestra si no hubo libro); un error se muestra y deja volver a generar.
+
+**No cubierto por el arnés**: el diálogo real (pegado de varias líneas, aspecto, `google.script.run`), la creación de la subcarpeta en Drive real, el tiempo real de lectura de las dos orientaciones y el PDF real del libro.

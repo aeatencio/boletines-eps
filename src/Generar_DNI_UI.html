@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <!--
+      Diálogo de "Generar boletines por DNI" (generarBoletinesPorDni, en Generador_EPS.gs).
+      Un área de texto, para pegar los DNI uno por línea: el ui.prompt de Apps Script es de una sola línea.
+      Mientras se pegan no corre ninguna ejecución: la generación empieza con "Generar" (generarLibroPorDni).
+      Una sola operación por vez: el botón se desactiva mientras se espera al servidor.
+    -->
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; margin: 0; color: #202124; }
+      label { display: block; margin-bottom: 4px; }
+      textarea, input { width: 100%; box-sizing: border-box; padding: 6px; font-size: 13px; }
+      textarea { height: 110px; font-family: monospace; }
+      button { margin: 8px 8px 0 0; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+      button:disabled { cursor: default; opacity: .5; }
+      pre { white-space: pre-wrap; background: #f8f9fa; border: 1px solid #dadce0; padding: 8px; max-height: 230px; overflow: auto; }
+      pre:empty { display: none; }
+      #estado { margin-top: 8px; color: #5f6368; }
+      #estado.error { color: #b3261e; }
+      #libro { margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <label for="dnis">DNI de los estudiantes: uno por línea, o separados por espacios, comas o punto y coma</label>
+    <textarea id="dnis" autocomplete="off"></textarea>
+    <button id="generar">Generar</button>
+    <div id="estado">Se usan el período, el ciclo lectivo y las fuentes de Control. Se crea un libro nuevo sólo con los estudiantes pedidos, como en la generación individual: LISTO PARA EXPORTAR no se mira, pero se informa. Las grillas no se modifican.</div>
+    <div id="libro" hidden>
+      <a id="abrir" target="_blank" rel="noopener">Abrir el libro para revisarlo</a>
+      <label for="link">Link del libro, para exportar los PDF:</label>
+      <input id="link" readonly>
+    </div>
+    <pre id="resultado"></pre>
+    <script>
+      const elemento = id => document.getElementById(id);
+      let ocupado = false;
+
+      function mostrarEstado(texto, esError) {
+        elemento('estado').textContent = texto;
+        elemento('estado').className = esError ? 'error' : '';
+      }
+
+      function liberar() {
+        ocupado = false;
+        elemento('generar').disabled = false;
+      }
+
+      function generar() {
+        if (ocupado) return;
+        ocupado = true;
+        elemento('generar').disabled = true;
+        elemento('resultado').textContent = '';
+        elemento('libro').hidden = true;
+        mostrarEstado('Generando… puede tardar un minuto.', false);
+        google.script.run.withSuccessHandler(mostrarResultado).withFailureHandler(mostrarError)
+          .generarLibroPorDni(elemento('dnis').value);
+      }
+
+      function mostrarResultado(respuesta) {
+        liberar();
+        elemento('resultado').textContent = respuesta.texto;
+        if (respuesta.url) {
+          elemento('abrir').href = respuesta.url;
+          elemento('link').value = respuesta.url;
+          elemento('libro').hidden = false;
+        }
+        mostrarEstado('Terminó. El resultado también queda en Control.', false);
+      }
+
+      function mostrarError(error) {
+        liberar();
+        mostrarEstado('Error: ' + (error && error.message ? error.message : error), true);
+      }
+
+      elemento('generar').onclick = generar;
+      elemento('link').onclick = () => elemento('link').select();
+    </script>
+  </body>
+</html>

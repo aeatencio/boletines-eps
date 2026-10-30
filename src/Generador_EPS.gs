@@ -7,6 +7,7 @@
  * la generación por curso crea un libro nuevo con una hoja por estudiante y una hoja Resumen;
  * la de varios cursos crea, para cada curso elegido, el mismo libro que la generación por curso.
  * Esos libros se guardan en Mi unidad > Boletines EPS > <ciclo> - <período> (ver carpetaLibros_).
+ * La generación por DNI crea un único libro con los estudiantes pedidos, de cualquier curso, en la subcarpeta Por DNI.
  */
 const CONFIG_EPS = {
   HOJA_CONTROL: 'Control',
@@ -16,11 +17,17 @@ const CONFIG_EPS = {
   // Primera celda de Resumen. Se escribe al final de la generación del libro, junto con todo el Resumen: la exportación
   // a PDF la usa para reconocer un libro cuya generación terminó (ver hojasEstudiantesLibro_).
   TITULO_RESUMEN: 'Boletines EPS por curso',
+  // Primera celda de Resumen del libro de la generación por DNI: con el mismo criterio, es exportable desde su link,
+  // pero no es el libro de un curso (la exportación de varios cursos no lo toma).
+  TITULO_RESUMEN_DNI: 'Boletines EPS por DNI',
 
   // Hora local del nombre de los libros de la generación por curso.
   ZONA_HORARIA: 'America/Argentina/Buenos_Aires',
   // Carpeta de Mi unidad con los libros de la generación por curso, en una subcarpeta por ciclo y período.
   CARPETA_LIBROS: 'Boletines EPS',
+  // Subcarpeta de la del período con los libros de la generación por DNI: la exportación de una carpeta no entra en
+  // subcarpetas, así que no se mezclan con los libros de los cursos.
+  CARPETA_DNI: 'Por DNI',
 
   CELDA_PERIODO: 'B5',
   CELDA_HOJA_ORIGEN: 'B6',
@@ -110,6 +117,7 @@ function onOpen() {
     .addItem('Generar boletines por curso', 'generarBoletinesPorCurso')
     .addItem('Generar boletines de los cursos marcados', 'generarBoletinesCursosMarcados')
     .addItem('Generar boletines de todos los cursos', 'generarBoletinesTodosLosCursos')
+    .addItem('Generar boletines por DNI…', 'generarBoletinesPorDni')
     .addSeparator()
     // Operaciones separadas, en Exportar_PDF.gs: no forman parte de la generación.
     .addItem('Exportar PDF desde un libro o carpeta…', 'exportarPdfDesdeDrive')
@@ -289,6 +297,209 @@ function detalleTandas_(tandas, conDetalle) {
 }
 
 /**
+ * Generación por DNI: un único libro con los estudiantes pedidos, de cualquier orientación y nivel, para rehacer unos
+ * pocos boletines sin generar sus cursos. Los DNI se pegan en un diálogo HTML (Generar_DNI_UI.html): el menú sólo lo
+ * abre y "Generar" llama a generarLibroPorDni en una ejecución nueva. Se usan el período, el ciclo lectivo y las
+ * fuentes de Control; la hoja origen, el DNI y el nivel de Control se ignoran.
+ * Cada DNI pedido se genera como en la generación individual (construirDatosEstudiante_), sin mirar LISTO PARA
+ * EXPORTAR: esa marca elige estudiantes en las generaciones masivas, y acá el estudiante se eligió explícitamente
+ * (su valor en la grilla se informa). Las hojas se crean como las del libro del curso (crearHojasEstudiantes_).
+ * El libro se exporta a PDF desde su link, como uno de curso.
+ */
+function generarBoletinesPorDni() {
+  const html = HtmlService.createHtmlOutputFromFile('Generar_DNI_UI').setWidth(640).setHeight(560);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Generar boletines por DNI');
+}
+
+// Desde el diálogo. Devuelve { texto, url } (url vacía si no se creó el libro); el resultado también queda en Control.
+// Las fuentes y la configuración se validan antes de crear el libro, como en la generación de varios cursos.
+function generarLibroPorDni(entrada) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const control = ss.getSheetByName(CONFIG_EPS.HOJA_CONTROL);
+
+  try {
+    if (!control) throw new Error('No se encontró la hoja Control.');
+    const plantilla = ss.getSheetByName(CONFIG_EPS.HOJA_PLANTILLA);
+    if (!plantilla) throw new Error('No se encontró la hoja Plantilla.');
+
+    const pedido = leerDnisPedidos_(entrada);
+    if (!pedido.dnis.length) throw new Error('No se ingresó ningún DNI.');
+    const config = Object.assign(leerConfiguracion_(control, 'cursos'), { subcarpeta: CONFIG_EPS.CARPETA_DNI });
+    const tanda = prepararTandaDni_(config, pedido);
+    crearLibroDni_(plantilla, tanda, carpetaLibros_([tanda]));
+
+    const informe = informeTandaDni_(tanda);
+    registrarEstado_(control, informe.resultado, informe.detalle);
+    return { texto: informe.texto, url: tanda.libro ? tanda.libro.getUrl() : '' };
+  } catch (err) {
+    if (control) registrarEstado_(control, 'Error: ' + err.message, []);
+    throw err;
+  }
+}
+
+// DNI pegados, separados por saltos de línea, espacios, comas o punto y coma, y normalizados como los de las grillas
+// (normalizarDni_: 12.345.678 vale). Un DNI repetido se pide una sola vez; lo que no tiene dígitos se ignora. Ambos se informan.
+function leerDnisPedidos_(entrada) {
+  const pedido = { dnis: [], repetidos: [], ignorados: [] };
+  texto_(entrada).split(/[\s,;]+/).filter(Boolean).forEach(parte => {
+    const dni = normalizarDni_(parte);
+    if (!dni) pedido.ignorados.push(parte);
+    else if (!pedido.dnis.includes(dni)) pedido.dnis.push(dni);
+    else if (!pedido.repetidos.includes(dni)) pedido.repetidos.push(dni);
+  });
+  return pedido;
+}
+
+/**
+ * Primero se busca cada DNI en la columna de DNI de las hojas de orientación de la fuente principal, sin interpretar
+ * su estructura; después sólo las orientaciones con algún DNI pedido se leen completas (leerFuentes_, una vez cada
+ * una). Así, una hoja sin DNI pedidos no impide la generación; si falta, se advierte, porque sus DNI no se buscaron.
+ * Cada estudiante encontrado se prepara como en la generación individual, en la orientación donde figura: si figura
+ * en las dos, construirDatosEstudiante_ da el mismo error que la generación individual. Los estudiantes quedan en el
+ * orden en que se pidieron.
+ */
+function prepararTandaDni_(config, pedido) {
+  const P = CONFIG_EPS.PERIODOS;
+  const fuente = { [P.BIMESTRE_1]: config.fuente1B, [P.CUATRIMESTRE_1]: config.fuente1C, [P.BIMESTRE_3]: config.fuente3B }[config.periodo];
+  const advertencias = [];
+  const orientaciones = {}; // DNI → hojas de orientación de la fuente principal donde figura
+  let libroFuente;
+  try {
+    libroFuente = abrirLibroFuente_(fuente);
+  } catch (err) {
+    throw errorFuentePrincipal_(err, config.periodo);
+  }
+  CONFIG_EPS.HOJAS_ORIGEN.forEach(hojaOrigen => {
+    const hoja = leerHojaFuente_(libroFuente, hojaOrigen, config.periodo);
+    if (!hoja) {
+      advertencias.push('No se encontró la hoja ' + hojaOrigen + ' en la fuente de ' + config.periodo + ': no se buscaron DNI en ella.');
+      return;
+    }
+    pedido.dnis.filter(dni => buscarFilasPorDni_(hoja.valores, dni).length)
+      .forEach(dni => { (orientaciones[dni] = orientaciones[dni] || []).push(hojaOrigen); });
+  });
+
+  const fuentesPorHoja = {};
+  const estudiantes = pedido.dnis.filter(dni => orientaciones[dni]).map(dni => {
+    const hojaOrigen = orientaciones[dni][0];
+    if (!fuentesPorHoja[hojaOrigen]) {
+      const avisos = [];
+      fuentesPorHoja[hojaOrigen] = leerFuentes_(Object.assign({}, config, { hojaOrigen }), avisos);
+      avisos.forEach(a => { if (!advertencias.includes(a)) advertencias.push(a); });
+    }
+    const fuentes = fuentesPorHoja[hojaOrigen];
+    const valores = fuentes.principal.valores;
+    const cola = fuentes.principal.cola;
+    const fila = buscarFilasPorDni_(valores, dni)[0];
+    const encabezados = CONFIG_EPS.ENCABEZADOS_OPERATIVOS;
+    const estudiante = {
+      fila, dni,
+      nombre: [texto_(valores[fila][0]), texto_(valores[fila][1])].filter(Boolean).join(', ') || '(sin nombre en la fuente)',
+      curso: [hojaOrigen, detectarNivelPorFila_(valores, fila)].filter(Boolean).join(' '),
+      listo: leerEstadoOperativo_(valores, fila, cola.listoParaExportar, encabezados.listoParaExportar, config.periodo, []) || '',
+      exportado: leerEstadoOperativo_(valores, fila, cola.exportado, encabezados.exportado, config.periodo, []) || '',
+      estado: 'Seleccionado', detalle: '', hoja: '', advertencias: []
+    };
+    try {
+      estudiante.informe = construirDatosEstudiante_(fuentes, hojaOrigen, dni, estudiante.advertencias);
+    } catch (err) {
+      estudiante.estado = 'Error';
+      estudiante.detalle = err.message;
+    }
+    return estudiante;
+  });
+
+  return {
+    config,
+    pedido,
+    libro: null,
+    advertencias,
+    estudiantes,
+    noEncontrados: pedido.dnis.filter(dni => !orientaciones[dni]),
+    contar: estado => estudiantes.filter(e => e.estado === estado).length
+  };
+}
+
+// Mismo armado que el libro de un curso (crearLibroTanda_), con su nombre y su Resumen. Sin estudiantes preparados, no se crea.
+function crearLibroDni_(plantilla, tanda, carpeta) {
+  const config = tanda.config;
+  const preparados = tanda.estudiantes.filter(e => e.informe);
+  if (!preparados.length) return;
+
+  const fecha = Utilities.formatDate(new Date(), CONFIG_EPS.ZONA_HORARIA, 'yyyy-MM-dd HH:mm');
+  const libro = SpreadsheetApp.create(['Boletines EPS', CONFIG_EPS.CARPETA_DNI, config.periodo + ' ' + config.cicloLectivo, fecha].join(' - '));
+  moverLibro_(libro, carpeta, config);
+  const resumen = libro.getSheets()[0];
+  resumen.setName(CONFIG_EPS.HOJA_RESUMEN);
+  crearHojasEstudiantes_(plantilla, libro, preparados, config);
+  escribirResumenDni_(resumen, tanda);
+  if (tanda.contar('Generado')) resumen.hideSheet();
+  tanda.libro = libro;
+}
+
+// Como escribirResumen_, con el curso y LISTO PARA EXPORTAR de cada estudiante y una fila por DNI pedido no encontrado.
+function escribirResumenDni_(hoja, tanda) {
+  const columnas = 9;
+  const config = tanda.config;
+  const filas = [
+    [CONFIG_EPS.TITULO_RESUMEN_DNI],
+    ['Período', config.periodo],
+    ['Ciclo lectivo', config.cicloLectivo],
+    ['Fecha de generación', new Date()],
+    ['DNI pedidos', tanda.pedido.dnis.join(', ')],
+    ['Advertencias generales', tanda.advertencias.length ? tanda.advertencias.join('\n') : 'Sin advertencias'],
+    [],
+    ['Estado', 'Hoja', 'Estudiante', 'DNI', 'Curso', 'Fila en la fuente', 'LISTO PARA EXPORTAR en la grilla', 'EXPORTADO en la grilla',
+      'Motivo o advertencias']
+  ].concat(tanda.estudiantes.map(e => [
+    e.estado, e.hoja, e.nombre, e.dni, e.curso, e.fila + 1, e.listo, e.exportado,
+    [e.detalle].concat(e.advertencias).filter(Boolean).join('\n')
+  ])).concat(tanda.noEncontrados.map(dni => ['No encontrado', '', '', dni, '', '', '', '', noEncontradoDni_(config)]))
+    .map(fila => fila.concat(Array(columnas - fila.length).fill('')));
+
+  hoja.getRange(1, 1, filas.length, columnas).setValues(filas);
+  hoja.getRange(1, 1, filas.length, columnas).setWrap(true);
+}
+
+function noEncontradoDni_(config) {
+  return 'No figura en las hojas ' + CONFIG_EPS.HOJAS_ORIGEN.join(' ni ') + ' de la fuente de ' + config.periodo + '.';
+}
+
+// Resultado (Control!F3), detalle (F4) y texto del diálogo: una línea por estudiante, en el orden pedido.
+function informeTandaDni_(tanda) {
+  const pedido = tanda.pedido;
+  const conteo = 'DNI pedidos: ' + pedido.dnis.length + ' · Generados: ' + tanda.contar('Generado') +
+    ' · Con error: ' + tanda.contar('Error') + ' · No encontrados: ' + tanda.noEncontrados.length +
+    (pedido.repetidos.length ? ' · Repetidos en la entrada: ' + pedido.repetidos.length : '') +
+    (pedido.ignorados.length ? ' · Ignorados en la entrada: ' + pedido.ignorados.length : '') + '.';
+  const lineas = tanda.estudiantes.map(e => e.dni + ': ' + e.estado + ' · ' + e.curso + ' · ' + e.nombre +
+    (e.estado === 'Generado' ? ' (hoja "' + e.hoja + '")' : ': ' + e.detalle) +
+    (e.listo === 'SÍ' ? '' : ' · LISTO PARA EXPORTAR en la grilla: ' + (e.listo || 'vacío o no válido') + '.'))
+    .concat(tanda.noEncontrados.map(dni => dni + ': No encontrado. ' + noEncontradoDni_(tanda.config)));
+  if (pedido.repetidos.length) lineas.push('Repetidos en la entrada (se pidieron una sola vez): ' + pedido.repetidos.join(', '));
+  if (pedido.ignorados.length) lineas.push('Ignorados en la entrada (sin dígitos): ' + pedido.ignorados.map(p => '"' + p + '"').join(', '));
+  const detalle = lineas.concat(tanda.advertencias.map(a => 'Advertencia general: ' + a));
+  const avisos = tanda.advertencias.length ? '\n\nAdvertencias generales:\n- ' + tanda.advertencias.join('\n- ') : '';
+
+  if (!tanda.libro) {
+    return {
+      resultado: 'Sin libro por DNI: ningún estudiante pedido pudo generarse. ' + conteo,
+      detalle,
+      texto: 'No se creó ningún libro: ningún estudiante pedido pudo generarse.\n\n' + conteo + '\n\n- ' + lineas.join('\n- ') + avisos
+    };
+  }
+  const libro = tanda.libro;
+  return {
+    resultado: 'Libro por DNI creado: ' + libro.getName() + ' · ' + conteo + ' ' + libro.getUrl(),
+    detalle,
+    texto: 'Libro creado: ' + libro.getName() + '\nCarpeta: ' + rutaCarpetaLibros_(tanda.config) + '\n\n' + conteo +
+      '\n\n- ' + lineas.join('\n- ') + avisos +
+      '\n\nEl detalle está en la hoja ' + CONFIG_EPS.HOJA_RESUMEN + ' del libro. Para los PDF, después de revisarlo: ' +
+      'Informes EPS > Exportar PDF desde un libro o carpeta…, pegar el link del libro, Analizar y Exportar.'
+  };
+}
+
+/**
  * Errores globales (configuración, estructura de la fuente principal, falta de LISTO PARA EXPORTAR)
  * interrumpen la tanda antes de crear el libro. El error de un estudiante sólo afecta su hoja.
  * Si ningún estudiante puede generarse, no se crea el libro.
@@ -344,8 +555,19 @@ function crearLibroTanda_(plantilla, tanda, carpeta) {
   moverLibro_(libro, carpeta, config);
   const resumen = libro.getSheets()[0];
   resumen.setName(CONFIG_EPS.HOJA_RESUMEN);
-  asignarNombresHojas_(preparados);
+  crearHojasEstudiantes_(plantilla, libro, preparados, config);
 
+  escribirResumen_(resumen, config, estudiantes, tanda.advertencias);
+  // Oculta para que no se imprima ni se exporte con el libro completo.
+  // Google Sheets exige una hoja visible: si no se generó ningún boletín, Resumen queda visible.
+  if (tanda.contar('Generado')) resumen.hideSheet();
+  tanda.libro = libro;
+}
+
+// Una hoja por estudiante preparado, copia de Plantilla completada; la usan el libro del curso y el de la generación por DNI.
+// El error de un estudiante sólo afecta su hoja.
+function crearHojasEstudiantes_(plantilla, libro, preparados, config) {
+  asignarNombresHojas_(preparados);
   preparados.forEach(e => {
     let hoja = null;
     try {
@@ -361,12 +583,6 @@ function crearLibroTanda_(plantilla, tanda, carpeta) {
       e.detalle = 'No se pudo crear la hoja: ' + err.message;
     }
   });
-
-  escribirResumen_(resumen, config, estudiantes, tanda.advertencias);
-  // Oculta para que no se imprima ni se exporte con el libro completo.
-  // Google Sheets exige una hoja visible: si no se generó ningún boletín, Resumen queda visible.
-  if (tanda.contar('Generado')) resumen.hideSheet();
-  tanda.libro = libro;
 }
 
 /**
@@ -459,8 +675,9 @@ function buscarSubcarpeta_(padre, nombre) {
   return null;
 }
 
+// subcarpeta: la de la generación por DNI, dentro de la del período.
 function nombresCarpetaLibros_(config) {
-  return [CONFIG_EPS.CARPETA_LIBROS, config.cicloLectivo + ' - ' + config.periodo];
+  return [CONFIG_EPS.CARPETA_LIBROS, config.cicloLectivo + ' - ' + config.periodo].concat(config.subcarpeta ? [config.subcarpeta] : []);
 }
 
 function rutaCarpetaLibros_(config) {
@@ -532,7 +749,7 @@ function escribirResumen_(hoja, config, estudiantes, advertencias) {
 
 /**
  * modo: sin indicar, generación individual (B6 y DNI); 'curso', generación por curso (B6 y B9);
- * 'cursos', varios cursos (la orientación y el nivel salen de cada curso, no de B6, B7 ni B9).
+ * 'cursos', varios cursos y generación por DNI (la orientación y el nivel salen de cada curso, no de B6, B7 ni B9).
  */
 function leerConfiguracion_(control, modo) {
   const porCurso = modo === 'curso';

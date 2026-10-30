@@ -562,7 +562,7 @@ function lineaCursoPdf_(plan, despues) {
     (enCarpeta < total ? '; faltan ' + (total - enCarpeta) + '.' : '.');
 }
 
-// Hojas de estudiante del libro de un curso: todas menos Resumen, en el orden del libro.
+// Hojas de estudiante del libro de un curso, o del de la generación por DNI: todas menos Resumen, en el orden del libro.
 // Sin hoja Resumen no es un libro de la generación por curso (por ejemplo, el propio generador). Con Resumen vacío, la
 // generación se cortó antes de terminar (Resumen se escribe al final, después de copiar todas las hojas): sus hojas
 // no son el curso completo.
@@ -572,7 +572,7 @@ function hojasEstudiantesLibro_(libro) {
     throw new Error('El libro "' + libro.getName() + '" no tiene la hoja ' + CONFIG_EPS.HOJA_RESUMEN +
       ': no parece un libro de boletines generado por curso.');
   }
-  if (resumen.getRange('A1').getDisplayValue() !== CONFIG_EPS.TITULO_RESUMEN) {
+  if (![CONFIG_EPS.TITULO_RESUMEN, CONFIG_EPS.TITULO_RESUMEN_DNI].includes(resumen.getRange('A1').getDisplayValue())) {
     throw new Error('El libro "' + libro.getName() + '" no terminó de generarse (su hoja ' + CONFIG_EPS.HOJA_RESUMEN +
       ' está incompleta): volver a generar el curso y mandar ese libro a la papelera.');
   }

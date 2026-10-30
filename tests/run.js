@@ -349,7 +349,8 @@ function runTest(testName, { control, sources, templateGrid, ejecutar = "generar
     formatos,
     miUnidad,
     carpetasCreadas,
-    accesosDrive
+    accesosDrive,
+    contexto: ctx
   };
 }
 
@@ -1160,7 +1161,7 @@ genMenu.onOpen();
 assert("Menú: conserva las generaciones y agrega, separadas, las exportaciones a PDF (un libro, cursos marcados, todos)",
   menu.join(", ") === "Generar informe actual→generarInformeActual, Generar boletines por curso→generarBoletinesPorCurso, "
     + "Generar boletines de los cursos marcados→generarBoletinesCursosMarcados, Generar boletines de todos los cursos→generarBoletinesTodosLosCursos, "
-    + "---, Exportar PDF desde un libro o carpeta…→exportarPdfDesdeDrive, Exportar PDF de los cursos marcados→exportarPdfCursosMarcados, "
+    + "Generar boletines por DNI…→generarBoletinesPorDni, ---, Exportar PDF desde un libro o carpeta…→exportarPdfDesdeDrive, Exportar PDF de los cursos marcados→exportarPdfCursosMarcados, "
     + "Exportar PDF de todos los cursos→exportarPdfTodosLosCursos",
   menu.join(", "));
 
@@ -3251,6 +3252,332 @@ dError.e.analizar.onclick();
 dError.llamadas[0].falla(new Error("No pude reconocer el ID."));
 assert("Cliente: un error del servidor se muestra y deja volver a analizar",
   dError.e.estado.textContent === "Error: No pude reconocer el ID." && dError.e.estado.className === "error" && !dError.e.analizar.disabled);
+
+// =============================================================================
+// 23. Generación por DNI: un único libro con los estudiantes pedidos, de cualquier curso
+// =============================================================================
+// Mismas grillas sintéticas que varios cursos (sección 16). Cada DNI se genera como en la generación individual,
+// sin mirar LISTO PARA EXPORTAR (se informa). En 3B (principal):
+// - EPSI EPS1: Beto 97000002 (SÍ). EPSI EPS2: Ana 97000001 (SÍ), Caro 97000012 (NO), Dani 97000013 (vacío),
+//   Fede 97000015 (SÍ), Gabi 97000016 ("Si"), entre otros. EPSI EPS4: Dora 97000041 (SÍ).
+// - EPSG EPS1: Gael 96000001 (SÍ). EPSG EPS2: Hugo 96000021 (NO). EPSG EPS3: Iris 96000031 (SÍ).
+// - 97000018 sólo existe en 1C (fuente anterior).
+// El Control de varios cursos tiene hoja origen, DNI y nivel que la operación debe ignorar.
+const runDni = (nombre, entrada, opciones = {}) => {
+  const r = runTest(nombre, Object.assign({ control: ctlVarios({}), sources: srcVarios, templateGrid: tpl,
+    ejecutar: (opciones.antes || "") + "var respuestaDni = generarLibroPorDni(" + JSON.stringify(entrada) + ")" }, opciones));
+  r.respuesta = r.contexto.respuestaDni;
+  r.libro = r.creados[0] || null;
+  return r;
+};
+const NOMBRE_LIBRO_DNI = "Boletines EPS - Por DNI - 3º bimestre 2026 - <fecha>";
+const RUTA_DNI = "Mi unidad > Boletines EPS > 2026 - 3º bimestre > Por DNI";
+const hojasLibro = libro => libro ? libro.getSheets().map(h => h.getName()) : [];
+const resumenDni = libro => {
+  const g = rect(libro.getSheetByName("Resumen").grid);
+  const i = g.findIndex(f => f[0] === "Estado");
+  return {
+    cabecera: g.slice(0, 6).map(f => f[0]),
+    pedidos: (g.find(f => f[0] === "DNI pedidos") || [])[1],
+    encabezado: g[i],
+    filas: g.slice(i + 1).filter(f => f[0]).map(f => ({ estado: f[0], hoja: f[1], nombre: f[2], dni: f[3], curso: f[4], fila: f[5], listo: f[6], exportado: f[7], detalle: f[8] }))
+  };
+};
+const estadosDni = r => r.libro ? resumenDni(r.libro).filas.map(f => f.estado + ":" + f.dni + ":" + f.curso).join(", ") : "";
+// La hoja del estudiante en el libro de su curso (generación por curso de la sección 16, mismas fuentes).
+const hojaDelCurso = (curso, hoja) => gridHoja(porCurso[curso], hoja);
+const mismaHoja = (r, hojaDni, curso, hojaCurso) => {
+  const h = r.libro && r.libro.getSheetByName(hojaDni);
+  const c = libroDe(porCurso[curso]).getSheetByName(hojaCurso || hojaDni);
+  return !!h && !!c && JSON.stringify([rect(h.grid), h.formatos, h.getFrozenRows()]) === JSON.stringify([rect(c.grid), c.formatos, c.getFrozenRows()]);
+};
+
+// 23.1. Un DNI válido
+let rDni1 = runDni("DNI: uno", "97000015");
+assert("Por DNI, uno: un libro nuevo con Resumen y la hoja del estudiante, con el nombre de la generación por DNI",
+  !rDni1.error && rDni1.creados.length === 1 && rDni1.libro.getName() === NOMBRE_LIBRO_DNI
+    && hojasLibro(rDni1.libro).join("|") === "Resumen|Ficticio, Fede Exportado",
+  rDni1.error || hojasLibro(rDni1.libro).join("|"));
+assert("Por DNI, uno: la hoja es idéntica (valores, colores, fila inmovilizada) a la del libro de su curso",
+  mismaHoja(rDni1, "Ficticio, Fede Exportado", "EPSI EPS2"));
+assert("Por DNI, uno: el libro queda en la subcarpeta Por DNI de la del período, creada la primera vez, y se mueve recién creado",
+  rDni1.libro.carpeta.ruta() === RUTA_DNI && JSON.stringify(rDni1.carpetasCreadas) === JSON.stringify(["Mi unidad > Boletines EPS", "Mi unidad > Boletines EPS > 2026 - 3º bimestre", RUTA_DNI])
+    && rDni1.libro.hojasAlMover === 1,
+  rDni1.libro.carpeta.ruta() + " / " + rDni1.carpetasCreadas.join(", "));
+assert("Por DNI, uno: Resumen oculto, con su título propio (no el de un curso), período, ciclo y DNI pedidos",
+  rDni1.libro.getSheetByName("Resumen").isSheetHidden()
+    && JSON.stringify(resumenDni(rDni1.libro).cabecera) === JSON.stringify(["Boletines EPS por DNI", "Período", "Ciclo lectivo", "Fecha de generación", "DNI pedidos", "Advertencias generales"])
+    && rect(rDni1.libro.getSheetByName("Resumen").grid)[1][1] === P3B && rect(rDni1.libro.getSheetByName("Resumen").grid)[2][1] === "2026"
+    && resumenDni(rDni1.libro).pedidos === "97000015"
+    && resumenDni(rDni1.libro).encabezado.join("|") === "Estado|Hoja|Estudiante|DNI|Curso|Fila en la fuente|LISTO PARA EXPORTAR en la grilla|EXPORTADO en la grilla|Motivo o advertencias",
+  JSON.stringify(resumenDni(rDni1.libro)));
+assert("Por DNI, uno: el Resumen informa estado, hoja, curso, fila, LISTO PARA EXPORTAR, EXPORTADO y las advertencias generales una vez",
+  (f => f.estado === "Generado" && f.hoja === "Ficticio, Fede Exportado" && f.curso === "EPSI EPS2" && f.listo === "SÍ" && f.exportado === "SÍ"
+    && f.fila === enResumen(porCurso["EPSI EPS2"], "97000015").fila)(resumenDni(rDni1.libro).filas[0] || {})
+    && rect(rDni1.libro.getSheetByName("Resumen").grid)[5][1] === ADV_SIN_1B,
+  JSON.stringify(resumenDni(rDni1.libro).filas));
+assert("Por DNI, uno: el diálogo recibe el texto y el link; Control registra el libro, los conteos y el link",
+  rDni1.respuesta && rDni1.respuesta.url === rDni1.libro.getUrl()
+    && rDni1.respuesta.texto.startsWith("Libro creado: " + NOMBRE_LIBRO_DNI + "\nCarpeta: " + RUTA_DNI + "\n\nDNI pedidos: 1 · Generados: 1 · Con error: 0 · No encontrados: 0.\n\n- 97000015: Generado · EPSI EPS2 · Ficticio, Fede Exportado (hoja \"Ficticio, Fede Exportado\")")
+    && rDni1.respuesta.texto.includes("Exportar PDF desde un libro o carpeta…, pegar el link del libro")
+    && rDni1.estadoResultado === "Libro por DNI creado: " + NOMBRE_LIBRO_DNI + " · DNI pedidos: 1 · Generados: 1 · Con error: 0 · No encontrados: 0. " + rDni1.libro.getUrl()
+    && rDni1.estadoAdvertencias.split("\n")[0] === "97000015: Generado · EPSI EPS2 · Ficticio, Fede Exportado (hoja \"Ficticio, Fede Exportado\")"
+    && rDni1.rawAlerts.length === 0,
+  JSON.stringify(rDni1.respuesta) + " / " + rDni1.estadoResultado);
+assert("Por DNI: fuentes de sólo lectura e intactas; el generador no cambia salvo el estado de Control",
+  rDni1.registro.indebidos.length === 0 && JSON.stringify(srcVarios) === fotoVarios
+    && rDni1.ss.getSheets().map(s => s.getName()).join("|") === "Plantilla|Control"
+    && JSON.stringify(rect(rDni1.ss.getSheetByName("Plantilla").grid)) === JSON.stringify(rect(tpl)),
+  rDni1.registro.indebidos.join(", "));
+
+// 23.2. Varios del mismo curso, en el orden pedido
+let rDniMismo = runDni("DNI: mismo curso", "97000016\n97000001");
+assert("Por DNI, mismo curso: una hoja por DNI, en el orden pedido y no en el de la grilla",
+  !rDniMismo.error && hojasLibro(rDniMismo.libro).join("|") === "Resumen|Ficticio, Gabi Si|Ficticia, Ana Real"
+    && estadosDni(rDniMismo) === "Generado:97000016:EPSI EPS2, Generado:97000001:EPSI EPS2",
+  rDniMismo.error || hojasLibro(rDniMismo.libro).join("|"));
+assert("Por DNI, mismo curso: sólo los pedidos (no Fede ni Ana 97000011, también listos) y hojas idénticas a las del curso",
+  !resumenDni(rDniMismo.libro).filas.some(f => ["97000015", "97000011"].includes(f.dni))
+    && mismaHoja(rDniMismo, "Ficticio, Gabi Si", "EPSI EPS2")
+    && mismaHoja(rDniMismo, "Ficticia, Ana Real", "EPSI EPS2", "Ficticia, Ana Real (97000001)"));
+let rDniHomonimos = runDni("DNI: homónimos", "97000011 97000001");
+assert("Por DNI: dos estudiantes con el mismo nombre se distinguen con el DNI, como en el libro del curso",
+  hojasLibro(rDniHomonimos.libro).join("|") === "Resumen|Ficticia, Ana Real (97000011)|Ficticia, Ana Real (97000001)",
+  hojasLibro(rDniHomonimos.libro).join("|"));
+
+// 23.3. Cursos y orientaciones diferentes, mezclados
+let rDniMezcla = runDni("DNI: cursos y orientaciones distintos", "96000031, 97000002; 97000041\t96000001");
+assert("Por DNI, mezclados: un único libro con los cuatro, en el orden pedido, de tres niveles y dos orientaciones",
+  !rDniMezcla.error && rDniMezcla.creados.length === 1
+    && hojasLibro(rDniMezcla.libro).join("|") === "Resumen|Gastro, Iris Tres|Ficticio, Beto Nuevo|Ficticia, Dora Cuatro|Gastro, Gael Uno"
+    && estadosDni(rDniMezcla) === "Generado:96000031:EPSG EPS3, Generado:97000002:EPSI EPS1, Generado:97000041:EPSI EPS4, Generado:96000001:EPSG EPS1",
+  rDniMezcla.error || hojasLibro(rDniMezcla.libro).join("|") + " / " + estadosDni(rDniMezcla));
+assert("Por DNI, mezclados: cada hoja es idéntica a la del libro de su curso (orientación y nivel visual incluidos)",
+  mismaHoja(rDniMezcla, "Gastro, Iris Tres", "EPSG EPS3") && mismaHoja(rDniMezcla, "Ficticio, Beto Nuevo", "EPSI EPS1")
+    && mismaHoja(rDniMezcla, "Ficticia, Dora Cuatro", "EPSI EPS4") && mismaHoja(rDniMezcla, "Gastro, Gael Uno", "EPSG EPS1")
+    && rect(rDniMezcla.libro.getSheetByName("Gastro, Iris Tres").grid)[5][4] === hojaDelCurso("EPSG EPS3", "Gastro, Iris Tres")[5][4]);
+assert("Por DNI, mezclados: la principal se abre una vez para buscar y cada orientación con DNI pedidos se lee completa una sola vez",
+  JSON.stringify(rDniMezcla.registro.aperturas) === JSON.stringify([ID_CURSO_3B, ID_CURSO_3B, ID_CURSO_1C, ID_CURSO_3B, ID_CURSO_1C])
+    && rDniMezcla.registro.lecturas.length === 8,
+  JSON.stringify(rDniMezcla.registro));
+assert("Por DNI, una sola orientación pedida: la otra sólo se mira para buscar los DNI",
+  JSON.stringify(rDni1.registro.aperturas) === JSON.stringify([ID_CURSO_3B, ID_CURSO_3B, ID_CURSO_1C]),
+  JSON.stringify(rDni1.registro.aperturas));
+
+// 23.4. DNI inexistente: no se crea libro ni se toca Drive
+let rDniNada = runDni("DNI: inexistente", "99999999");
+assert("Por DNI, inexistente: sin libro ni carpetas, informado como no encontrado; sólo se buscó en la principal",
+  !rDniNada.error && rDniNada.creados.length === 0 && rDniNada.carpetasCreadas.length === 0 && rDniNada.accesosDrive.length === 0
+    && rDniNada.respuesta.url === ""
+    && rDniNada.respuesta.texto === "No se creó ningún libro: ningún estudiante pedido pudo generarse.\n\n"
+      + "DNI pedidos: 1 · Generados: 0 · Con error: 0 · No encontrados: 1.\n\n"
+      + "- 99999999: No encontrado. No figura en las hojas EPSI ni EPSG de la fuente de 3º bimestre."
+    && JSON.stringify(rDniNada.registro.aperturas) === JSON.stringify([ID_CURSO_3B]) && rDniNada.registro.lecturas.length === 2
+    && rDniNada.estadoResultado === "Sin libro por DNI: ningún estudiante pedido pudo generarse. DNI pedidos: 1 · Generados: 0 · Con error: 0 · No encontrados: 1.",
+  rDniNada.error || JSON.stringify(rDniNada.respuesta));
+let rDniSoloAnterior = runDni("DNI: sólo en una fuente anterior", "97000018");
+assert("Por DNI: un estudiante que sólo figura en una fuente anterior no se encuentra (la principal es la del período)",
+  !rDniSoloAnterior.error && rDniSoloAnterior.creados.length === 0 && rDniSoloAnterior.respuesta.texto.includes("- 97000018: No encontrado."),
+  rDniSoloAnterior.error);
+
+// 23.5. DNI repetido en la entrada: un solo boletín
+let rDniRepetido = runDni("DNI: repetido", "97000015\n97000015 97.000.015\n");
+assert("Por DNI, repetido: se genera una sola vez (también con puntos) y se informa como repetido",
+  !rDniRepetido.error && hojasLibro(rDniRepetido.libro).join("|") === "Resumen|Ficticio, Fede Exportado"
+    && resumenDni(rDniRepetido.libro).filas.length === 1 && resumenDni(rDniRepetido.libro).pedidos === "97000015"
+    && rDniRepetido.respuesta.texto.includes("DNI pedidos: 1 · Generados: 1 · Con error: 0 · No encontrados: 0 · Repetidos en la entrada: 1.")
+    && rDniRepetido.respuesta.texto.includes("- Repetidos en la entrada (se pidieron una sola vez): 97000015"),
+  rDniRepetido.error || JSON.stringify(rDniRepetido.respuesta));
+
+// 23.6. LISTO PARA EXPORTAR distinto de SÍ: pedidos explícitamente, se generan como en la generación individual
+let rDniNoListos = runDni("DNI: LISTO PARA EXPORTAR distinto de SÍ", "97000012 96000021 97000013 97000014");
+assert("Por DNI, no listos: NO, vacío o no válido no impiden generar; la grilla dice lo suyo en el Resumen y en el diálogo",
+  !rDniNoListos.error && hojasLibro(rDniNoListos.libro).join("|") === "Resumen|Ficticio, Caro No|Gastro, Hugo No|Ficticio, Dani Vacio|Ficticio, Eli Invalido"
+    && resumenDni(rDniNoListos.libro).filas.map(f => f.estado + ":" + f.listo).join(",") === "Generado:NO,Generado:NO,Generado:,Generado:"
+    && rDniNoListos.respuesta.texto.includes("- 97000012: Generado · EPSI EPS2 · Ficticio, Caro No (hoja \"Ficticio, Caro No\") · LISTO PARA EXPORTAR en la grilla: NO.")
+    && rDniNoListos.respuesta.texto.includes("- 97000013: Generado · EPSI EPS2 · Ficticio, Dani Vacio (hoja \"Ficticio, Dani Vacio\") · LISTO PARA EXPORTAR en la grilla: vacío o no válido.")
+    && !rDniNoListos.respuesta.texto.includes("Fede Exportado") && rDniNoListos.respuesta.texto.includes("Generados: 4 · Con error: 0"),
+  rDniNoListos.error || hojasLibro(rDniNoListos.libro).join("|") + " / " + JSON.stringify(rDniNoListos.respuesta));
+[["97000012", "EPSI", "Ficticio, Caro No"], ["96000021", "EPSG", "Gastro, Hugo No"], ["97000014", "EPSI", "Ficticio, Eli Invalido"]].forEach(([dni, hoja, nombre]) => {
+  const ind = runTest("Individual " + dni, { control: ctlVarios({ B6: hoja, B7: dni }), sources: srcVarios, templateGrid: tpl });
+  const f = resumenDni(rDniNoListos.libro).filas.find(x => x.dni === dni) || {};
+  assert("Por DNI, no listos: la hoja de " + dni + " es idéntica al Informe_actual de la generación individual, con sus mismas advertencias",
+    !ind.error && JSON.stringify(rect(rDniNoListos.libro.getSheetByName(nombre).grid)) === JSON.stringify(ind.out)
+      && JSON.stringify([rect(rDniNoListos.libro.getSheetByName("Resumen").grid)[5][1]].concat(f.detalle ? f.detalle.split("\n") : []).filter(a => a !== "Sin advertencias").sort())
+        === JSON.stringify(ind.advertencias.slice().sort()),
+    ind.error || (f.detalle + " ≠ " + ind.advertencias.join("; ")));
+});
+let rDniCurso = runDni("DNI: el curso no cambia", "97000012");
+assert("Por DNI: la generación por curso sigue omitiendo a quien tiene LISTO PARA EXPORTAR = NO",
+  enResumen(porCurso["EPSI EPS2"], "97000012").estado === "Omitido" && hojasLibro(rDniCurso.libro).join("|") === "Resumen|Ficticio, Caro No");
+
+// 23.7. Mezcla de válidos, no elegibles, inexistentes y entradas sin dígitos
+let rDniMixto = runDni("DNI: mezcla", " 97000015\r\n99999999\nabc\n97000012;;97.000.041 ");
+assert("Por DNI, mezcla: los encontrados tienen hoja (aunque no estén listos); cada pedido queda en el Resumen con su estado, en el orden pedido",
+  !rDniMixto.error && hojasLibro(rDniMixto.libro).join("|") === "Resumen|Ficticio, Fede Exportado|Ficticio, Caro No|Ficticia, Dora Cuatro"
+    && estadosDni(rDniMixto) === "Generado:97000015:EPSI EPS2, Generado:97000012:EPSI EPS2, Generado:97000041:EPSI EPS4, No encontrado:99999999:"
+    && resumenDni(rDniMixto.libro).pedidos === "97000015, 99999999, 97000012, 97000041",
+  rDniMixto.error || hojasLibro(rDniMixto.libro).join("|") + " / " + estadosDni(rDniMixto));
+assert("Por DNI, mezcla: el texto ordena por pedido e informa no encontrados e ignorados",
+  rDniMixto.respuesta.texto.includes("DNI pedidos: 4 · Generados: 3 · Con error: 0 · No encontrados: 1 · Ignorados en la entrada: 1.\n\n"
+    + "- 97000015: Generado · EPSI EPS2 · Ficticio, Fede Exportado (hoja \"Ficticio, Fede Exportado\")\n"
+    + "- 97000012: Generado · EPSI EPS2 · Ficticio, Caro No (hoja \"Ficticio, Caro No\") · LISTO PARA EXPORTAR en la grilla: NO.\n"
+    + "- 97000041: Generado · EPSI EPS4 · Ficticia, Dora Cuatro (hoja \"Ficticia, Dora Cuatro\")\n"
+    + "- 99999999: No encontrado.")
+    && rDniMixto.respuesta.texto.includes("- Ignorados en la entrada (sin dígitos): \"abc\""),
+  rDniMixto.respuesta && rDniMixto.respuesta.texto);
+
+// 23.8. Entrada vacía: error claro, sin leer fuentes ni crear nada
+let rDniVacio = runDni("DNI: entrada vacía", "  \n , ; ");
+assert("Por DNI, vacía: error que lo dice, en Control; no se abre ninguna fuente ni se crea nada",
+  rDniVacio.error === "No se ingresó ningún DNI." && rDniVacio.estadoResultado === "Error: No se ingresó ningún DNI."
+    && rDniVacio.registro.aperturas.length === 0 && rDniVacio.creados.length === 0 && rDniVacio.carpetasCreadas.length === 0,
+  rDniVacio.error);
+let rDniLetras = runDni("DNI: sólo texto", "DNI");
+assert("Por DNI: una entrada sin dígitos tampoco pide nada", rDniLetras.error === "No se ingresó ningún DNI." && rDniLetras.creados.length === 0, rDniLetras.error);
+
+// 23.9. Errores: un DNI que figura en las dos orientaciones no genera ningún boletín; la configuración se valida
+const srcDoraDoble = conVarios(EPSI_VARIOS, EPSG_VARIOS.concat(g => {
+  conBloques("96000031", "96000031", [{ apellido: "Ficticia", nombres: "Dora Cuatro", dni: "97000041", listo: "SÍ" }])(g);
+  conNivel("EPS4")(g);
+}));
+let rDniDoble = runDni("DNI: en las dos orientaciones", "97000041\n97000015", { sources: srcDoraDoble });
+assert("Por DNI, en dos orientaciones: un error, como en la generación individual, sin hoja (nunca dos boletines), y el resto se genera",
+  !rDniDoble.error && hojasLibro(rDniDoble.libro).join("|") === "Resumen|Ficticio, Fede Exportado"
+    && estadosDni(rDniDoble) === "Error:97000041:EPSI EPS4, Generado:97000015:EPSI EPS2"
+    && resumenDni(rDniDoble.libro).filas[0].detalle.startsWith("El DNI aparece en las hojas EPSI y EPSG de la fuente de 3º bimestre.")
+    && rDniDoble.respuesta.texto.includes("Con error: 1"),
+  rDniDoble.error || estadosDni(rDniDoble));
+let rDniSinFuente = runDni("DNI: sin fuente principal", "97000015", { control: ctlVarios({ [F3B]: "" }) });
+assert("Por DNI: la configuración se valida como en varios cursos (falta la fuente principal), sin crear nada",
+  rDniSinFuente.error === "Falta la URL o ID del archivo de valoraciones del 3º bimestre." && rDniSinFuente.creados.length === 0,
+  rDniSinFuente.error);
+// Orientaciones: sólo se leen completas las que tienen algún DNI pedido.
+const srcEpsgSinListo = conVarios(EPSI_VARIOS, EPSG_VARIOS.concat(conNivel("EPS4"), conEncabezados({ "LISTO PARA EXPORTAR": "LISTO PARA IMPRIMIR" })));
+let rDniEpsgSinListo = runDni("DNI: EPSG sin LISTO PARA EXPORTAR", "97000015 96000001", { sources: srcEpsgSinListo });
+assert("Por DNI: como en la generación individual, la columna LISTO PARA EXPORTAR no se exige",
+  !rDniEpsgSinListo.error && hojasLibro(rDniEpsgSinListo.libro).join("|") === "Resumen|Ficticio, Fede Exportado|Gastro, Gael Uno"
+    && (resumenDni(rDniEpsgSinListo.libro).filas[1] || {}).listo === "",
+  rDniEpsgSinListo.error);
+const srcEpsgRota = conVarios(EPSI_VARIOS, EPSG_VARIOS.concat(conNivel("EPS4"), conEncabezados({ "ORIENTACIÓN": "OTRA COSA" })));
+let rDniEpsgRota = runDni("DNI: EPSG con estructura rota, pedidos de EPSI", "97000015", { sources: srcEpsgRota });
+assert("Por DNI: una orientación con estructura ilegible no impide generar los DNI de la otra",
+  !rDniEpsgRota.error && hojasLibro(rDniEpsgRota.libro).join("|") === "Resumen|Ficticio, Fede Exportado"
+    && JSON.stringify(rDniEpsgRota.registro.aperturas) === JSON.stringify([ID_CURSO_3B, ID_CURSO_3B, ID_CURSO_1C]),
+  rDniEpsgRota.error);
+let rDniEpsgRotaPedida = runDni("DNI: EPSG con estructura rota, con un DNI de EPSG", "97000015 96000001", { sources: srcEpsgRota });
+assert("Por DNI: si la orientación rota tiene un DNI pedido, error de la fuente principal antes de crear el libro",
+  rDniEpsgRotaPedida.error && rDniEpsgRotaPedida.error.startsWith("No se encontró la columna ORIENTACIÓN que separa las materias de los campos generales en la fuente de 3º bimestre.")
+    && rDniEpsgRotaPedida.creados.length === 0 && rDniEpsgRotaPedida.estadoResultado === "Error: " + rDniEpsgRotaPedida.error,
+  rDniEpsgRotaPedida.error);
+const srcSinEpsg = Object.assign({}, srcVarios, { [ID_CURSO_3B]: { EPSI: srcVarios[ID_CURSO_3B].EPSI } });
+let rDniSinEpsg = runDni("DNI: fuente sin hoja EPSG", "97000015 96000001", { sources: srcSinEpsg });
+assert("Por DNI: sin la hoja EPSG se generan los de EPSI; los de EPSG quedan no encontrados, con la advertencia de que no se buscaron",
+  !rDniSinEpsg.error && hojasLibro(rDniSinEpsg.libro).join("|") === "Resumen|Ficticio, Fede Exportado"
+    && rDniSinEpsg.respuesta.texto.includes("- 96000001: No encontrado.")
+    && rDniSinEpsg.respuesta.texto.includes("- No se encontró la hoja EPSG en la fuente de 3º bimestre: no se buscaron DNI en ella."),
+  rDniSinEpsg.error || JSON.stringify(rDniSinEpsg.respuesta));
+let rDniFuenteIlegible = runDni("DNI: fuente principal inexistente", "97000015", { control: ctlVarios({ [F3B]: "ID_INEXISTENTE_xxxxxxxxxxxxxx" }) });
+assert("Por DNI: una fuente principal que no puede abrirse es un error de la fuente principal, sin crear nada",
+  rDniFuenteIlegible.error && rDniFuenteIlegible.error.endsWith("Es la fuente principal del período a generar (3º bimestre), por eso no se puede continuar.")
+    && rDniFuenteIlegible.creados.length === 0,
+  rDniFuenteIlegible.error);
+let rDniSinHojas = runDni("DNI: ninguna hoja pudo crearse", "97000015",
+  { antes: "SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Plantilla').copyTo = () => { throw new Error('copia rechazada'); }; " });
+assert("Por DNI: si la hoja no puede crearse, el libro queda con el Resumen visible y el error (como el del curso)",
+  !rDniSinHojas.error && hojasLibro(rDniSinHojas.libro).join("|") === "Resumen" && !rDniSinHojas.libro.getSheetByName("Resumen").isSheetHidden()
+    && estadosDni(rDniSinHojas) === "Error:97000015:EPSI EPS2" && resumenDni(rDniSinHojas.libro).filas[0].detalle.startsWith("No se pudo crear la hoja: copia rechazada"),
+  rDniSinHojas.error || estadosDni(rDniSinHojas));
+
+// 23.10. Carpeta existente: se reutiliza
+let rDniCarpeta = runDni("DNI: carpeta existente", "97000015", { prepararDrive: raiz => raiz.createFolder("Boletines EPS").createFolder("2026 - 3º bimestre").createFolder("Por DNI") });
+assert("Por DNI: la subcarpeta Por DNI existente se reutiliza", !rDniCarpeta.error && rDniCarpeta.carpetasCreadas.length === 0
+  && rDniCarpeta.libro.carpeta.ruta() === RUTA_DNI, rDniCarpeta.error || rDniCarpeta.carpetasCreadas.join(", "));
+
+// 23.11. PDF: el libro por DNI se exporta desde su link como uno de curso; las exportaciones de cursos no lo toman
+const libroDniPdf = rDniMezcla.libro;
+libroDniPdf.id = "ID_LIBRO_POR_DNI_xxxxxxxxxxxxx";
+const fotoLibroDni = fotoLibro(libroDniPdf);
+let rPdfDni = runExportar({ libro: libroDniPdf, respuesta: "https://docs.google.com/spreadsheets/d/" + libroDniPdf.id + "/edit" });
+assert("PDF del libro por DNI: un PDF por hoja de estudiante, con su nombre y sin Resumen, en una carpeta nueva junto al libro",
+  !rPdfDni.error && rPdfDni.carpetas.length === 1 && rPdfDni.carpetas[0].nombre === NOMBRE_LIBRO_DNI + " - PDF <fecha>"
+    && JSON.stringify(rPdfDni.archivos) === JSON.stringify(["Gastro, Iris Tres.pdf", "Ficticio, Beto Nuevo.pdf", "Ficticia, Dora Cuatro.pdf", "Gastro, Gael Uno.pdf"])
+    && rPdfDni.vistas[0].texto === "Libro: " + NOMBRE_LIBRO_DNI + " (4 hojas de estudiantes).\n\nSe exportan sus 4 PDF en una carpeta nueva junto al libro."
+    && fotoLibro(libroDniPdf) === fotoLibroDni && soloLeyo(rPdfDni),
+  rPdfDni.error || rPdfDni.archivos.join(" | "));
+let rPdfDniCompletar = runExportar({ libro: libroDniPdf, respuesta: libroDniPdf.id, opcion: "YES",
+  previas: [{ nombre: NOMBRE_LIBRO_DNI + " - PDF 2026-10-16 08:00", descripcion: "PDF del libro de boletines " + libroDniPdf.id, archivos: ["Gastro, Iris Tres.pdf"], creada: 3600000 }] });
+assert("PDF del libro por DNI: una exportación incompleta se completa sin repetir los PDF ya exportados",
+  !rPdfDniCompletar.error && rPdfDniCompletar.carpetas.length === 0 && rPdfDniCompletar.pedidos.length === 3
+    && rPdfDniCompletar.vistas[0].opciones.map(o => o.modo).join(",") === "completar,rehacer",
+  rPdfDniCompletar.error);
+let rPdfCursosConDni = runPdfCursos({ libros: LIBROS_TODOS.concat([{ libro: libroDniPdf, creada: 1000 }]) });
+assert("PDF de todos los cursos: un libro por DNI en la carpeta del período, aunque sea el más reciente, no reemplaza al de ningún curso",
+  !rPdfCursosConDni.error && rPdfCursosConDni.pedidos.length === 8 && pedidosDeLibro(rPdfCursosConDni, libroDniPdf) === 0
+    && rPdfCursosConDni.preguntas[0] === rPdfTodos.preguntas[0],
+  rPdfCursosConDni.error || rPdfCursosConDni.preguntas.join(" / "));
+let rCarpetaConDni = runCarpeta({ libros: LIBROS_TODOS.concat([{ libro: libroDniPdf, creada: 1000 }]) });
+assert("PDF de una carpeta elegida a mano: el libro por DNI va aparte, como un libro más, sin cambiar los de los cursos",
+  !rCarpetaConDni.error && rCarpetaConDni.pedidos.length === 12 && pedidosDeLibro(rCarpetaConDni, libroDniPdf) === 4
+    && rTodos.creados.every(l => pedidosDeLibro(rCarpetaConDni, l) === hojasPdfDe(l).length)
+    && rCarpetaConDni.preguntas[0].includes("\n- Libro \"" + NOMBRE_LIBRO_DNI + "\" (libro <fecha>): 4 PDF a exportar."),
+  rCarpetaConDni.error || rCarpetaConDni.preguntas.join(" / "));
+
+// 23.12. Las otras generaciones no cambian
+let rCursoDespues = runCurso("Por curso, regresión", ctlCurso("EPS2"), srcCurso);
+assert("Por DNI: la generación por curso produce el mismo libro de siempre (cada hoja, Resumen y su título de curso)",
+  !rCursoDespues.error && fotoLibro(libroDe(rCursoDespues)) === fotoLibro(libroDe(rCurso))
+    && gridHoja(rCursoDespues, "Resumen")[0][0] === "Boletines EPS por curso" && libroDe(rCursoDespues).carpeta.ruta() === "Mi unidad > Boletines EPS > 2026 - 3º bimestre",
+  rCursoDespues.error);
+
+// 23.13. El menú abre el diálogo; el cliente (Generar_DNI_UI.html) hace una generación por vez
+const genDialogoDni = cargarGenerador();
+const dialogosDni = [];
+genDialogoDni.HtmlService = { createHtmlOutputFromFile: nombre => {
+  if (!fs.existsSync(path.join(ROOT, "src", nombre + ".html"))) throw new Error("mock: no existe el HTML " + nombre);
+  return { archivo: nombre, setWidth() { return this; }, setHeight() { return this; } };
+} };
+genDialogoDni.SpreadsheetApp = { getUi: () => ({ showModalDialog: (html, titulo) => dialogosDni.push(html.archivo + ":" + titulo) }) };
+genDialogoDni.generarBoletinesPorDni();
+assert("Por DNI: el menú sólo abre el diálogo (archivo existente en src)", dialogosDni.join() === "Generar_DNI_UI:Generar boletines por DNI", dialogosDni.join());
+const HTML_DNI = fs.readFileSync(path.join(ROOT, "src/Generar_DNI_UI.html"), "utf8");
+const llamadasDni = [...new Set([...HTML_DNI.matchAll(/\.withFailureHandler\(\w+\)\s*\.(\w+)\(/g)].map(m => m[1]))];
+assert("Cliente DNI: llama sólo a generarLibroPorDni, pública en Generador_EPS.gs",
+  llamadasDni.join() === "generarLibroPorDni" && /^function generarLibroPorDni\(/m.test(codigoGenerador), llamadasDni.join());
+const cargarDialogoDni = () => {
+  const crear = id => ({ id, value: "", textContent: "", className: "", disabled: false, hidden: true, href: "", onclick: null, select() {} });
+  const elementos = Object.fromEntries([...HTML_DNI.matchAll(/ id="([^"]+)"/g)].map(m => [m[1], crear(m[1])]));
+  const llamadas = [];
+  const run = () => {
+    const manejadores = {};
+    const cadena = new Proxy({}, { get: (t, p) => p === "withSuccessHandler" ? f => { manejadores.exito = f; return cadena; }
+      : p === "withFailureHandler" ? f => { manejadores.falla = f; return cadena; }
+      : (...args) => llamadas.push(Object.assign({ funcion: p, args }, manejadores)) });
+    return cadena;
+  };
+  const ctx = { document: { getElementById: id => elementos[id] }, google: { script: { get run() { return run(); } } } };
+  vm.createContext(ctx);
+  vm.runInContext(HTML_DNI.match(/<script>([\s\S]*)<\/script>/)[1], ctx);
+  return { e: elementos, llamadas };
+};
+const dd = cargarDialogoDni();
+dd.e.dnis.value = "97000015\n96000031";
+dd.e.generar.onclick();
+dd.e.generar.onclick();
+assert("Cliente DNI: Generar envía el texto pegado tal cual, una sola vez, y queda desactivado mientras espera",
+  dd.llamadas.length === 1 && dd.llamadas[0].funcion === "generarLibroPorDni" && dd.llamadas[0].args[0] === "97000015\n96000031" && dd.e.generar.disabled);
+dd.llamadas[0].exito({ texto: "Resultado sintético", url: "https://docs.google.com/spreadsheets/d/LIBRO_SINTETICO/edit" });
+assert("Cliente DNI: muestra el resultado, el enlace para revisar y el link para exportar; se puede volver a generar",
+  dd.e.resultado.textContent === "Resultado sintético" && !dd.e.libro.hidden && dd.e.abrir.href.includes("LIBRO_SINTETICO")
+    && dd.e.link.value.includes("LIBRO_SINTETICO") && !dd.e.generar.disabled);
+dd.e.generar.onclick();
+dd.llamadas[1].exito({ texto: "Sin libro sintético", url: "" });
+assert("Cliente DNI: sin libro, no muestra enlace (tampoco el de la generación anterior)",
+  dd.e.resultado.textContent === "Sin libro sintético" && dd.e.libro.hidden);
+dd.e.generar.onclick();
+dd.llamadas[2].falla(new Error("No se ingresó ningún DNI."));
+assert("Cliente DNI: un error del servidor se muestra y deja volver a generar",
+  dd.e.estado.textContent === "Error: No se ingresó ningún DNI." && dd.e.estado.className === "error" && !dd.e.generar.disabled);
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);
