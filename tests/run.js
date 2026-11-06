@@ -368,6 +368,8 @@ const CELDAS_CONTROL = vm.runInContext("CONFIG_EPS", cargarGenerador());
 const F1B = CELDAS_CONTROL.CELDA_FUENTE_1B;
 const F1C = CELDAS_CONTROL.CELDA_FUENTE_1C;
 const F3B = CELDAS_CONTROL.CELDA_FUENTE_3B;
+const F2C = CELDAS_CONTROL.CELDA_FUENTE_2C;
+const FANUAL = CELDAS_CONTROL.CELDA_FUENTE_ANUAL;
 
 // Etapa de datos de la generación, sin crear Informe_actual: expone el resultado interno.
 function generarDatos(control, sources) {
@@ -427,7 +429,12 @@ const sources = {
   "ID_1C_REAL_xxxxxxxxxxxxxxxxxxx": src1C_real
 };
 
-const ctl = (p, d, extra) => Object.assign({
+// Rótulos del bloque Varios cursos, como en el xlsx ("Informática 1 (EPSI EPS1)"): las marcas sólo se leen si cada
+// una está junto al rótulo de su curso (comprobarRotulosCursos_).
+const ROTULOS_CURSOS = Object.fromEntries(CELDAS_CONTROL.CURSOS.map(c => [c.celda.replace(/^[A-Z]+/, "A"),
+  ({ EPSI: "Informática", EPSG: "Gastronomía" })[c.hojaOrigen] + " " + c.nivel.slice(3) + " (" + c.hojaOrigen + " " + c.nivel + ")"]));
+
+const ctl = (p, d, extra) => Object.assign({}, ROTULOS_CURSOS, {
   B5: p,
   B6: "EPSI",
   B7: d,
@@ -1333,6 +1340,8 @@ const rotulosEsperados = {
   CELDA_FUENTE_1B: "URL o ID del archivo de valoraciones del 1º bimestre",
   CELDA_FUENTE_1C: "URL o ID del archivo de valoraciones del 1º cuatrimestre",
   CELDA_FUENTE_3B: "URL o ID del archivo de valoraciones del 3º bimestre",
+  CELDA_FUENTE_2C: "URL o ID del archivo de valoraciones del 2º cuatrimestre",
+  CELDA_FUENTE_ANUAL: "URL o ID del archivo de valoraciones anuales",
   ESTADO_FECHA: "Última ejecución",
   ESTADO_RESULTADO: "Resultado",
   ESTADO_ADVERTENCIAS: "Advertencias"
@@ -1342,10 +1351,10 @@ assert("Control (xlsx): cada celda que usa el generador está junto a su rótulo
   celdasGenerador.length === Object.keys(rotulosEsperados).length
     && celdasGenerador.every(k => rotuloDe(CELDAS_CONTROL[k]) === rotulosEsperados[k]),
   celdasGenerador.map(k => k + "=" + CELDAS_CONTROL[k] + ":" + rotuloDe(CELDAS_CONTROL[k])).join(", "));
-assert("Control (xlsx): las fuentes quedan en B10, B11 y B12, sin fila vacía entre 1º bimestre y 1º cuatrimestre",
-  [F1B, F1C, F3B].join(",") === "B10,B11,B12"
-    && Array.from({ length: 8 }, (_, i) => (controlXlsx[4 + i] || [])[0]).every(Boolean),
-  [F1B, F1C, F3B].join(",") + " / " + JSON.stringify(controlXlsx.slice(4, 12).map(f => (f || [])[0])));
+assert("Control (xlsx): las fuentes quedan en B10 a B14, en el orden del año y sin filas vacías en el bloque",
+  [F1B, F1C, F3B, F2C, FANUAL].join(",") === "B10,B11,B12,B13,B14"
+    && Array.from({ length: 10 }, (_, i) => (controlXlsx[4 + i] || [])[0]).every(Boolean),
+  [F1B, F1C, F3B, F2C, FANUAL].join(",") + " / " + JSON.stringify(controlXlsx.slice(4, 14).map(f => (f || [])[0])));
 assert("Control (xlsx): valores por defecto conservados (B5 1º cuatrimestre, B6 EPSI, B8 2026) y B9 vacía",
   textoXlsx("B5") === P1C && textoXlsx("B6") === "EPSI" && textoXlsx("B8") === "2026" && textoXlsx(CELDAS_CONTROL.CELDA_NIVEL) === "",
   ["B5", "B6", "B8", "B9"].map(textoXlsx).join("|"));
@@ -1353,11 +1362,18 @@ const validacionesXlsx = [...xmlHoja(XLSX_GENERADOR, "Control").matchAll(/<(?:\w
   .map(m => m[1] + "=" + m[2]).join(" | ");
 assert("Control (xlsx): las validaciones siguen en período, hoja origen y nivel, y las marcas de los cursos son SÍ / NO",
   validacionesXlsx === [
-    CELDAS_CONTROL.CELDA_PERIODO + '="1º bimestre,1º cuatrimestre,3º bimestre"',
+    CELDAS_CONTROL.CELDA_PERIODO + '="1º bimestre,1º cuatrimestre,3º bimestre,2º cuatrimestre,Anual"',
     CELDAS_CONTROL.CELDA_HOJA_ORIGEN + '="EPSI,EPSG"',
     CELDAS_CONTROL.CELDA_NIVEL + '="EPS1,EPS2,EPS3,EPS4"',
     CELDAS_CONTROL.CURSOS[0].celda + ":" + CELDAS_CONTROL.CURSOS[7].celda + '="SÍ,NO"'
   ].join(" | "), validacionesXlsx);
+// El selector de B5 ofrece exactamente los períodos del generador, en su orden, y cada uno tiene su fuente en Control.
+const opcionesPeriodoXlsx = ((validacionesXlsx.match(/^B5="([^"]*)"/) || [])[1] || "").split(",");
+const genPeriodos = cargarGenerador();
+assert("Control (xlsx): el selector de período ofrece los cinco períodos del generador, en el orden del año, cada uno con su celda de fuente rotulada",
+  JSON.stringify(opcionesPeriodoXlsx) === JSON.stringify(Object.values(CELDAS_CONTROL.PERIODOS))
+    && opcionesPeriodoXlsx.every(p => genPeriodos.normalizarPeriodo_(p) === p && /^URL o ID del archivo de valoraciones /.test(rotuloDe(genPeriodos.celdasFuente_()[p]))),
+  JSON.stringify(opcionesPeriodoXlsx));
 
 // =============================================================================
 // 12. Orientación por período: historial cuando el estudiante cambia de orientación (#15)
@@ -1869,13 +1885,13 @@ assert("Marcados: un solo curso produce exactamente el libro de la generación p
 // 16.3. Errores de configuración: sin cursos marcados o marca no admitida; nada se lee ni se crea
 let rSinMarcas = runVarios("Sin cursos marcados", ctlVarios(marcas({ "EPSI EPS1": "NO" })));
 assert("Sin cursos marcados: error claro que sugiere Todos, sin leer fuentes ni crear libros",
-  rSinMarcas.error === "No hay cursos marcados con SÍ en Control!B15:B22. Para generar los 8, usar Informes EPS > Generar boletines de todos los cursos."
+  rSinMarcas.error === "No hay cursos marcados con SÍ en Control!B17:B24. Para generar los 8, usar Informes EPS > Generar boletines de todos los cursos."
     && rSinMarcas.registro.aperturas.length === 0 && rSinMarcas.creados.length === 0
     && rSinMarcas.estadoResultado === "Error: " + rSinMarcas.error && rSinMarcas.rawAlerts[0].startsWith("No se pudieron generar los libros de los cursos."),
   rSinMarcas.error);
 let rMarcaInvalida = runVarios("Marca no admitida", ctlVarios(marcas({ "EPSI EPS1": "SÍ", "EPSG EPS2": "x" })));
 assert("Marca no admitida: error que nombra el curso y la celda, sin leer fuentes ni crear libros",
-  rMarcaInvalida.error === 'La marca de EPSG EPS2 (Control!B20) tiene un valor no admitido: "x". Se esperaba SÍ, NO o vacío.'
+  rMarcaInvalida.error === 'La marca de EPSG EPS2 (Control!B22) tiene un valor no admitido: "x". Se esperaba SÍ, NO o vacío.'
     && rMarcaInvalida.registro.aperturas.length === 0 && rMarcaInvalida.creados.length === 0,
   rMarcaInvalida.error);
 let rVariosSinFuente = runVarios("Varios sin fuente principal", ctlVarios(Object.assign(marcas({ "EPSI EPS1": "SÍ" }), { [F3B]: "" })));
@@ -1932,8 +1948,8 @@ assert("Por curso: ignora las marcas de varios cursos (mismo libro que sin marca
 
 // 16.8. Control del xlsx: bloque de varios cursos con los 8 cursos fijos
 const genCursos = cargarGenerador();
-assert("Control (xlsx): A14 encabeza el bloque de varios cursos",
-  textoXlsx("A14") === "Varios cursos" && textoXlsx("B14") === "Generar", textoXlsx("A14"));
+assert("Control (xlsx): A16 encabeza el bloque de varios cursos, después de una fila vacía bajo las fuentes",
+  textoXlsx("A16") === "Varios cursos" && textoXlsx("B16") === "Generar" && !textoXlsx("A15") && !textoXlsx("C15"), textoXlsx("A16"));
 assert("Control (xlsx): cada marca está junto al nombre de su curso y empieza vacía",
   CELDAS_CONTROL.CURSOS.length === 8 && CELDAS_CONTROL.CURSOS.every(c =>
     rotuloDe(c.celda) === genCursos.construirNivelVisual_(c.hojaOrigen, c.nivel, "") + " (" + c.hojaOrigen + " " + c.nivel + ")" && textoXlsx(c.celda) === ""),
@@ -1944,7 +1960,7 @@ assert("Control (xlsx): con las marcas del bloque se generan sólo esos cursos, 
   !rXlsxVarios.error && rXlsxVarios.creados.map(l => l.getName()).join(" | ") === ["EPSI EPS1", "EPSG EPS3"].map(NOMBRE_LIBRO).join(" | "),
   rXlsxVarios.error || rXlsxVarios.creados.map(l => l.getName()).join(" | "));
 assert("Control (xlsx): el manual y las reglas se conservan debajo del bloque",
-  textoXlsx("A24") === "Manual breve" && textoXlsx("A31") === "Reglas centrales", textoXlsx("A24") + " / " + textoXlsx("A31"));
+  textoXlsx("A26") === "Manual breve" && textoXlsx("A33") === "Reglas centrales", textoXlsx("A26") + " / " + textoXlsx("A33"));
 
 // =============================================================================
 // 17. Textos que no deben cortarse: nombre del estudiante y EQUIVALENCIA
@@ -2564,7 +2580,7 @@ assert("Drive: el libro organizado es idéntico al de la generación por curso s
 // Los libros están en la carpeta del período (Mi unidad > Boletines EPS > 2026 - 3º bimestre). Drive y la URL de
 // exportación se simulan; los tiempos y el límite reales se validan en Google.
 const PERIODO_PDF = "2026 - 3º bimestre";
-const ctlPdf = marcasCtl => Object.assign({ B5: P3B, B8: "2026" }, marcasCtl || {});
+const ctlPdf = marcasCtl => Object.assign({ B5: P3B, B8: "2026" }, ROTULOS_CURSOS, marcasCtl || {});
 // Los 5 libros que generó "todos los cursos" (sección 16), con sus nombres reales y en el orden en que se crearon.
 const LIBROS_TODOS = rTodos.creados.map((libro, i) => ({ libro, creada: 600000 - i * 1000 }));
 const fotosTodos = rTodos.creados.map(fotoLibro);
@@ -2626,13 +2642,13 @@ assert("PDF de marcados: sólo los cursos con SÍ, en orden fijo",
   rPdfMarcados.error || rPdfMarcados.resultado);
 let rPdfSinMarcas = runPdfCursos({ control: ctlPdf(), ejecutar: "exportarPdfCursosMarcados()" });
 assert("PDF de marcados: sin cursos marcados, error que sugiere exportar todos, sin crear nada",
-  rPdfSinMarcas.error === "No hay cursos marcados con SÍ en Control!B15:B22. Para exportar los 8, usar Informes EPS > Exportar PDF de todos los cursos."
+  rPdfSinMarcas.error === "No hay cursos marcados con SÍ en Control!B17:B24. Para exportar los 8, usar Informes EPS > Exportar PDF de todos los cursos."
     && rPdfSinMarcas.carpetas.length === 0 && rPdfSinMarcas.abiertos.length === 0
     && rPdfSinMarcas.resultado === "Error al exportar PDF de varios cursos: " + rPdfSinMarcas.error,
   rPdfSinMarcas.error);
 let rPdfMarcaMala = runPdfCursos({ control: ctlPdf(marcas({ "EPSI EPS2": "x" })), ejecutar: "exportarPdfCursosMarcados()" });
 assert("PDF de marcados: una marca no admitida es un error, como en la generación",
-  /^La marca de EPSI EPS2 \(Control!B16\) tiene un valor no admitido/.test(rPdfMarcaMala.error || "") && rPdfMarcaMala.carpetas.length === 0,
+  /^La marca de EPSI EPS2 \(Control!B18\) tiene un valor no admitido/.test(rPdfMarcaMala.error || "") && rPdfMarcaMala.carpetas.length === 0,
   rPdfMarcaMala.error);
 let rPdfSinPeriodo = runPdfCursos({ control: { B5: "" } });
 assert("PDF de varios cursos: sin período en Control, error claro sin abrir libros",
@@ -3578,6 +3594,327 @@ dd.e.generar.onclick();
 dd.llamadas[2].falla(new Error("No se ingresó ningún DNI."));
 assert("Cliente DNI: un error del servidor se muestra y deja volver a generar",
   dd.e.estado.textContent === "Error: No se ingresó ningún DNI." && dd.e.estado.className === "error" && !dd.e.generar.disabled);
+
+// =============================================================================
+// 24. 2º cuatrimestre y anual como períodos principales (#31)
+// =============================================================================
+// Cinco grillas sintéticas, cada una en su propio libro con EPSI y EPSG. 1B, 3B, 2C y anual se arman sobre las
+// grillas reales de 3B (modelos: Beto, EPSI EPS1; Gael, EPSG EPS1) y 1C sobre la de 1C (modelo: Ana): la escala de
+// cada período no depende de la grilla. Cada estudiante es una copia del bloque del modelo, sin sus valoraciones, con
+// la cola indicada. Las grillas tienen los marcadores de los cuatro niveles (para la generación de todos los cursos).
+// - Lía (94000001): los cinco períodos en EPSI. Cola distinta en 2C (LISTO NO, EXPORTADO SÍ) y en anual (SÍ / NO).
+// - Nico (94000002): estudiante nuevo, sólo en 2C y anual.
+// - Olga (94000003): 1B, 1C y 3B en EPSI; 2C y anual en EPSG.
+// - Pía (94000004): valores no admitidos en 2C y anual.
+// - Rita (94000005): LISTO SÍ en 2C y NO en anual.
+// Las copias heredan del modelo EXPORTADO = NO; la grilla base conserva a Ana (EPSI EPS2), lista en todas.
+const P2C = "2º cuatrimestre";
+const PANUAL = "Anual";
+const COLA_31 = { orientacion: "ORIENTACIÓN", obs: "OBSERVACIONES GENERALES SOBRE DESEMPEÑO ACADÉMICO", ptf: "PLAN DE TRABAJO FORMATIVO (PTF)",
+  listo: "LISTO PARA EXPORTAR", exportado: "EXPORTADO" };
+const BASE_3B_31 = { EPSI: [src3B_real.EPSI, "97000002"], EPSG: [src3B_real.EPSG, "96000001"] };
+const BASES_31 = { "1B": BASE_3B_31, "1C": { EPSI: [src1C_real.EPSI, "97000001"], EPSG: [src3B_real.EPSG, "96000001"] },
+  "3B": BASE_3B_31, "2C": BASE_3B_31, "AN": BASE_3B_31 };
+const ESTUDIANTES_31 = {
+  "94000001": { nombres: "Lía Anual",
+    "1B": ["EPSI", { "Matemática I": "Suficiente", "Taller Profesional I A": "En proceso" }],
+    "1C": ["EPSI", { "Matemática I": "7", "Taller Profesional I A": "8", "Taller Profesional I C": "6" }],
+    "3B": ["EPSI", { "Matemática I": "Avanzado", "Taller Profesional I A": "Suficiente" }],
+    "2C": ["EPSI", { "Matemática I": "8", "Taller Profesional I A": "ACREDITÓ", "Lengua y Literatura I": "Equivalencia", "FGI I": "NO CURSA" },
+      { orientacion: "Informática 2C", obs: "Obs 2C Lía", ptf: "PTF 2C Lía", listo: "NO", exportado: "SÍ" }],
+    "AN": ["EPSI", { "Matemática I": "9", "Taller Profesional I A": "10", "Lengua y Literatura I": "", "FGI I": "CURSA", "Matemática II": "6",
+      "Taller Profesional I B": "acreditó" },
+      { orientacion: "Informática anual", obs: "Obs anual Lía", ptf: "PTF anual Lía", listo: "SÍ", exportado: "NO" }] },
+  "94000002": { nombres: "Nico Nuevo",
+    "2C": ["EPSI", { "Matemática I": "5" }, { listo: "SÍ" }],
+    "AN": ["EPSI", { "Matemática I": "6" }, { listo: "SÍ" }] },
+  "94000003": { nombres: "Olga Cambio",
+    "1B": ["EPSI", { "Matemática I": "Avanzado" }],
+    "1C": ["EPSI", { "Matemática I": "9", "Taller Profesional I A": "9" }],
+    "3B": ["EPSI", { "Matemática I": "Avanzado" }],
+    "2C": ["EPSG", { "Matemática I": "8", "Taller Gastronómico I A": "7" }, { listo: "SÍ" }],
+    "AN": ["EPSG", { "Matemática I": "8", "Taller Gastronómico I A": "8" }, { listo: "SÍ" }] },
+  "94000004": { nombres: "Pía Invalida",
+    "2C": ["EPSI", { "Matemática I": "Avanzado", "Lengua y Literatura I": "7" }, { listo: "SÍ" }],
+    "AN": ["EPSI", { "Matemática I": "9,5", "Lengua y Literatura I": "8 (ocho)", "Taller Profesional I A": "11", "Taller Profesional I B": "0", "FGI I": "7" },
+      { listo: "SÍ" }] },
+  "94000005": { nombres: "Rita Lista2C",
+    "2C": ["EPSI", { "Matemática I": "7" }, { listo: "SÍ" }],
+    "AN": ["EPSI", { "Matemática I": "7" }, { listo: "NO" }] }
+};
+const archivo31 = periodo => Object.fromEntries(["EPSI", "EPSG"].map(hoja => {
+  const [base, modelo] = BASES_31[periodo][hoja];
+  return [hoja, variante(base, g => {
+    let anterior = modelo;
+    Object.entries(ESTUDIANTES_31).filter(([, e]) => e[periodo] && e[periodo][0] === hoja).forEach(([dni, e]) => {
+      const [, valoraciones, cola = {}] = e[periodo];
+      conBloques(modelo, anterior, [{ apellido: "Ficticia", nombres: e.nombres, dni }])(g);
+      valorar(dni, valoraciones)(g);
+      conCeldas(dni, Object.fromEntries(Object.entries(cola).map(([campo, v]) => [COLA_31[campo], v])))(g);
+      anterior = dni;
+    });
+    ["EPS1", "EPS2", "EPS3", "EPS4"].filter(n => !g.some(f => f[0] === n)).forEach(n => conNivel(n)(g));
+  })];
+}));
+const ID_31 = { "1B": "ID_31_1B_xxxxxxxxxxxxxxxxxxxx", "1C": "ID_31_1C_xxxxxxxxxxxxxxxxxxxx", "3B": "ID_31_3B_xxxxxxxxxxxxxxxxxxxx",
+  "2C": "ID_31_2C_xxxxxxxxxxxxxxxxxxxx", "AN": "ID_31_AN_xxxxxxxxxxxxxxxxxxxx" };
+const SRC_31 = Object.assign({}, sources, Object.fromEntries(Object.entries(ID_31).map(([p, id]) => [id, archivo31(p)])));
+const foto31 = JSON.stringify(SRC_31);
+const ctl31 = (periodo, dni, extra) => ctl(periodo, dni || "", Object.assign({
+  B6: "EPSI", B9: "EPS1", [F1B]: ID_31["1B"], [F1C]: ID_31["1C"], [F3B]: ID_31["3B"], [F2C]: ID_31["2C"], [FANUAL]: ID_31["AN"]
+}, extra));
+const run31 = (nombre, control, ejecutar) => runTest(nombre, { control, sources: SRC_31, templateGrid: tpl, ejecutar });
+// Valores de E (1B) a I (anual) de una materia impresa, o null si no aparece.
+const fila31 = (out, materia) => { const f = filasMaterias(out).find(x => x[2] === materia); return f ? f.slice(4, 9).join("|") : null; };
+const materias31 = out => filasMaterias(out).map(f => f[2]).join("|");
+const sinFuente = periodo => "No se indicó archivo de " + periodo + ". El informe se generó sin valores anteriores de " + periodo + ".";
+const noEncontrado = periodo => "No se encontró el DNI en la fuente de " + periodo + ". Se continuará con la fuente principal.";
+const sinTocar31 = (...rs) => rs.every(x => x.registro.indebidos.length === 0) && JSON.stringify(SRC_31) === foto31;
+
+// 24.1. Anual como principal: acumula los cinco períodos; cada columna sale sólo de su grilla
+let rAnual = run31("Anual individual (Lía)", ctl31(PANUAL, "94000001"));
+assert("Anual: genera sin errores ni advertencias, con las cinco fuentes, y el nivel de la grilla anual",
+  !rAnual.error && rAnual.out && rAnual.advertencias.length === 0 && rAnual.out[5][4] === "Informática 1",
+  rAnual.error || rAnual.advertencias.join("; "));
+assert("Anual: materias en el orden de la grilla anual y, al final, la que sólo existe en una grilla anterior (Taller Profesional I C de 1C)",
+  materias31(rAnual.out) === "Matemática I|Lengua y Literatura I|Taller Profesional I A|Taller Profesional I B|Matemática II|Taller Profesional I C",
+  materias31(rAnual.out));
+assert("Anual: Matemática I acumula E a I (Suficiente|7|Avanzado|8|9)", fila31(rAnual.out, "Matemática I") === "Suficiente|7|Avanzado|8|9",
+  fila31(rAnual.out, "Matemática I"));
+assert("Anual: ACREDITÓ en 2C y nota en anual son independientes (En proceso|8|Suficiente|ACREDITÓ|10)",
+  fila31(rAnual.out, "Taller Profesional I A") === "En proceso|8|Suficiente|ACREDITÓ|10", fila31(rAnual.out, "Taller Profesional I A"));
+assert("Anual: la EQUIVALENCIA de 2C no se copia a anual, que está vacía (|||EQUIVALENCIA|)",
+  fila31(rAnual.out, "Lengua y Literatura I") === "|||EQUIVALENCIA|", fila31(rAnual.out, "Lengua y Literatura I"));
+assert("Anual: 'acreditó' se emite canónico y una materia de otro nivel valorada sólo en anual aparece (||||ACREDITÓ, ||||6)",
+  fila31(rAnual.out, "Taller Profesional I B") === "||||ACREDITÓ" && fila31(rAnual.out, "Matemática II") === "||||6",
+  fila31(rAnual.out, "Taller Profesional I B") + " / " + fila31(rAnual.out, "Matemática II"));
+assert("Anual: una materia con NO CURSA en 2C y CURSA en anual no aparece (FGI I)", fila31(rAnual.out, "FGI I") === null);
+assert("Anual: las cajas salen de la grilla anual, no de la de 2C", cajas(rAnual.out).startsWith("Obs anual Lía|") && cajas(rAnual.out).endsWith("|PTF anual Lía")
+  && !JSON.stringify(rAnual.out).includes("2C Lía"), cajas(rAnual.out));
+const senalesAnual = senales(informeDe(rAnual));
+assert("Anual: la columna I queda habilitada y sólo recuperaciones y final (J a L) quedan como período futuro",
+  senalesAnual["Matemática I"] === "S.A..FFF" && senalesAnual["Lengua y Literatura I"] === "VVV.VFFF" && senalesAnual["Taller Profesional I C"] === "V.VVVFFF",
+  JSON.stringify(senalesAnual));
+const filaLengua31 = 9 + filasMaterias(rAnual.out).findIndex(f => f[2] === "Lengua y Literatura I");
+assert("Anual: EQUIVALENCIA en la columna H va en el tamaño reducido, como en las demás columnas",
+  (informeDe(rAnual).formatos[filaLengua31 + ",8"] || {}).tamano === CELDAS_CONTROL.TAMANO_EQUIVALENCIA);
+
+// 24.2. Campos generales y operativos: sólo de la grilla principal, en ambos sentidos
+let dAnual = generarDatos(ctl31(PANUAL, "94000001"), SRC_31);
+let d2C = generarDatos(ctl31(P2C, "94000001"), SRC_31);
+assert("Anual: orientación, LISTO PARA EXPORTAR y EXPORTADO salen sólo de la grilla anual (SÍ / NO)",
+  !dAnual.error && operativos(dAnual) === OP_SI_NO && dAnual.informe.estudiante.orientacion === "Informática anual"
+    && dAnual.informe.estudiante.observacionesGenerales === "Obs anual Lía",
+  dAnual.error || operativos(dAnual) + " " + (dAnual.informe && dAnual.informe.estudiante.orientacion));
+assert("2C: orientación, LISTO PARA EXPORTAR y EXPORTADO salen sólo de la grilla de 2C (NO / SÍ)",
+  !d2C.error && operativos(d2C) === '{"listoParaExportar":"NO","exportado":"SÍ"}' && d2C.informe.estudiante.orientacion === "Informática 2C"
+    && d2C.informe.estudiante.observacionesGenerales === "Obs 2C Lía",
+  d2C.error || operativos(d2C));
+
+// 24.3. 2C como principal: incluye los anteriores; anual queda como período futuro y su grilla no se abre
+let r2C = run31("2C individual (Lía)", ctl31(P2C, "94000001"));
+assert("2C: genera sin advertencias; acumula E a H y deja I vacía aunque la grilla anual tenga notas",
+  !r2C.error && r2C.advertencias.length === 0
+    && materias31(r2C.out) === "Matemática I|Lengua y Literatura I|Taller Profesional I A|Taller Profesional I C"
+    && fila31(r2C.out, "Matemática I") === "Suficiente|7|Avanzado|8|" && fila31(r2C.out, "Taller Profesional I A") === "En proceso|8|Suficiente|ACREDITÓ|"
+    && fila31(r2C.out, "Lengua y Literatura I") === "|||EQUIVALENCIA|",
+  r2C.error || materias31(r2C.out) + " / " + r2C.advertencias.join("; "));
+assert("2C: la grilla anual no se abre aunque esté indicada en Control", !r2C.registro.aperturas.includes(ID_31.AN)
+  && ["1B", "1C", "3B", "2C"].every(p => r2C.registro.aperturas.includes(ID_31[p])), r2C.registro.aperturas.join(", "));
+const senales2C = senales(informeDe(r2C));
+assert("2C: anual (I) y lo posterior quedan como período futuro",
+  senales2C["Matemática I"] === "S.A.FFFF" && senales2C["Lengua y Literatura I"] === "VVV.FFFF", JSON.stringify(senales2C));
+assert("2C: las cajas salen de la grilla de 2C", cajas(r2C.out).startsWith("Obs 2C Lía|") && !JSON.stringify(r2C.out).includes("anual Lía"), cajas(r2C.out));
+
+// 24.4. Fuentes: la principal es obligatoria; las anteriores que falten se advierten, del período más reciente al primero
+const SIN_ANTERIORES = { [F1B]: "", [F1C]: "", [F3B]: "", [F2C]: "" };
+let rAnualSola = run31("Anual sin fuentes anteriores", ctl31(PANUAL, "94000001", SIN_ANTERIORES));
+assert("Anual sin fuentes anteriores: genera sólo con anual y advierte cada falta, de 2C a 1B",
+  !rAnualSola.error && rAnualSola.advertencias.join("\n") === [P2C, P3B, P1C, "1º bimestre"].map(sinFuente).join("\n")
+    && fila31(rAnualSola.out, "Matemática I") === "||||9" && fila31(rAnualSola.out, "Lengua y Literatura I") === null,
+  rAnualSola.error || rAnualSola.advertencias.join("; "));
+let r2CSolo = run31("2C sin fuentes anteriores", ctl31(P2C, "94000001", Object.assign({}, SIN_ANTERIORES, { [F2C]: ID_31["2C"], [FANUAL]: "" })));
+assert("2C sin fuentes anteriores: advierte 3B, 1C y 1B, y no necesita la fuente anual",
+  !r2CSolo.error && r2CSolo.advertencias.join("\n") === [P3B, P1C, "1º bimestre"].map(sinFuente).join("\n")
+    && fila31(r2CSolo.out, "Matemática I") === "|||8|",
+  r2CSolo.error || r2CSolo.advertencias.join("; "));
+let rAnualSinPrincipal = run31("Anual sin su fuente", ctl31(PANUAL, "94000001", { [FANUAL]: "" }));
+let r2CSinPrincipal = run31("2C sin su fuente", ctl31(P2C, "94000001", { [F2C]: "" }));
+assert("Sin la fuente principal: error claro, sin informe ni aperturas (anual y 2C)",
+  rAnualSinPrincipal.error === "Falta la URL o ID del archivo de valoraciones anuales." && !rAnualSinPrincipal.out
+    && r2CSinPrincipal.error === "Falta la URL o ID del archivo de valoraciones del 2º cuatrimestre." && !r2CSinPrincipal.out
+    && rAnualSinPrincipal.registro.aperturas.length === 0 && r2CSinPrincipal.registro.aperturas.length === 0,
+  rAnualSinPrincipal.error + " / " + r2CSinPrincipal.error);
+let rAnualFuenteRota = run31("Anual con fuente de 2C inexistente", ctl31(PANUAL, "94000001", { [F2C]: "ID_31_NO_EXISTE_xxxxxxxxxxxx" }));
+assert("Anual: una fuente de 2C que no puede abrirse se advierte y se continúa sin ella",
+  !rAnualFuenteRota.error && rAnualFuenteRota.advertencias.some(a => a.endsWith("Se continuará con la fuente principal."))
+    && fila31(rAnualFuenteRota.out, "Matemática I") === "Suficiente|7|Avanzado||9",
+  rAnualFuenteRota.error || rAnualFuenteRota.advertencias.join("; "));
+
+// 24.5. Valores: misma escala que 1C; lo no admitido se advierte y no se imprime
+const genValores = cargarGenerador();
+const clasif31 = (p, v) => { const c = genValores.clasificarValor_(p, v); return c.estado + ":" + c.valor; };
+assert("2C y anual: enteros de 1 a 10 son válidos, tal cual",
+  [P2C, PANUAL].every(p => ["1", "5", "10"].every(v => clasif31(p, v) === "valido:" + v)));
+assert("2C y anual: ACREDITÓ y EQUIVALENCIA, sin importar tildes ni mayúsculas, se emiten canónicos",
+  [P2C, PANUAL].every(p => ["ACREDITÓ", "Acredito", " acreditó "].every(v => clasif31(p, v) === "valido:ACREDITÓ")
+    && ["EQUIVALENCIA", "Equivalencia"].every(v => clasif31(p, v) === "valido:EQUIVALENCIA")));
+assert("2C y anual: vacío, CURSA y NO CURSA quedan excluidos",
+  [P2C, PANUAL].every(p => ["", "CURSA", "No cursa", "NO CURSA"].every(v => clasif31(p, v) === "excluido:")));
+assert("2C y anual: decimales, 0, 11, texto con número y la escala conceptual no son válidos",
+  [P2C, PANUAL].every(p => ["9,5", "7.5", "0", "11", "8 (ocho)", "ocho", "Avanzado", "Suficiente", "En proceso"].every(v => clasif31(p, v) === "invalido:" + v)));
+let rPia = run31("Anual con valores no admitidos (Pía)", ctl31(PANUAL, "94000004"));
+assert("Anual: los valores no admitidos de 2C y anual se advierten por período y materia, y no se imprimen",
+  !rPia.error && materias31(rPia.out) === "Lengua y Literatura I|FGI I"
+    && fila31(rPia.out, "Lengua y Literatura I") === "|||7|" && fila31(rPia.out, "FGI I") === "||||7"
+    && ['"Matemática I": "Avanzado"'].every(v => rPia.advertencias.includes("Valor inesperado en 2º cuatrimestre para " + v + "."))
+    && ['"Matemática I": "9,5"', '"Lengua y Literatura I": "8 (ocho)"', '"Taller Profesional I A": "11"', '"Taller Profesional I B": "0"']
+      .every(v => rPia.advertencias.includes("Valor inesperado en Anual para " + v + ".")),
+  rPia.error || materias31(rPia.out) + " / " + rPia.advertencias.join("; "));
+
+// 24.6. Trayectorias: estudiante nuevo y cambio de orientación entre períodos
+let rNico = run31("Anual de un estudiante nuevo (Nico)", ctl31(PANUAL, "94000002"));
+assert("Estudiante nuevo en 2C: anual se genera con 2C y anual, y advierte su ausencia en 3B, 1C y 1B",
+  !rNico.error && materias31(rNico.out) === "Matemática I" && fila31(rNico.out, "Matemática I") === "|||5|6"
+    && rNico.advertencias.join("\n") === [P3B, P1C, "1º bimestre"].map(noEncontrado).join("\n"),
+  rNico.error || rNico.advertencias.join("; "));
+let rOlga = run31("Anual con cambio de orientación (Olga)", ctl31(PANUAL, "94000003", { B6: "EPSG" }));
+assert("Cambio de orientación: anual en EPSG conserva 1B, 1C y 3B de EPSI, con sus materias, y lo advierte",
+  !rOlga.error && rOlga.out[5][4] === "Gastronomía 1"
+    && materias31(rOlga.out) === "Matemática I|Taller Gastronómico I A|Taller Profesional I A"
+    && fila31(rOlga.out, "Matemática I") === "Avanzado|9|Avanzado|8|8" && fila31(rOlga.out, "Taller Gastronómico I A") === "|||7|8"
+    && fila31(rOlga.out, "Taller Profesional I A") === "|9|||"
+    && rOlga.advertencias.join("\n") === [P3B, P1C, "1º bimestre"].map(p => tomadoDe(p, "EPSI", "EPSG")).join("\n"),
+  rOlga.error || materias31(rOlga.out) + " / " + rOlga.advertencias.join("; "));
+let rOlgaEPSI = run31("Anual con la orientación de los períodos anteriores (Olga)", ctl31(PANUAL, "94000003"));
+assert("Cambio de orientación: con la hoja origen de los períodos anteriores, la principal no la encuentra y no se genera",
+  rOlgaEPSI.error && rOlgaEPSI.error.startsWith("No se encontró el DNI en la fuente de Anual.") && !rOlgaEPSI.out, rOlgaEPSI.error);
+
+// 24.7. Por curso: la selección y EXPORTADO salen sólo de la grilla principal
+const runCurso31 = (periodo, extra) => run31("Por curso " + periodo, ctl31(periodo, "", extra), "generarBoletinesPorCurso()");
+let rCursoAnual = runCurso31(PANUAL);
+let rCurso2C = runCurso31(P2C);
+const estados31 = r => resumenDe(r).filas.filter(f => /^9400/.test(f.dni)).map(f => f.estado + ":" + f.dni + ":" + f.exportado).join(", ");
+assert("Por curso, anual: libro con nombre y carpeta del período; selección por LISTO PARA EXPORTAR de la grilla anual",
+  !rCursoAnual.error && rCursoAnual.creados.length === 1 && libroDe(rCursoAnual).getName() === "Boletines EPS - EPSI - EPS1 - Anual 2026 - <fecha>"
+    && libroDe(rCursoAnual).carpeta.ruta() === "Mi unidad > Boletines EPS > 2026 - Anual"
+    && estados31(rCursoAnual) === "Generado:94000001:NO, Generado:94000002:NO, Generado:94000004:NO, Omitido:94000005:NO"
+    && enResumen(rCursoAnual, "94000005").detalle === "LISTO PARA EXPORTAR = NO.",
+  rCursoAnual.error || estados31(rCursoAnual));
+assert("Por curso, 2C: la misma grilla de cursos selecciona según 2C (Lía omitida, Rita generada) en la carpeta de 2C",
+  !rCurso2C.error && libroDe(rCurso2C).getName() === "Boletines EPS - EPSI - EPS1 - 2º cuatrimestre 2026 - <fecha>"
+    && libroDe(rCurso2C).carpeta.ruta() === "Mi unidad > Boletines EPS > 2026 - 2º cuatrimestre"
+    && estados31(rCurso2C) === "Omitido:94000001:SÍ, Generado:94000002:NO, Generado:94000004:NO, Generado:94000005:NO",
+  rCurso2C.error || estados31(rCurso2C));
+assert("Por curso, anual: el Resumen registra el período y cada hoja es idéntica al informe individual",
+  (gridHoja(rCursoAnual, "Resumen")[3] || [])[1] === PANUAL
+    && JSON.stringify(gridHoja(rCursoAnual, "Ficticia, Lía Anual")) === JSON.stringify(rAnual.out),
+  JSON.stringify(gridHoja(rCursoAnual, "Resumen") && gridHoja(rCursoAnual, "Resumen")[3]));
+
+// 24.8. Todos los cursos y exportación a PDF de anual
+let rTodosAnual = run31("Todos los cursos, anual", ctl31(PANUAL, "", { B6: "", B9: "" }), "generarBoletinesTodosLosCursos()");
+assert("Todos los cursos, anual: un libro por curso con estudiantes listos en la grilla anual, en la carpeta de anual",
+  !rTodosAnual.error && rTodosAnual.creados.map(l => l.getName()).join(" | ") ===
+    ["EPSI - EPS1", "EPSI - EPS2", "EPSG - EPS1"].map(c => "Boletines EPS - " + c + " - Anual 2026 - <fecha>").join(" | ")
+    && rTodosAnual.creados.every(l => l.carpeta.ruta() === "Mi unidad > Boletines EPS > 2026 - Anual")
+    && hojasLibro(rTodosAnual.creados[2]).includes("Ficticia, Olga Cambio"),
+  rTodosAnual.error || rTodosAnual.creados.map(l => l.getName()).join(" | "));
+const librosAnual = rTodosAnual.creados.map((libro, i) => ({ libro, creada: 600000 - i * 1000 }));
+const fotosAnual = rTodosAnual.creados.map(fotoLibro);
+const pdfEsperados = rTodosAnual.creados.reduce((n, l) => n + hojasPdfDe(l).length, 0);
+let rPdfAnual = runPdfCursos({ libros: librosAnual, nombrePeriodo: "2026 - Anual", control: { B5: "anual", B8: "2026" } });
+assert("PDF de todos, anual: reconoce los libros de anual por su Resumen y exporta un PDF por hoja de estudiante, sin modificarlos",
+  !rPdfAnual.error && rPdfAnual.carpetas.length === 3 && rPdfAnual.pedidos.length === pdfEsperados && pdfEsperados > 0
+    && rPdfAnual.resultado.startsWith("PDF de varios cursos (Anual 2026): cursos completos: 3 de 3 con libro · PDF exportados ahora: " + pdfEsperados + " ")
+    && JSON.stringify(rTodosAnual.creados.map(fotoLibro)) === JSON.stringify(fotosAnual),
+  rPdfAnual.error || rPdfAnual.resultado);
+
+// 24.9. Generación por DNI con 2C: cada estudiante en la orientación donde figura en la grilla de 2C
+let rDni2C = runDni("Por DNI, 2C", "94000003\n94000001", { control: ctl31(P2C, ""), sources: SRC_31 });
+assert("Por DNI, 2C: un libro en la subcarpeta Por DNI de 2C, con Olga (EPSG) y Lía (EPSI) en el orden pedido",
+  !rDni2C.error && rDni2C.libro && rDni2C.libro.getName() === "Boletines EPS - Por DNI - 2º cuatrimestre 2026 - <fecha>"
+    && rDni2C.libro.carpeta.ruta() === "Mi unidad > Boletines EPS > 2026 - 2º cuatrimestre > Por DNI"
+    && estadosDni(rDni2C) === "Generado:94000003:EPSG EPS1, Generado:94000001:EPSI EPS1",
+  rDni2C.error || estadosDni(rDni2C));
+
+// 24.10. Regresión de los tres períodos existentes con las fuentes nuevas cargadas en Control
+const conFuentes31 = Object.assign({}, sources, SRC_31);
+let r3BCon31 = runTest("3B con fuentes de 2C y anual en Control", {
+  control: ctlReal("97000001", { [F2C]: ID_31["2C"], [FANUAL]: ID_31.AN }), sources: conFuentes31, templateGrid: tpl });
+let r1CCon31 = runTest("1C con fuentes de 2C y anual en Control", {
+  control: Object.assign({}, ctl1CReal, { [F2C]: ID_31["2C"], [FANUAL]: ID_31.AN }), sources: conFuentes31, templateGrid: tpl });
+assert("Regresión: 3B y 1C generan el mismo informe con las fuentes de 2C y anual indicadas, sin abrirlas",
+  mismoInforme(r3BCon31, rReal) && mismoInforme(r1CCon31, r1CReal)
+    && r3BCon31.advertencias.join("\n") === rReal.advertencias.join("\n") && r1CCon31.advertencias.join("\n") === r1CReal.advertencias.join("\n")
+    && ![r3BCon31, r1CCon31].some(x => x.registro.aperturas.includes(ID_31["2C"]) || x.registro.aperturas.includes(ID_31.AN)),
+  r3BCon31.error || r1CCon31.error);
+const sombreado3B = senales(informeDe(r3BCon31));
+assert("Regresión: en 3B, 2C y anual (H e I) siguen como período futuro",
+  Object.values(sombreado3B).length > 0 && Object.values(sombreado3B).every(s => s.slice(3) === "FFFFF"), JSON.stringify(sombreado3B));
+
+// 24.11. Normalización del período y Control del xlsx
+const genNorm = cargarGenerador();
+assert("Período: variantes de 2º cuatrimestre y anual se normalizan a la etiqueta del generador",
+  ["2º cuatrimestre", "2do cuatrimestre", "Segundo cuatrimestre", "2 cuatrimestre"].every(v => genNorm.normalizarPeriodo_(v) === P2C)
+    && ["Anual", "anual", " ANUAL ", "Calificación anual"].every(v => genNorm.normalizarPeriodo_(v) === PANUAL),
+  ["2do cuatrimestre", "Calificación anual"].map(genNorm.normalizarPeriodo_).join(" / "));
+assert("Período: uno no implementado sigue rechazándose (recuperación)",
+  run31("Período no implementado", ctl31("Período recuperación I", "94000001")).error === "El período indicado no está implementado en esta versión: Período recuperación I");
+let rAnualXlsx = run31("Anual con el Control del xlsx", ctlDesdeXlsx({ B5: PANUAL, B6: "EPSI", B7: "94000001",
+  [F1B]: ID_31["1B"], [F1C]: ID_31["1C"], [F3B]: ID_31["3B"], [F2C]: ID_31["2C"], [FANUAL]: ID_31.AN }));
+assert("Control (xlsx): con anual elegido y las cinco fuentes en sus celdas, se genera el mismo informe",
+  !rAnualXlsx.error && mismoInforme(rAnualXlsx, rAnual), rAnualXlsx.error);
+const manualXlsx = ["A27", "E28", "F28", "A35", "A37"].map(textoXlsx);
+assert("Control (xlsx): manual, valores válidos y reglas centrales nombran 2C y anual, su escala y la fuente principal",
+  manualXlsx[0].includes("2º cuatrimestre o Anual") && manualXlsx[1] === "1º y 2º cuat.; Anual" && manualXlsx[2] === "Enteros 1 a 10; ACREDITÓ; EQUIVALENCIA"
+    && /no se calcula ni se copia entre períodos/.test(manualXlsx[3]) && /LISTO PARA EXPORTAR \/ EXPORTADO salen siempre de la fuente principal/.test(manualXlsx[4]),
+  manualXlsx.join(" | "));
+
+// 24.12. Control de la versión anterior a #31: las marcas no se interpretan en otras filas
+// Bloque Varios cursos como estaba (encabezado en A14, cursos en A15:A22, Manual breve en A24). Con ese diseño, B17 = SÍ
+// marcaba EPSI EPS3; el generador actual lee B17 como la marca de EPSI EPS1.
+const ROTULOS_ANTERIORES = Object.assign({ A14: "Varios cursos", B14: "Generar", A23: "", A24: "Manual breve" },
+  Object.fromEntries(CELDAS_CONTROL.CURSOS.map((c, i) => ["A" + (15 + i), ROTULOS_CURSOS[c.celda.replace(/^[A-Z]+/, "A")]])));
+const controlAnterior = (base, marcasAnteriores) => Object.assign({}, base, ROTULOS_ANTERIORES, marcasAnteriores);
+const ERROR_CONTROL_ANTERIOR = 'La hoja Control no corresponde a esta versión del generador: la marca de EPSI EPS1 se lee en Control!B17, ' +
+  'pero el rótulo de A17 es "Informática 3 (EPSI EPS3)" (y 7 más). No se usó ninguna marca: no se generó ni se exportó nada. ' +
+  "Actualizar la hoja Control como indica el README (Actualizar el generador institucional).";
+assert("Rótulos de cursos: los del arnés son los del Control del xlsx", CELDAS_CONTROL.CURSOS.every(c =>
+  textoXlsx(c.celda.replace(/^[A-Z]+/, "A")) === ROTULOS_CURSOS[c.celda.replace(/^[A-Z]+/, "A")]), JSON.stringify(ROTULOS_CURSOS));
+let rMarcadosAnterior = runVarios("Marcados con Control anterior", controlAnterior(ctlVarios({}), { B17: "SÍ" }));
+assert("Control anterior, generación de marcados: error que nombra la celda y el rótulo; no lee fuentes, no crea libros ni carpetas",
+  rMarcadosAnterior.error === ERROR_CONTROL_ANTERIOR && rMarcadosAnterior.creados.length === 0
+    && rMarcadosAnterior.registro.aperturas.length === 0 && rMarcadosAnterior.carpetasCreadas.length === 0 && rMarcadosAnterior.accesosDrive.length === 0
+    && rMarcadosAnterior.estadoResultado === "Error: " + ERROR_CONTROL_ANTERIOR && rMarcadosAnterior.rawAlerts.join("").includes(ERROR_CONTROL_ANTERIOR),
+  rMarcadosAnterior.error);
+let rPdfMarcadosAnterior = runPdfCursos({ control: controlAnterior(ctlPdf(), { B17: "SÍ" }), ejecutar: "exportarPdfCursosMarcados()" });
+assert("Control anterior, PDF de marcados: el mismo error, sin abrir libros, pedir confirmación, crear carpetas ni exportar",
+  rPdfMarcadosAnterior.error === ERROR_CONTROL_ANTERIOR && rPdfMarcadosAnterior.abiertos.length === 0 && rPdfMarcadosAnterior.preguntas.length === 0
+    && rPdfMarcadosAnterior.carpetas.length === 0 && rPdfMarcadosAnterior.pedidos.length === 0
+    && rPdfMarcadosAnterior.resultado === "Error al exportar PDF de varios cursos: " + ERROR_CONTROL_ANTERIOR,
+  rPdfMarcadosAnterior.error);
+// Las operaciones de todos los cursos no leen marcas: con el Control anterior hacen lo mismo que con el actual.
+let rTodosAnterior = runVarios("Todos con Control anterior", controlAnterior(ctlVarios({}), { B17: "SÍ" }), srcVarios, "generarBoletinesTodosLosCursos()");
+let rPdfTodosAnterior = runPdfCursos({ control: controlAnterior(ctlPdf(), { B17: "SÍ" }) });
+assert("Control anterior: generar y exportar todos los cursos no dependen de las marcas y dan el mismo resultado",
+  !rTodosAnterior.error && JSON.stringify(rTodosAnterior.creados.map(fotoLibro)) === JSON.stringify(rTodos.creados.map(fotoLibro))
+    && !rPdfTodosAnterior.error && rPdfTodosAnterior.pedidos.length === rPdfTodos.pedidos.length && rPdfTodosAnterior.carpetas.length === rPdfTodos.carpetas.length,
+  rTodosAnterior.error || rPdfTodosAnterior.error);
+// Migración a medias: un rótulo borrado basta para no usar ninguna marca. El nombre puede cambiar si conserva el curso.
+let rRotuloBorrado = runVarios("Marcados con un rótulo borrado", ctlVarios(Object.assign({ A21: "" }, marcas({ "EPSI EPS1": "SÍ" }))));
+assert("Control con un rótulo borrado: error que nombra sólo ese curso y su celda, sin crear libros",
+  (rRotuloBorrado.error || "").startsWith('La hoja Control no corresponde a esta versión del generador: la marca de EPSG EPS1 se lee en Control!B21, ' +
+    'pero el rótulo de A21 es "". No se usó ninguna marca') && rRotuloBorrado.creados.length === 0,
+  rRotuloBorrado.error);
+let rRotuloPropio = runVarios("Marcados con rótulos propios", ctlVarios(Object.assign({ A17: "  informática primero (epsi eps1) ", A21: "Cocina 1 (EPSG EPS1)" },
+  marcas({ "EPSI EPS1": "SÍ", "EPSG EPS1": "SÍ" }))));
+assert("Control con rótulos propios que conservan el curso entre paréntesis: se generan los cursos marcados",
+  !rRotuloPropio.error && rRotuloPropio.creados.map(l => l.getName()).join(" | ") === ["EPSI EPS1", "EPSG EPS1"].map(NOMBRE_LIBRO).join(" | "),
+  rRotuloPropio.error || rRotuloPropio.creados.map(l => l.getName()).join(" | "));
+
+// 24.13. Ninguna generación de esta sección escribe en las grillas
+assert("2C y anual: las grillas fuente sólo se leen y quedan intactas",
+  sinTocar31(rAnual, r2C, rAnualSola, rPia, rNico, rOlga, rCursoAnual, rCurso2C, rTodosAnual, rDni2C, rAnualXlsx));
 
 console.log(`\nResultado final: ${fail === 0 ? "TODOS LOS TESTS PASARON" : `${fail} TESTS FALLARON`}`);
 process.exit(fail ? 1 : 0);

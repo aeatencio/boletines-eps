@@ -1,6 +1,6 @@
 # Casos de prueba del generador EPS
 
-Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20); la sección 13, la exportación a PDF (#21), la sección 14, la organización de los libros en Drive (#23); la sección 15, la exportación a PDF de varios cursos (#23); la sección 16, la exportación desde un libro o una carpeta de Drive; la sección 17, su diálogo, y la sección 18, la generación por DNI.
+Este documento describe los escenarios mínimos de prueba reproducibles para el Generador EPS. Las secciones 1 a 4 vienen de v0.3 (incorporación del 3º bimestre, acumulación con 1º bimestre y 1º cuatrimestre y regresiones históricas); las secciones 5 a 8 cubren v0.4 (grillas reales, generación por curso y orientación por período), la sección 11, la generación de varios cursos (#20); la sección 13, la exportación a PDF (#21), la sección 14, la organización de los libros en Drive (#23); la sección 15, la exportación a PDF de varios cursos (#23); la sección 16, la exportación desde un libro o una carpeta de Drive; la sección 17, su diálogo; la sección 18, la generación por DNI, y la sección 19, 2º cuatrimestre y anual (#31).
 
 ## Arnés de pruebas local
 
@@ -169,7 +169,7 @@ Casos automatizados (grillas reales sintéticas con bloques agregados en el test
 - Hora del nombre (sección 13; en el mock, la zona del libro generador es `America/Los_Angeles`): 21:07 UTC queda como `18:07` (no `14:07`), y 02:30 UTC del día 15 queda como `2026-10-14 23:30`. La zona se pasa explícitamente a `Utilities.formatDate`. El diálogo muestra el nombre y el enlace del libro; sin libro o en la generación individual no se crea ninguno.
 - `Resumen` oculta y boletines visibles, también con un estudiante fallido. Si ninguna hoja pudo crearse, `Resumen` queda visible con los errores (el mock rechaza ocultar la última hoja visible, como Google Sheets).
 - `Control` del xlsx versionado: `A9` = *Nivel / curso*, `B9` vacío con selector `EPS1,EPS2,EPS3,EPS4`. Con esa hoja, la generación por curso usa el nivel elegido, pide `B9` si no se eligió, y la generación individual lo ignora (aunque tenga un valor no válido).
-- Coordenadas de `Control`: las fuentes de 1º bimestre, 1º cuatrimestre y 3º bimestre están en `B10`, `B11` y `B12`, sin fila vacía intermedia. Los tests toman todas las coordenadas de `CONFIG_EPS` y comprueban en el xlsx que cada una esté junto a su rótulo, junto con los valores por defecto y las validaciones de `B5`, `B6` y `B9`.
+- Coordenadas de `Control`: las fuentes de 1º bimestre, 1º cuatrimestre, 3º bimestre, 2º cuatrimestre y anual están en `B10` a `B14`, en el orden del año y sin fila vacía intermedia (sección 19). Los tests toman todas las coordenadas de `CONFIG_EPS` y comprueban en el xlsx que cada una esté junto a su rótulo, junto con los valores por defecto y las validaciones de `B5`, `B6` y `B9`.
 - Columnas operativas sólo en la principal: en 3B, 1C y 1B sin columnas operativas son válidas. En 1C, 1B sin ellas es válida. En 1B, la principal 1B las exige. Una histórica con `LISTO PARA EXPORTAR` duplicada, `EXPORTADO` inválido o encabezados operativos malformados produce la misma tanda que una histórica limpia. La misma grilla 1C sin `LISTO PARA EXPORTAR` es válida como histórica de 3B y es un error sólo como principal (período 1º cuatrimestre). La principal con la columna duplicada también es un error.
 
 **Cambio en la generación individual**: el contenido del informe no cambia. Las advertencias de las fuentes (falta de una fuente anterior, fuente anterior ilegible, encabezados de la cola) ahora aparecen antes que las del estudiante.
@@ -253,7 +253,7 @@ Casos automatizados (sección 15 de `tests/run.js`):
 
 ### 11. Varios cursos en una sola operación (#20)
 
-**Uso**: `Control` tiene el bloque *Varios cursos* (filas 14 a 22) con los 8 cursos fijos de CFP7 (`EPSI` y `EPSG`, `EPS1` a `EPS4`, en `CONFIG_EPS.CURSOS`) y una marca `SÍ` / `NO` por curso en `B15:B22`. *Informes EPS > Generar boletines de los cursos marcados* toma los cursos con `SÍ` (también `Si`); `NO` o vacío no lo incluye. *Informes EPS > Generar boletines de todos los cursos* toma los 8 y no mira las marcas. Ambas usan el período, el ciclo lectivo y las fuentes de `Control`, e ignoran `B6`, `B7` y `B9`. No hay descubrimiento de cursos.
+**Uso**: `Control` tiene el bloque *Varios cursos* (filas 16 a 24) con los 8 cursos fijos de CFP7 (`EPSI` y `EPSG`, `EPS1` a `EPS4`, en `CONFIG_EPS.CURSOS`) y una marca `SÍ` / `NO` por curso en `B17:B24`. *Informes EPS > Generar boletines de los cursos marcados* toma los cursos con `SÍ` (también `Si`); `NO` o vacío no lo incluye. *Informes EPS > Generar boletines de todos los cursos* toma los 8 y no mira las marcas. Ambas usan el período, el ciclo lectivo y las fuentes de `Control`, e ignoran `B6`, `B7` y `B9`. No hay descubrimiento de cursos.
 
 **Reutilización**: cada curso es una tanda de la generación por curso. `generarTandaCurso_` quedó dividida en `prepararTandaCurso_` (selección y datos de cada estudiante, sin crear nada) y `crearLibroTanda_` (libro, hojas y `Resumen`). La generación por curso llama a las dos seguidas; la de varios cursos primero prepara todos los cursos elegidos y después crea los libros en orden fijo.
 
@@ -275,7 +275,7 @@ Casos automatizados (sección 16 de `tests/run.js`, sobre las grillas reales sin
 - Un estudiante en las hojas principales de EPSI y EPSG: error en los dos cursos; su curso queda sin libro, el otro se genera con el resto y los demás libros no cambian.
 - Falla al crear el segundo libro: el error se propaga y se informa el libro ya creado.
 - La generación individual y la generación por curso ignoran las marcas.
-- `Control` del xlsx: encabezado `A14`, rótulo de cada curso junto a su marca vacía, validación `SÍ,NO` en `B15:B22`, manual y reglas corridos debajo del bloque. Con ese `Control`, se generan sólo los cursos marcados.
+- `Control` del xlsx: encabezado `A16`, rótulo de cada curso junto a su marca vacía, validación `SÍ,NO` en `B17:B24`, manual y reglas corridos debajo del bloque. Con ese `Control`, se generan sólo los cursos marcados.
 
 **No cubierto por el arnés**: tiempo real y límites de Apps Script con los 8 cursos (límite de 6 minutos por ejecución), cuotas de creación en Drive, aspecto del bloque y de los selectores en Google Sheets, y el aviso de progreso.
 
@@ -289,7 +289,7 @@ Casos automatizados (sección 17 de `tests/run.js`; el ancho real del texto no s
 - `Plantilla` (xlsx): `E4:L4` combinada sobre celdas vacías, sin `E4:F4`, y `E5:F5` / `E6:F6` sin cambios.
 - `EQUIVALENCIA` en 7 en el informe individual, en el libro por curso y en el de varios cursos; ninguna otra celda cambia de tamaño. Un boletín sin `EQUIVALENCIA` no cambia ningún tamaño.
 
-**Validación manual**: comprobar en Google Sheets, y en el PDF, que un nombre largo se vea completo y que `EQUIVALENCIA` quede en una línea en las columnas de 1º bimestre, 1º cuatrimestre y 3º bimestre.
+**Validación manual**: comprobar en Google Sheets, y en el PDF, que un nombre largo se vea completo y que `EQUIVALENCIA` quede en una línea en las columnas de los períodos (E a I).
 
 ### 13. Exportación a PDF de un libro ya generado (#21)
 
@@ -348,7 +348,7 @@ Casos automatizados (sección 19 de `tests/run.js`; Drive simulado con carpetas,
 
 **Problema**: con los tiempos reales (un curso de 15 hojas: 104 s, 6,9 s por PDF, con pausas y reintentos por el límite de Google), los 8 cursos llevan unos 14 minutos, más que una ejecución de Apps Script. La exportación de un libro por vez obligaba a buscar, copiar y pegar el link de cada uno.
 
-**Uso**: *Informes EPS > Exportar PDF de los cursos marcados* toma los cursos con `SÍ` en `B15:B22`, las mismas marcas de la generación de varios cursos. *Exportar PDF de todos los cursos* toma los 8. Ambas usan el período (`B5`) y el ciclo lectivo (`B8`) de `Control`, pero no las fuentes, porque no leen las grillas.
+**Uso**: *Informes EPS > Exportar PDF de los cursos marcados* toma los cursos con `SÍ` en `B17:B24`, las mismas marcas de la generación de varios cursos. *Exportar PDF de todos los cursos* toma los 8. Ambas usan el período (`B5`) y el ciclo lectivo (`B8`) de `Control`, pero no las fuentes, porque no leen las grillas.
 
 **Selección del libro**: para cada curso, se toma el libro más reciente (`getDateCreated`) de la carpeta del período (`Mi unidad > Boletines EPS > <ciclo> - <período>`). Los libros se reconocen y agrupan como en una carpeta elegida a mano (sección 16, `librosPorCursoEnCarpeta_`): por el curso que la generación escribe en `Resumen` y, si la generación no terminó, por el nombre que le dio. Si hay varios libros del curso (regeneraciones, aun con el mismo nombre), se usa sólo el más reciente, y la confirmación y `Control` dicen de cuántos. Un curso sin libro queda informado. Si el libro más reciente no se puede exportar (no es de la generación, o su generación no terminó: `Resumen` vacío), el curso queda como problema: no se usa en su lugar un libro anterior, no se exportan sus hojas y no frena a los demás cursos.
 
@@ -517,3 +517,32 @@ Casos automatizados (sección 23 de `tests/run.js`, sobre las grillas de la secc
 - Cliente, con un DOM mínimo: llama sólo a `generarLibroPorDni`, con el texto pegado tal cual y una vez por vez; muestra el resultado y el link (y no lo muestra si no hubo libro); un error se muestra y deja volver a generar.
 
 **No cubierto por el arnés**: el diálogo real (pegado de varias líneas, aspecto, `google.script.run`), la creación de la subcarpeta en Drive real, el tiempo real de lectura de las dos orientaciones y el PDF real del libro.
+
+### 19. 2º cuatrimestre y anual (#31)
+
+**Regla**: 2º cuatrimestre (`2º cuatrimestre`) y anual (`Anual`) son dos períodos más, cada uno con su propio libro de grillas y la estructura habitual. Cualquiera de los dos puede ser el período principal. Los períodos admitidos, en el orden del año, son los de `CONFIG_EPS.PERIODOS`: 1º bimestre, 1º cuatrimestre, 3º bimestre, 2º cuatrimestre y anual. De ese orden salen la validación del período, las fuentes anteriores y la exportación.
+
+**Mecanismo**:
+- `Control`: las fuentes de 2º cuatrimestre y anual están en `B13` y `B14` (`CELDA_FUENTE_2C`, `CELDA_FUENTE_ANUAL`), debajo de las otras tres. El bloque *Varios cursos*, el manual y las reglas bajaron dos filas. Como las marcas se leen por coordenada, una hoja `Control` de la versión anterior las tendría en otras filas (`B17` marcaba EPSI EPS3, no EPSI EPS1). Por eso `comprobarRotulosCursos_` exige, antes de leer cualquier marca, que el rótulo de la columna A de cada una nombre su curso entre paréntesis. Si alguno no coincide, la generación y la exportación a PDF de los cursos marcados se detienen con un error. Las operaciones de todos los cursos, por curso, por DNI e individual no leen las marcas y no cambian. `B5` ofrece los cinco períodos. `normalizarPeriodo_` acepta también `2do cuatrimestre`, `segundo cuatrimestre`, `anual` y `Calificación anual`.
+- Fuentes: la del período elegido es la principal y es obligatoria. Las de todos los períodos anteriores aportan sólo sus valoraciones y se recorren del más reciente al primero: 2º cuatrimestre usa 3º bimestre, 1º cuatrimestre y 1º bimestre; anual usa además 2º cuatrimestre. Las fuentes de los períodos posteriores no se abren. Una anterior que falta o no se puede leer se advierte, como antes.
+- Valores: 2º cuatrimestre y anual usan la escala de 1º cuatrimestre (`clasificarValor_`): enteros de 1 a 10, `ACREDITÓ` y `EQUIVALENCIA`. Se excluyen el vacío, `CURSA` y `NO CURSA`. Cada columna sale sólo de la grilla de su período: no se calcula ni se copia nada entre períodos.
+- Boletín: 2º cuatrimestre va en la columna H y anual en la I (*Calificación anual*), que ya estaban en la `Plantilla`. Con 2º cuatrimestre, la columna I queda como período futuro; con anual, sólo J a L.
+- Datos generales, orientación, `LISTO PARA EXPORTAR` y `EXPORTADO` salen sólo de la grilla principal, como en los demás períodos. Las reglas de materias de otros niveles, estudiantes nuevos y cambios de orientación no cambian.
+- Libros y PDF: los nombres y las carpetas usan la etiqueta del período (`2026 - 2º cuatrimestre`, `2026 - Anual`). La exportación reconoce el período por el `Resumen` o por el nombre del libro, como en los demás.
+
+Casos automatizados (sección 24 de `tests/run.js`). Las cinco grillas se arman en memoria sobre las grillas sintéticas de la sección 5, cada una con `EPSI` y `EPSG`:
+- Anual con las cinco fuentes: acumula E a I y sigue el orden de la grilla anual. La materia que sólo existe en una grilla anterior va al final. `ACREDITÓ` en 2º cuatrimestre y nota en anual son independientes. La `EQUIVALENCIA` de 2º cuatrimestre no pasa a anual. Una materia de otro nivel valorada sólo en anual aparece, y una con `NO CURSA` y `CURSA` no. Cajas, señales de color (I habilitada, J a L como futuro) y tamaño de `EQUIVALENCIA` en H.
+- Campos generales y operativos: con anual salen de la grilla anual; con 2º cuatrimestre, de la de 2º cuatrimestre, aunque las dos tengan valores distintos.
+- 2º cuatrimestre: acumula E a H y deja I vacía y como futuro, aunque la grilla anual tenga notas. La grilla anual no se abre.
+- Fuentes: sin anteriores, se advierte cada falta, del período más reciente al primero. Sin la principal, error sin abrir nada. Una fuente de 2º cuatrimestre que no abre se advierte y se sigue.
+- Valores de 2º cuatrimestre y anual: válidos, excluidos y no admitidos (decimales, `0`, `11`, texto con número y la escala conceptual). En la generación, cada valor no admitido se advierte con su período y su materia, y no se imprime.
+- Estudiante nuevo en 2º cuatrimestre y cambio de orientación (EPSI hasta 3º bimestre, EPSG en 2º cuatrimestre y anual), con las advertencias habituales. Con la hoja origen de los períodos anteriores, la principal no lo encuentra y no se genera.
+- Por curso: la misma grilla de cursos selecciona según la grilla principal (un estudiante listo en 2º cuatrimestre y no en anual, y al revés). `EXPORTADO` también sale de la principal. Nombre, carpeta, `Resumen` y cada hoja son idénticos al informe individual.
+- Todos los cursos con anual, y la exportación a PDF de esos libros (período `anual` escrito en minúsculas en `Control`).
+- Generación por DNI con 2º cuatrimestre, en las dos orientaciones.
+- Regresión: 3º bimestre y 1º cuatrimestre dan el mismo informe y las mismas advertencias con las fuentes de 2º cuatrimestre y anual cargadas en `Control`, sin abrirlas. En 3º bimestre, H e I siguen como futuro.
+- `Control` del xlsx: el selector de período ofrece los cinco períodos del generador, en orden y con su celda de fuente rotulada. Con anual elegido se genera el mismo informe. El manual, los valores válidos y las reglas nombran los dos períodos nuevos. Un período no implementado (recuperación) se sigue rechazando.
+- `Control` de la versión anterior (bloque en `A14:A22`, `B17 = SÍ` para EPSI EPS3): la generación y la exportación a PDF de los cursos marcados fallan con un error que nombra la celda y el rótulo. No se leen fuentes, no se abren libros, no se pide confirmación y no se crean libros ni carpetas. Con ese mismo `Control`, generar y exportar todos los cursos da el mismo resultado que con el actual. Un solo rótulo borrado también detiene la operación. Un rótulo con otro nombre que conserva el curso entre paréntesis se acepta. Los rótulos del arnés son los del xlsx.
+- Ninguna generación de la sección escribe en las grillas.
+
+**No cubierto por el arnés**: todo lo que pasa en Google real con recursos autorizados y datos ficticios. Queda pendiente comprobar la generación individual, por curso, de varios cursos y por DNI; el formato de las columnas H e I (incluido un boletín de dos páginas); los tiempos con cinco fuentes por orientación (en particular, *todos los cursos* con anual), y la exportación a PDF. También queda pendiente la importación del xlsx y de su validación de `B5` en Google Sheets.

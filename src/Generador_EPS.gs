@@ -1,6 +1,6 @@
 /**
  * Generador de boletines EPS
- * 1º bimestre + 1º cuatrimestre + 3º bimestre · generación individual, por curso y de varios cursos
+ * 1º y 3º bimestre, 1º y 2º cuatrimestre y anual · generación individual, por curso y de varios cursos
  *
  * La app no modifica los archivos fuente ni la hoja Plantilla.
  * La salida individual se genera en una hoja revisable llamada Informe_actual;
@@ -37,17 +37,19 @@ const CONFIG_EPS = {
   CELDA_FUENTE_1B: 'B10',
   CELDA_FUENTE_1C: 'B11',
   CELDA_FUENTE_3B: 'B12',
+  CELDA_FUENTE_2C: 'B13',
+  CELDA_FUENTE_ANUAL: 'B14',
 
   // Generación de varios cursos: los 8 cursos de CFP7, cada uno con su marca SÍ / NO en Control.
   CURSOS: [
-    { hojaOrigen: 'EPSI', nivel: 'EPS1', celda: 'B15' },
-    { hojaOrigen: 'EPSI', nivel: 'EPS2', celda: 'B16' },
-    { hojaOrigen: 'EPSI', nivel: 'EPS3', celda: 'B17' },
-    { hojaOrigen: 'EPSI', nivel: 'EPS4', celda: 'B18' },
-    { hojaOrigen: 'EPSG', nivel: 'EPS1', celda: 'B19' },
-    { hojaOrigen: 'EPSG', nivel: 'EPS2', celda: 'B20' },
-    { hojaOrigen: 'EPSG', nivel: 'EPS3', celda: 'B21' },
-    { hojaOrigen: 'EPSG', nivel: 'EPS4', celda: 'B22' }
+    { hojaOrigen: 'EPSI', nivel: 'EPS1', celda: 'B17' },
+    { hojaOrigen: 'EPSI', nivel: 'EPS2', celda: 'B18' },
+    { hojaOrigen: 'EPSI', nivel: 'EPS3', celda: 'B19' },
+    { hojaOrigen: 'EPSI', nivel: 'EPS4', celda: 'B20' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS1', celda: 'B21' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS2', celda: 'B22' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS3', celda: 'B23' },
+    { hojaOrigen: 'EPSG', nivel: 'EPS4', celda: 'B24' }
   ],
 
   ESTADO_FECHA: 'F2',
@@ -61,10 +63,14 @@ const CONFIG_EPS = {
   FILA_OBS_CONVIVENCIA_BASE: 26,
   FILA_PTF_BASE: 29,
 
+  // Períodos admitidos, en el orden del año: cada uno tiene su propia grilla (celdasFuente_) y, al generarlo, las
+  // grillas de los anteriores sólo aportan sus valoraciones (leerFuentes_). Este orden es el de la acumulación.
   PERIODOS: {
     BIMESTRE_1: '1º bimestre',
     CUATRIMESTRE_1: '1º cuatrimestre',
-    BIMESTRE_3: '3º bimestre'
+    BIMESTRE_3: '3º bimestre',
+    CUATRIMESTRE_2: '2º cuatrimestre',
+    ANUAL: 'Anual'
   },
 
   // Hojas de cada grilla, una por orientación. Control!B6 elige la del período a generar.
@@ -73,7 +79,9 @@ const CONFIG_EPS = {
   COLUMNAS_INFORME: {
     '1º bimestre': 5,      // E
     '1º cuatrimestre': 6,  // F
-    '3º bimestre': 7       // G
+    '3º bimestre': 7,      // G
+    '2º cuatrimestre': 8,  // H
+    'Anual': 9             // I (Calificación anual)
   },
   // Las columnas de períodos de la Plantilla siguen el orden del año, de E hasta L (Calificación FINAL):
   // 1B, 1C, 3B, 2º cuatrimestre, anual, recuperación I y II, final.
@@ -240,7 +248,9 @@ function generarBoletinesVariosCursos_(todos) {
 
 // Cursos con SÍ en su celda de Control, en el orden de CONFIG_EPS.CURSOS. NO o vacío no lo incluye.
 // sugerencia: qué hacer si no hay ninguno (la generación y la exportación a PDF tienen su opción para todos).
+// Antes de leer las marcas se comprueba que cada una esté junto a su curso (comprobarRotulosCursos_).
 function leerCursosMarcados_(control, sugerencia) {
+  comprobarRotulosCursos_(control);
   const cursos = CONFIG_EPS.CURSOS.filter(curso => {
     const marca = normalizarTexto_(control.getRange(curso.celda).getDisplayValue());
     if (marca && marca !== 'SI' && marca !== 'NO') {
@@ -255,6 +265,27 @@ function leerCursosMarcados_(control, sugerencia) {
       '. ' + (sugerencia || 'Para generar los 8, usar Informes EPS > Generar boletines de todos los cursos.'));
   }
   return cursos;
+}
+
+/**
+ * Las marcas se leen por coordenada (CONFIG_EPS.CURSOS). En una hoja Control de otra versión del generador esas
+ * celdas pueden ser las marcas de otros cursos: en la anterior a 2º cuatrimestre y anual, el bloque Varios cursos
+ * estaba dos filas más arriba y B17 marcaba EPSI EPS3, no EPSI EPS1. Para no elegir cursos equivocados sin aviso, el
+ * rótulo de la columna A de cada marca debe nombrar su curso, como en src/Generador_EPS.xlsx: "Informática 1 (EPSI EPS1)".
+ * Si alguno no coincide, no se usa ninguna marca.
+ */
+function comprobarRotulosCursos_(control) {
+  const distintos = CONFIG_EPS.CURSOS.map(curso => {
+    const celda = curso.celda.replace(/^[A-Z]+/, 'A');
+    return { curso, celda, rotulo: texto_(control.getRange(celda).getDisplayValue()) };
+  }).filter(r => !normalizarTexto_(r.rotulo).includes('(' + r.curso.hojaOrigen + ' ' + r.curso.nivel + ')'));
+  if (!distintos.length) return;
+  const primero = distintos[0];
+  throw new Error('La hoja ' + CONFIG_EPS.HOJA_CONTROL + ' no corresponde a esta versión del generador: la marca de ' +
+    primero.curso.hojaOrigen + ' ' + primero.curso.nivel + ' se lee en ' + CONFIG_EPS.HOJA_CONTROL + '!' + primero.curso.celda +
+    ', pero el rótulo de ' + primero.celda + ' es "' + primero.rotulo + '"' + (distintos.length > 1 ? ' (y ' + (distintos.length - 1) + ' más)' : '') +
+    '. No se usó ninguna marca: no se generó ni se exportó nada. Actualizar la hoja ' + CONFIG_EPS.HOJA_CONTROL +
+    ' como indica el README (Actualizar el generador institucional).');
 }
 
 // Cada orientación se lee una sola vez (leerFuentes_) y la comparten sus cursos; cada tanda recibe su copia de las advertencias generales.
@@ -359,8 +390,7 @@ function leerDnisPedidos_(entrada) {
  * orden en que se pidieron.
  */
 function prepararTandaDni_(config, pedido) {
-  const P = CONFIG_EPS.PERIODOS;
-  const fuente = { [P.BIMESTRE_1]: config.fuente1B, [P.CUATRIMESTRE_1]: config.fuente1C, [P.BIMESTRE_3]: config.fuente3B }[config.periodo];
+  const fuente = config.fuentes[config.periodo];
   const advertencias = [];
   const orientaciones = {}; // DNI → hojas de orientación de la fuente principal donde figura
   let libroFuente;
@@ -759,28 +789,45 @@ function leerConfiguracion_(control, modo) {
   const dni = individual ? normalizarDni_(control.getRange(CONFIG_EPS.CELDA_DNI).getDisplayValue()) : '';
   const nivel = porCurso ? normalizarNivel_(control.getRange(CONFIG_EPS.CELDA_NIVEL).getDisplayValue()) : '';
   const cicloLectivo = leerCicloLectivo_(control);
-  const fuente1B = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_1B).getDisplayValue());
-  const fuente1C = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_1C).getDisplayValue());
-  const fuente3B = texto_(control.getRange(CONFIG_EPS.CELDA_FUENTE_3B).getDisplayValue());
+  // Grilla de cada período, por su nombre: la del período a generar es la principal (leerFuentes_).
+  const celdas = celdasFuente_();
+  const fuentes = {};
+  periodosAdmitidos_().forEach(p => { fuentes[p] = texto_(control.getRange(celdas[p]).getDisplayValue()); });
 
   if (!periodo) throw new Error('Falta indicar el período a generar.');
-  if (![CONFIG_EPS.PERIODOS.BIMESTRE_1, CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, CONFIG_EPS.PERIODOS.BIMESTRE_3].includes(periodo)) {
+  if (!periodosAdmitidos_().includes(periodo)) {
     throw new Error('El período indicado no está implementado en esta versión: ' + periodo);
   }
   if (modo !== 'cursos' && !hojaOrigen) throw new Error('La hoja origen debe ser EPSI o EPSG.');
   if (porCurso && !nivel) throw new Error('Falta indicar el nivel / curso en la celda ' + CONFIG_EPS.CELDA_NIVEL + ' de Control (EPS1, EPS2, EPS3 o EPS4).');
   if (individual && !dni) throw new Error('Falta completar el DNI del estudiante.');
-  if (periodo === CONFIG_EPS.PERIODOS.BIMESTRE_1 && !fuente1B) {
-    throw new Error('Falta la URL o ID del archivo de valoraciones del 1º bimestre.');
-  }
-  if (periodo === CONFIG_EPS.PERIODOS.CUATRIMESTRE_1 && !fuente1C) {
-    throw new Error('Falta la URL o ID del archivo de valoraciones del 1º cuatrimestre.');
-  }
-  if (periodo === CONFIG_EPS.PERIODOS.BIMESTRE_3 && !fuente3B) {
-    throw new Error('Falta la URL o ID del archivo de valoraciones del 3º bimestre.');
+  if (!fuentes[periodo]) {
+    throw new Error('Falta la URL o ID del archivo de valoraciones ' + archivoPeriodo_(periodo) + '.');
   }
 
-  return { periodo, hojaOrigen, dni, nivel, cicloLectivo, fuente1B, fuente1C, fuente3B };
+  return { periodo, hojaOrigen, dni, nivel, cicloLectivo, fuentes };
+}
+
+// Períodos admitidos, en el orden del año (CONFIG_EPS.PERIODOS).
+function periodosAdmitidos_() {
+  return Object.keys(CONFIG_EPS.PERIODOS).map(clave => CONFIG_EPS.PERIODOS[clave]);
+}
+
+// Celda de Control con la grilla de cada período.
+function celdasFuente_() {
+  const P = CONFIG_EPS.PERIODOS;
+  return {
+    [P.BIMESTRE_1]: CONFIG_EPS.CELDA_FUENTE_1B,
+    [P.CUATRIMESTRE_1]: CONFIG_EPS.CELDA_FUENTE_1C,
+    [P.BIMESTRE_3]: CONFIG_EPS.CELDA_FUENTE_3B,
+    [P.CUATRIMESTRE_2]: CONFIG_EPS.CELDA_FUENTE_2C,
+    [P.ANUAL]: CONFIG_EPS.CELDA_FUENTE_ANUAL
+  };
+}
+
+// Cómo nombra Control el archivo de cada período: "del 1º bimestre"…, "anuales".
+function archivoPeriodo_(periodo) {
+  return periodo === CONFIG_EPS.PERIODOS.ANUAL ? 'anuales' : 'del ' + periodo;
 }
 
 /**
@@ -796,28 +843,24 @@ function generarDatosInforme_(config, advertencias) {
  * De ella salen el estudiante, los campos generales (orientación, observaciones, PTF)
  * y los campos operativos. Las fuentes anteriores sólo aportan materias y valoraciones.
  * Una fuente anterior que no se indicó o no puede leerse se advierte y se omite.
+ * Las anteriores son todos los períodos previos en el orden del año (CONFIG_EPS.PERIODOS), del más reciente al
+ * primero: ese orden decide dónde quedan las materias que no están en la grilla principal (construirMateriasAcumuladas_).
+ * Cada fuente aporta sólo las valoraciones de su propio período: nada se calcula ni se copia entre períodos.
  */
 function leerFuentes_(config, advertencias) {
-  const P = CONFIG_EPS.PERIODOS;
-  const fuentePorPeriodo = { [P.BIMESTRE_1]: config.fuente1B, [P.CUATRIMESTRE_1]: config.fuente1C, [P.BIMESTRE_3]: config.fuente3B };
-  // Fuentes anteriores de cada período, en orden de acumulación, con la advertencia si no se indicaron.
-  const anterioresPorPeriodo = {
-    [P.BIMESTRE_1]: [],
-    [P.CUATRIMESTRE_1]: [
-      [P.BIMESTRE_1, 'No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores.']
-    ],
-    [P.BIMESTRE_3]: [
-      [P.CUATRIMESTRE_1, 'No se indicó archivo de 1º cuatrimestre. El informe se generó sin valores anteriores de 1º cuatrimestre.'],
-      [P.BIMESTRE_1, 'No se indicó archivo de 1º bimestre. El informe se generó sin valores anteriores de 1º bimestre.']
-    ]
-  };
-  if (!anterioresPorPeriodo[config.periodo]) throw new Error('Período no implementado: ' + config.periodo);
+  const periodos = periodosAdmitidos_();
+  const posicion = periodos.indexOf(config.periodo);
+  if (posicion < 0) throw new Error('Período no implementado: ' + config.periodo);
+  const fuentePorPeriodo = config.fuentes;
+  const anterioresPorRecorrer = periodos.slice(0, posicion).reverse();
 
   const principal = abrirFuentePrincipal_(fuentePorPeriodo[config.periodo], config.hojaOrigen, config.periodo, advertencias);
   const anteriores = [];
-  anterioresPorPeriodo[config.periodo].forEach(([periodo, advertenciaSinFuente]) => {
+  anterioresPorRecorrer.forEach(periodo => {
     if (!fuentePorPeriodo[periodo]) {
-      advertencias.push(advertenciaSinFuente);
+      // Con un único período anterior, "sin valores anteriores" ya dice cuáles.
+      advertencias.push('No se indicó archivo de ' + periodo + '. El informe se generó sin valores anteriores' +
+        (anterioresPorRecorrer.length > 1 ? ' de ' + periodo : '') + '.');
       return;
     }
     const fuente = abrirFuenteAnterior_(fuentePorPeriodo[periodo], config.hojaOrigen, periodo, advertencias);
@@ -1354,7 +1397,8 @@ function clasificarValor_(periodo, valor) {
     return { estado: 'invalido', valor: crudo };
   }
 
-  if (periodo === CONFIG_EPS.PERIODOS.CUATRIMESTRE_1) {
+  // 1º y 2º cuatrimestre y anual: misma escala, cada uno sólo con lo que trae su propia grilla.
+  if ([CONFIG_EPS.PERIODOS.CUATRIMESTRE_1, CONFIG_EPS.PERIODOS.CUATRIMESTRE_2, CONFIG_EPS.PERIODOS.ANUAL].includes(periodo)) {
     if (norm === 'ACREDITO') return { estado: 'valido', valor: 'ACREDITÓ' };
     if (/^([1-9]|10)$/.test(crudo)) return { estado: 'valido', valor: crudo };
     return { estado: 'invalido', valor: crudo };
@@ -1389,6 +1433,8 @@ function normalizarPeriodo_(valor) {
   if (['1 bimestre', '1er bimestre', 'primer bimestre'].includes(t)) return CONFIG_EPS.PERIODOS.BIMESTRE_1;
   if (['1 cuatrimestre', '1er cuatrimestre', 'primer cuatrimestre'].includes(t)) return CONFIG_EPS.PERIODOS.CUATRIMESTRE_1;
   if (['3 bimestre', '3er bimestre', 'tercer bimestre'].includes(t)) return CONFIG_EPS.PERIODOS.BIMESTRE_3;
+  if (['2 cuatrimestre', '2do cuatrimestre', 'segundo cuatrimestre'].includes(t)) return CONFIG_EPS.PERIODOS.CUATRIMESTRE_2;
+  if (['anual', 'calificacion anual'].includes(t)) return CONFIG_EPS.PERIODOS.ANUAL;
   return crudo;
 }
 
