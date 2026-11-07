@@ -36,9 +36,36 @@ Para que un generador ya en uso admita 2º cuatrimestre y anual, se actualizan j
 
 Otra opción es armar un generador nuevo como en *Puesta en funcionamiento* y copiar a su `Control` el período, el ciclo, las fuentes y las marcas del anterior. Así se obtiene un libro con otro enlace, y hay que volver a autorizar los scripts.
 
+## Carga docente (en desarrollo)
+
+La carga docente reemplazará la edición directa de las grillas por parte de los docentes ([#30](https://github.com/aeatencio/boletines-eps/issues/30)). Es un proyecto de Apps Script propio, separado del generador, en `src/carga/`. Las grillas siguen siendo la fuente de las valoraciones: la carga escribe en ellas y el generador las lee como hasta ahora.
+
+**Implementado** ([#26](https://github.com/aeatencio/boletines-eps/issues/26), sólo con pruebas locales): el núcleo de consulta y guardado por campo (`Carga_Nucleo.gs`) y su adaptador a los servicios de Google (`Carga_Google.gs`). **Pendiente**: el piloto en Google con datos ficticios (#26), la interfaz docente (#27), el acceso individual y los correos (#28) y la puesta en funcionamiento (#29). Todavía no hay una app web para publicar.
+
+El Equipo EPS configura la carga en una planilla de administración, sin tocar el código:
+
+- `Ventanas`: `Período`, `Desde`, `Hasta`, una fila por período habilitado. La carga abre a las 0:00 de `Desde` y cierra a las 8:00 (hora de Buenos Aires) del primer día hábil posterior a `Hasta`. Los períodos con las mismas fechas, como 2º cuatrimestre y anual, comparten ventana, pero cada uno escribe en su propia grilla.
+- `Feriados`: `Fecha` y `Descripción`, con los feriados nacionales y de CABA. Si falta cargar los del año en que cae un cierre, ese período no abre: la carga no adivina el cierre.
+- `Asignaciones`: `Orientación` (EPSI o EPSG), `Nivel` (EPS1 a EPS4), `Materia` (como en el encabezado de la grilla), `Docente` y `Correo`. Un único docente por orientación y materia; si hay dos, o una fila incompleta, nadie carga esa materia hasta corregirla.
+- `Registro`: lo escribe la carga, una fila por cambio intentado, con fecha, período, grilla, orientación, nivel, materia, estudiante, campo, valor anterior y nuevo, y docente. Su `Estado` distingue lo confirmado de lo inferido:
+  - `aplicado`: la escritura se confirmó;
+  - `inferido`: la celda mostró el valor nuevo, pero no se puede asegurar que lo haya escrito la carga;
+  - `incierto`: la escritura falló de forma ambigua y la celda no muestra el valor nuevo. Pudo no aplicarse, o aplicarse y ser corregida; la carga no la repite;
+  - `revisar`: hay que mirar la celda que indica el detalle;
+  - `no aplicado`: no se llegó a escribir;
+  - `pendiente`: sin resolver.
+
+  Conviene protegerlo para que sólo lo edite la cuenta propietaria, y consultarlo con vistas de filtro.
+
+Mientras una ventana está abierta, el Equipo EPS no debería insertar, borrar ni ordenar filas o columnas de las grillas. La carga ubica cada celda por DNI y encabezado, y vuelve a comprobarla antes de escribir. Aun así, un cambio de forma en el instante exacto de una escritura puede desviarla; si ocurre, queda `revisar` con la celda a verificar. Editar valores en la grilla sí se puede: la carga no pisa lo que cambió desde que el docente lo vio.
+
+La grilla de cada período es la que figura en `Control` del generador (`B10` a `B14`), leída en cada operación. Si el Equipo EPS la cambia con la carga abierta, los guardados con la grilla anterior se rechazan. Dos períodos nunca comparten grilla: si en `Control` figuran iguales, ninguno de los dos abre. Ventanas, feriados y asignaciones también se leen en cada operación.
+
+Propiedades del script: `ADMIN_ID` (planilla de administración) y `GENERADOR_ID` (planilla del generador). Desde el editor, la cuenta propietaria puede ejecutar `prepararAdministracionCarga` (crea las hojas que falten, sólo con sus encabezados), `verificarCargaDocente` (problemas de configuración, de las grillas y del Registro) y `resolverPendientesCarga` (resuelve las filas `pendiente` viejas mirando la celda).
+
 ## Organización
 
-- `src/`: estado actual del generador (planilla y Apps Script).
+- `src/`: estado actual del generador (planilla y Apps Script); en `src/carga/`, la carga docente.
 - `tests/`: pruebas locales.
 - `reference/`: casos de prueba y datos sintéticos.
 - `legacy/`: versiones anteriores, como referencia.
@@ -58,6 +85,14 @@ node tests/run.js
 ```
 
 Los casos cubiertos están descritos en [`reference/casos_de_prueba.md`](reference/casos_de_prueba.md).
+
+Las pruebas de la carga docente sólo necesitan Node.js, en cualquier sistema. Cada prueba describe su caso; el número opcional es la cantidad de corridas de la simulación aleatoria (30 por defecto):
+
+```
+node tests/carga.js [corridas]
+```
+
+Usan dobles de los servicios de Google: no reemplazan el piloto en Google real.
 
 ## Datos
 
