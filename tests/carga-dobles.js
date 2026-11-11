@@ -1,12 +1,13 @@
 /**
  * Carga docente EPS (#27) · entorno local compartido por tests/carga-interfaz.js y tests/carga-dev.js.
  *
- * Carga en un contexto propio, como un proyecto de Apps Script, los tres archivos reales del servidor
- * (Carga_Nucleo.gs, Carga_Google.gs y Carga_Web.gs) con dobles de SpreadsheetApp, LockService, PropertiesService,
- * Utilities, Session y HtmlService, sobre una planilla de administración, un Control y grillas con datos ficticios.
+ * Carga en un contexto propio, como un proyecto de Apps Script, todos los .gs reales del servidor (núcleo,
+ * adaptador, acceso, correos y app web) con dobles de SpreadsheetApp, LockService, PropertiesService, Utilities
+ * (con un HMAC-SHA256 real, de Node), Session, HtmlService, MailApp y ScriptApp, sobre una planilla de administración,
+ * un Control y grillas con datos ficticios.
  *
- * Única sustitución del código del servidor: identificarDocente_ (el límite de #28), por un mapa de credenciales
- * aleatorias que crea este entorno (ver sustituirIdentidad). Todo lo demás corre tal cual.
+ * No hay sustituciones del código del servidor: los enlaces de los docentes ficticios los calcula el propio código
+ * de #28 (ver enlacesReales) con un secreto ficticio. MailApp no envía nada: guarda los mensajes en memoria.
  *
  * Los dobles de Sheets son más simples que los de tests/carga.js (que prueban el núcleo a fondo): alcanzan para la
  * interfaz e inyectan las fallas que ésta debe mostrar bien (escritura ambigua, lock ocupado, cambios del Equipo EPS).
@@ -19,7 +20,11 @@ const crypto = require("crypto");
 
 const RAIZ = path.resolve(__dirname, "..");
 const leer = p => fs.readFileSync(path.join(RAIZ, p), "utf8");
-const ARCHIVOS_SERVIDOR = ["src/carga/Carga_Nucleo.gs", "src/carga/Carga_Google.gs", "src/carga/Carga_Web.gs"];
+const ARCHIVOS_SERVIDOR = ["src/carga/Carga_Nucleo.gs", "src/carga/Carga_Google.gs", "src/carga/Carga_Acceso.gs", "src/carga/Carga_Correo.gs",
+  "src/carga/Carga_Correo_Google.gs", "src/carga/Carga_Web.gs"];
+// Secreto y URL ficticios (nunca los de un proyecto real).
+const CLAVE_FICTICIA = "clave-ficticia-de-pruebas-0123456789abcdef0123456789abcdef";
+const URL_APP = "https://script.google.com/macros/s/AKfycb_ficticio_de_pruebas_000000000000/exec";
 const ZONA = "America/Argentina/Buenos_Aires";
 
 // ================================================================ hojas
@@ -216,7 +221,9 @@ function escenario(C, opciones) {
       Ventanas: new Hoja([["Período", "Desde", "Hasta"], [P2C, desde, hasta], [PAN, desde, hasta], ["3er bimestre", isoBA(hoy - 60 * 86400000), isoBA(hoy - 45 * 86400000)]]),
       Feriados: new Hoja([["Fecha", "Descripción"], [(anio - 1) + "-12-25", "Navidad"], [anio + "-12-25", "Navidad"], [(anio + 1) + "-01-01", "Año Nuevo"]]),
       Asignaciones: new Hoja(ASIGNACIONES.map(f => f.slice())),
-      Registro: new Hoja([cargaDe(C).REGISTRO.slice()])
+      Enlaces: new Hoja([["Correo", "Versión"]]),
+      Registro: new Hoja([cargaDe(C).REGISTRO.slice()]),
+      Correos: new Hoja([vm.runInContext("CORREO", C).COLUMNAS.slice()])
     },
     control: new Hoja(control),
     lock: nuevoLock()
@@ -239,7 +246,14 @@ function servidor(opciones) {
   }
   const registroConsola = [];
   const consola = { log: m => registroConsola.push(String(m)), error: m => registroConsola.push("ERROR " + String(m)), warn: () => {} };
-  const estado = { s: null, aperturas: [], propietario: "eps@ficticio.example", usuario: "eps@ficticio.example" };
+  const estado = {
+    s: null, aperturas: [], propietario: "eps@ficticio.example", usuario: "eps@ficticio.example",
+    props: { ADMIN_ID, GENERADOR_ID, CLAVE_ENLACES: CLAVE_FICTICIA, URL_CARGA: URL_APP },
+    // MailApp: mensajes "enviados" (en memoria), fallas para los próximos envíos ('fallar') y cuota restante.
+    correo: { enviados: [], fallas: [], cuota: 1500, intentos: 0 },
+    // ScriptApp: activadores del proyecto. LockService.getUserLock: un lock aparte del del script.
+    activadores: [], userLock: nuevoLock(), hmac: 0
+  };
   const libro = id => {
     const s = estado.s;
     const hojas = id === ADMIN_ID ? s.admin : id === GENERADOR_ID ? { Control: s.control } : s.grillas[id];
@@ -247,14 +261,52 @@ function servidor(opciones) {
     estado.aperturas.push(id);
     return { getSheetByName: n => hojas[n] || null, getSpreadsheetTimeZone: () => ZONA, insertSheet: n => (hojas[n] = new Hoja([[""]])) };
   };
+  // Como Apps Script: bytes con signo; base64 web-safe con relleno.
+  const firmaHmac = (valor, clave) => {
+    estado.hmac++;
+    return Array.from(crypto.createHmac("sha256", Buffer.from(String(clave), "utf8")).update(Buffer.from(String(valor), "utf8")).digest()).map(b => (b > 127 ? b - 256 : b));
+  };
+  let uid = 1000;
+  const disparador = (funcion) => {
+    const t = { uid: "ficticio-" + (++uid), funcion, config: {} };
+    const b = {
+      timeBased: () => b, atHour: h => { t.config.hora = h; return b; }, everyDays: n => { t.config.cadaDias = n; return b; },
+      inTimezone: z => { t.config.zona = z; return b; }, nearMinute: m => { t.config.minuto = m; return b; },
+      create: () => { estado.activadores.push(t); return objetoActivador(t); }
+    };
+    return b;
+  };
+  const objetoActivador = t => ({ getUniqueId: () => t.uid, getHandlerFunction: () => t.funcion, __t: t });
   const globales = {
     console: consola,
     Date: RelojDate,
     SpreadsheetApp: { openById: libro, flush: () => {} },
-    LockService: { getScriptLock: () => estado.s.lock },
-    PropertiesService: { getScriptProperties: () => ({ getProperty: k => ({ ADMIN_ID, GENERADOR_ID })[k] || null }) },
-    Utilities: { formatDate: (d, zona) => new Intl.DateTimeFormat("en-CA", { timeZone: zona, year: "numeric", month: "2-digit", day: "2-digit" }).format(d) },
+    LockService: { getScriptLock: () => estado.s.lock, getUserLock: () => estado.userLock },
+    PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in estado.props ? estado.props[k] : null), setProperty: (k, v) => { estado.props[k] = String(v); } }) },
+    Utilities: {
+      Charset: { UTF_8: "UTF-8" },
+      formatDate: (d, zona) => new Intl.DateTimeFormat("en-CA", { timeZone: zona, year: "numeric", month: "2-digit", day: "2-digit" }).format(d),
+      computeHmacSha256Signature: (valor, clave, charset) => { if (charset !== "UTF-8") throw new Error("charset no simulado"); return firmaHmac(valor, clave); },
+      base64EncodeWebSafe: bytes => Buffer.from(bytes.map(b => b & 255)).toString("base64").replace(/\+/g, "-").replace(/\//g, "_"),
+      getUuid: () => crypto.randomUUID()
+    },
     Session: { getEffectiveUser: () => ({ getEmail: () => estado.propietario }), getActiveUser: () => ({ getEmail: () => estado.usuario }) },
+    MailApp: {
+      sendEmail: m => {
+        estado.correo.intentos++;
+        const falla = estado.correo.fallas.shift();
+        if (falla === "fallar") throw new Error("Error del servicio de correo (simulado)");
+        if (estado.correo.cuota < 1) throw new Error("Service invoked too many times for one day: email. (simulado)");
+        estado.correo.cuota--;
+        estado.correo.enviados.push(Object.assign({ al: new RelojDate().toISOString() }, m));
+      },
+      getRemainingDailyQuota: () => estado.correo.cuota
+    },
+    ScriptApp: {
+      newTrigger: f => disparador(f),
+      getProjectTriggers: () => estado.activadores.map(objetoActivador),
+      deleteTrigger: o => { estado.activadores = estado.activadores.filter(t => t !== o.__t); }
+    },
     HtmlService: {
       createTemplateFromFile: nombre => {
         const t = { evaluate: () => ({ contenido: renderPagina(t.credencial, {}, nombre), setTitle() { return this; }, addMetaTag() { return this; } }) };
@@ -271,14 +323,17 @@ function servidor(opciones) {
 }
 
 /**
- * LÍMITE #28 en el entorno local: reemplaza identificarDocente_ por un mapa de credenciales aleatorias creadas acá.
- * La página sólo conoce su credencial; el servidor decide el correo. Devuelve { credencial → correo }.
+ * Enlaces reales (#28) de los docentes, calculados por el código del servidor (enlaceVigente_, con el secreto
+ * ficticio y la configuración vigente del entorno). Devuelve { credencial → correo }; un docente sin enlace vigente
+ * (sin asignaciones o sin tramo empezado) no figura.
  */
-function sustituirIdentidad(ctx, correos) {
+function enlacesReales(ctx, correos) {
+  const s = ctx.serviciosCarga_();
+  const datos = s.datos();
+  const ahora = s.reloj();
+  const config = ctx.configuracion_(datos, ahora);
   const mapa = Object.create(null);
-  correos.forEach(c => { mapa[crypto.randomBytes(18).toString("base64url")] = c; });
-  ctx.__credencialesLocales = mapa;
-  vm.runInContext("identificarDocente_ = function (credencial) { var c = __credencialesLocales[credencial]; return c ? { correo: c } : null; };", ctx);
+  correos.forEach(c => { const e = ctx.enlaceVigente_(config, datos.enlaces, s.firmar, c, ahora); if (e.credencial) mapa[e.credencial] = c; });
   return mapa;
 }
 
@@ -309,5 +364,5 @@ function cliente() {
   return ctx.CargaCliente;
 }
 
-module.exports = { cargaDe, Hoja, nuevoLock, grillaSintetica, escenario, servidor, sustituirIdentidad, renderPagina, cliente, escHtml, leer,
+module.exports = { cargaDe, Hoja, nuevoLock, grillaSintetica, escenario, servidor, enlacesReales, renderPagina, cliente, escHtml, leer, CLAVE_FICTICIA, URL_APP,
   P2C, PAN, P3B, ID, OTRA_2C, URL, DOCENTES, ADMIN_ID, GENERADOR_ID, ZONA, isoBA };

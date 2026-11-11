@@ -1,24 +1,19 @@
 /**
- * Carga docente EPS (#27) · app web: la página docente y sus dos llamadas.
+ * Carga docente EPS (#27, #28) · app web: la página docente y sus dos llamadas.
  *
- * ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
- * │ LÍMITE PENDIENTE DE #28. NO PUBLICAR ESTE PROYECTO COMO APP WEB HASTA RESOLVERLO.                              │
- * │                                                                                                                │
- * │ La identidad del docente la decide sólo el servidor, en identificarDocente_(credencial), a partir de la        │
- * │ credencial opaca que llega en cada llamada (hoy, el parámetro «k» del enlace, que doGet pasa a la página).     │
- * │ La página nunca envía un correo ni otra identidad, y nada de lo que envía se usa como identidad sin esa         │
- * │ verificación. #28 debe implementar identificarDocente_ (enlace individual, estable durante la ventana y         │
- * │ revocable) y decidir el despliegue (ejecutar como la cuenta propietaria; quién puede abrir la app).            │
- * │                                                                                                                │
- * │ Mientras tanto identificarDocente_ rechaza toda credencial: la página carga, pero la consulta y el guardado     │
- * │ responden «acceso» sin abrir ninguna planilla. Para desarrollar y probar la interfaz, tests/carga-dev.js y      │
- * │ tests/carga-interfaz.js sustituyen sólo esta función por credenciales aleatorias creadas por el propio          │
- * │ servidor local, sobre datos ficticios. El núcleo no cambia: sigue recibiendo el correo ya identificado.        │
- * └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ * Identidad (#28). La decide sólo el servidor, en cada llamada, con la credencial opaca del enlace individual
+ * (parámetro «k», que doGet pasa escapado a la página y la página devuelve en cada llamada). identificarDocente_ la
+ * verifica contra los enlaces vigentes (Carga_Acceso.gs) antes de abrir ninguna grilla; una credencial mal formada se
+ * descarta sin leer nada. La página nunca envía un correo ni otra identidad, y nada de lo que envía se usa como
+ * identidad sin esa verificación. En el guardado, la credencial se vuelve a verificar dentro del lock (gancho
+ * «acceso» de guardarDocente_): una revocación ocurrida mientras se esperaba el lock rechaza el guardado sin escribir.
+ * Las asignaciones vigentes siguen decidiendo qué puede ver y cargar cada docente (lo comprueba el núcleo).
  *
- * Funciones invocables por google.script.run (sin "_"): cargaConsultar y cargaGuardar. Ambas identifican al
- * docente en cada llamada, antes de tocar ninguna planilla. El pedido de guardado se reduce a sus campos
- * conocidos: un campo de más (por ejemplo, un correo) nunca llega al núcleo.
+ * Despliegue (appsscript.json, sección webapp): se ejecuta como la cuenta propietaria; los docentes no necesitan
+ * acceso a las grillas ni a la administración. Quién puede abrir la app («access») se confirma en el piloto en Google.
+ *
+ * Funciones invocables por google.script.run (sin "_"): cargaConsultar y cargaGuardar. El pedido de guardado se
+ * reduce a sus campos conocidos: un campo de más (por ejemplo, un correo) nunca llega al núcleo.
  *
  * Archivos HTML del proyecto: Carga_Pagina (la página) y Carga_Cliente (su lógica sin DOM: cola de guardado,
  * situación de la Calificación y modelo de la consulta), que la página incluye.
@@ -26,7 +21,6 @@
 const CARGA_WEB = {
   PARAMETRO: 'k',
   MAX_CREDENCIAL: 512,
-  ACCESO: 'No se pudo verificar tu acceso. Abrí la carga desde el enlace de tu último correo.',
   CAMPOS_PEDIDO: ['operacion', 'periodo', 'fuente', 'orientacion', 'materia', 'dni', 'campo', 'esperado', 'nuevo']
 };
 
@@ -47,26 +41,47 @@ function incluirCarga_(nombre) {
 
 /** Lo que el docente identificado por la credencial puede ver y cargar ahora (ver consultarDocente_). */
 function cargaConsultar(credencial) {
-  return consultarInterfaz_(identificarDocente_, consultarCarga_, credencial);
+  const acceso = accesoCarga_();
+  return consultarInterfaz_(acceso.identificar, correo => consultarCarga_(correo, acceso.servicios), credencial);
 }
 
 /** Guarda un campo para el docente identificado por la credencial (ver guardarDocente_). */
 function cargaGuardar(credencial, pedido) {
-  return guardarInterfaz_(identificarDocente_, guardarCampoCarga_, credencial, pedido);
+  const acceso = accesoCarga_();
+  return guardarInterfaz_(acceso.identificar, (correo, p) => guardarCampoCarga_(correo, p, acceso.servicios), credencial, pedido);
 }
 
 /**
- * LÍMITE #28. Docente verificado para una credencial opaca: { correo } o null.
- *
- * Hoy no existe ningún mecanismo de acceso: rechaza todo, sin mirar la credencial. #28 la reemplaza. Requisitos
- * para el reemplazo: verificar en el servidor, en cada llamada, que la credencial es vigente y de ese docente; no
- * aceptar nunca una identidad que el cliente pueda elegir; que una credencial revocada deje de valer en la llamada
- * siguiente. Las asignaciones vigentes siguen decidiendo qué puede cargar (lo comprueba el núcleo, también dentro
- * del lock). Si la revocación tiene que valer también durante la espera del lock, el núcleo ya ofrece el lugar:
- * el gancho revalidar de guardarDocente_.
+ * Identificación de una llamada: los servicios de Google se crean sólo si la credencial tiene la forma de una
+ * credencial, y la misma ejecución los reutiliza para consultar o guardar.
  */
-function identificarDocente_(credencial) {
-  return null;
+function accesoCarga_() {
+  const a = { servicios: null };
+  a.identificar = credencial => {
+    if (!ACCESO.FORMATO.test(credencial)) return null;
+    a.servicios = serviciosCarga_();
+    return identificarDocente_(a.servicios, credencial);
+  };
+  return a;
+}
+
+/**
+ * #28. Docente verificado para una credencial opaca: { correo } o null. Lee la configuración (Ventanas, Feriados,
+ * Asignaciones, Enlaces) y nunca una grilla. Si la credencial vale:
+ *  - la consulta o el guardado reutilizan esa misma lectura (servicios.reutilizarDatos), sin leer dos veces;
+ *  - servicios.acceso queda listo para que el núcleo la vuelva a comprobar con cada configuración que lea, también
+ *    dentro del lock: si dejó de valer (revocada, vencida o el docente ya no tiene asignaciones), rechazo «acceso».
+ */
+function identificarDocente_(servicios, credencial) {
+  if (typeof credencial !== 'string' || !ACCESO.FORMATO.test(credencial)) return null;
+  const datos = servicios.datos();
+  const correo = docenteDeCredencial_(configuracion_(datos, servicios.reloj()), datos.enlaces, credencial, servicios.firmar, servicios.reloj());
+  if (!correo) return null;
+  servicios.reutilizarDatos(datos);
+  servicios.acceso = (d, config) => {
+    if (!credencialVigentePara_(config, d.enlaces, credencial, correo, servicios.firmar, servicios.reloj())) throw rechazo_('acceso', ACCESO.MOTIVO);
+  };
+  return { correo };
 }
 
 // ---------------------------------------------------------------- lógica sin servicios de Google (probada en Node)
@@ -93,7 +108,7 @@ function consultarInterfaz_(identificar, consultar, credencial) {
     console.error(JSON.stringify({ acceso: 'error', error: e.message }));
     return { estado: 'error', motivo: 'No se pudo verificar tu acceso. Volvé a intentarlo.' };
   }
-  if (!docente) return { estado: 'rechazado', codigo: 'acceso', motivo: CARGA_WEB.ACCESO };
+  if (!docente) return { estado: 'rechazado', codigo: 'acceso', motivo: ACCESO.MOTIVO };
   const respuesta = consultar(docente.correo);
   if (respuesta && respuesta.estado === 'ok') respuesta.limites = { observaciones: CARGA.MAX_OBSERVACIONES };
   return respuesta;
@@ -111,7 +126,7 @@ function guardarInterfaz_(identificar, guardar, credencial, pedido) {
     console.error(JSON.stringify({ acceso: 'error', error: e.message }));
     return { estado: 'reintentar', motivo: 'No se pudo verificar tu acceso. Se reintenta.' };
   }
-  if (!docente) return { estado: 'rechazado', codigo: 'acceso', motivo: CARGA_WEB.ACCESO };
+  if (!docente) return { estado: 'rechazado', codigo: 'acceso', motivo: ACCESO.MOTIVO };
   return guardar(docente.correo, pedidoDePagina_(pedido));
 }
 

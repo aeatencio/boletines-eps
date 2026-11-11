@@ -2,16 +2,18 @@
  * Carga docente EPS (#26) · adaptador a los servicios de Google del núcleo (Carga_Nucleo.gs).
  *
  * Propiedades del script:
- *   ADMIN_ID      planilla de administración de la carga: Ventanas, Feriados, Asignaciones y Registro
- *   GENERADOR_ID  planilla del generador; sólo se lee Control!B10:B14 (la grilla de cada período)
+ *   ADMIN_ID       planilla de administración de la carga: Ventanas, Feriados, Asignaciones, Enlaces, Registro y Correos
+ *   GENERADOR_ID   planilla del generador; sólo se lee Control!B10:B14 (la grilla de cada período)
+ *   CLAVE_ENLACES  secreto de los enlaces individuales (#28); lo crea prepararAdministracionCarga si falta
+ *   URL_CARGA      URL /exec de la app web publicada (#28); la usan los correos para armar los enlaces
  *
  * Todo se lee de nuevo en cada operación: el Equipo EPS puede cambiar ventanas, feriados, asignaciones y fuentes
  * con la carga abierta. Las grillas se abren por el ID que figura en Control, nunca por otro camino.
  *
  * consultarCarga_ y guardarCampoCarga_ reciben el correo del docente ya identificado y, por terminar en "_",
  * google.script.run no puede invocarlas. La página (#27, Carga_Web.gs) las llama después de identificar al docente
- * en el servidor; la identificación es #28. Las demás funciones sin "_" de este archivo son para el propietario,
- * desde el editor.
+ * en el servidor con su enlace (#28). Los correos de #28 tienen su adaptador en Carga_Correo_Google.gs. Las demás
+ * funciones sin "_" de este archivo son para el propietario, desde el editor.
  */
 
 function serviciosCarga_() {
@@ -19,7 +21,7 @@ function serviciosCarga_() {
   const adminId = propiedades.getProperty('ADMIN_ID');
   const generadorId = propiedades.getProperty('GENERADOR_ID');
   if (!adminId || !generadorId) throw new Error('Faltan las propiedades del script ADMIN_ID o GENERADOR_ID.');
-  let admin = null, generador = null;
+  let admin = null, generador = null, leidos = null;
   const abrirAdmin = () => admin || (admin = SpreadsheetApp.openById(adminId));
   // Abiertas una vez por ejecución: la revalidación dentro del lock sólo vuelve a leer sus celdas.
   const abrirGenerador = () => generador || (generador = SpreadsheetApp.openById(generadorId));
@@ -33,7 +35,14 @@ function serviciosCarga_() {
   };
   return {
     reloj: () => new Date(),
-    datos: () => datosCarga_(abrirAdmin(), abrirGenerador()),
+    // reutilizarDatos: la lectura con la que se identificó al docente sirve como la primera lectura de la operación,
+    // que es casi simultánea; toda lectura posterior (la revalidación dentro del lock) es nueva.
+    datos: () => {
+      if (leidos) { const d = leidos; leidos = null; return d; }
+      return datosCarga_(abrirAdmin(), abrirGenerador());
+    },
+    reutilizarDatos: d => { leidos = d; },
+    firmar: firmaEnlaces_(propiedades),
     hoja,
     valoresHoja: (fuente, orientacion) => hoja(fuente, orientacion).getDataRange().getDisplayValues(),
     registro: () => {
@@ -41,8 +50,21 @@ function serviciosCarga_() {
       if (!r) throw rechazo_('registro', 'Falta la hoja ' + CARGA.HOJAS.registro + ' en la planilla de administración. Avisá al Equipo EPS.');
       return r;
     },
+    admin: abrirAdmin,
     lock: () => LockService.getScriptLock(),
     flush: () => SpreadsheetApp.flush()
+  };
+}
+
+/**
+ * firmar(texto) de los enlaces (#28): HMAC-SHA256 con la propiedad CLAVE_ENLACES, en base64url sin relleno. Sin la
+ * propiedad (o demasiado corta), lanza: ningún enlace se puede verificar ni emitir.
+ */
+function firmaEnlaces_(propiedades) {
+  return texto => {
+    const clave = propiedades.getProperty(ACCESO.PROPIEDAD_CLAVE);
+    if (!clave || clave.length < ACCESO.MIN_CLAVE) throw new Error('Falta la propiedad del script ' + ACCESO.PROPIEDAD_CLAVE + ' (ejecutar prepararAdministracionCarga).');
+    return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(texto, clave, Utilities.Charset.UTF_8)).replace(/=+$/, '');
   };
 }
 
@@ -67,25 +89,28 @@ function datosCarga_(admin, generador) {
   const valores = control.getRange(primera, 2, Math.max.apply(null, filas) - primera + 1, 1).getDisplayValues();
   const fuentes = {};
   CARGA.PERIODOS.forEach((p, i) => { fuentes[p] = valores[filas[i] - primera][0]; });
-  return { ventanas: tabla(CARGA.HOJAS.ventanas), feriados: tabla(CARGA.HOJAS.feriados), asignaciones: tabla(CARGA.HOJAS.asignaciones), fuentes };
+  return { ventanas: tabla(CARGA.HOJAS.ventanas), feriados: tabla(CARGA.HOJAS.feriados), asignaciones: tabla(CARGA.HOJAS.asignaciones), enlaces: tabla(CARGA.HOJAS.enlaces), fuentes };
 }
 
-/** Lo que el docente puede ver y cargar ahora (ver consultarDocente_). */
-function consultarCarga_(correo) {
+/** Lo que el docente puede ver y cargar ahora (ver consultarDocente_). servicios: los de la identificación, si los hay. */
+function consultarCarga_(correo, servicios) {
   try {
-    return consultarDocente_(serviciosCarga_(), correo);
+    return consultarDocente_(servicios || serviciosCarga_(), correo);
   } catch (e) {
     console.error(JSON.stringify({ consulta: 'error', error: e.message }));
     return { estado: 'error', motivo: e.rechazo ? e.message : 'No se pudo leer la carga. Volvé a intentarlo; si persiste, avisá al Equipo EPS.' };
   }
 }
 
-/** Guarda un campo (ver guardarDocente_). Agrega la duración y deja una línea en el registro de ejecución. */
-function guardarCampoCarga_(correo, pedido) {
+/**
+ * Guarda un campo (ver guardarDocente_). Agrega la duración y deja una línea en el registro de ejecución.
+ * servicios: los de la identificación (con su gancho «acceso»), si los hay.
+ */
+function guardarCampoCarga_(correo, pedido, servicios) {
   const inicio = Date.now();
   let respuesta;
   try {
-    respuesta = guardarDocente_(serviciosCarga_(), correo, pedido);
+    respuesta = guardarDocente_(servicios || serviciosCarga_(), correo, pedido);
   } catch (e) {
     respuesta = { estado: 'reintentar', motivo: 'No se pudo guardar. Se reintenta; si persiste, avisá al Equipo EPS.', error: e.message };
   }
@@ -96,22 +121,36 @@ function guardarCampoCarga_(correo, pedido) {
 
 // ---------------------------------------------------------------- para el propietario, desde el editor
 
-/** Crea en la planilla de administración las hojas que falten, sólo con sus encabezados. Nunca toca una existente. */
+/**
+ * Crea en la planilla de administración las hojas que falten, sólo con sus encabezados, y el secreto de los
+ * enlaces (CLAVE_ENLACES) si falta. Nunca toca una hoja existente ni reemplaza el secreto: borrarlo y volver a
+ * ejecutar esta función invalida a la vez todos los enlaces.
+ */
 function prepararAdministracionCarga() {
   soloPropietario_();
-  const admin = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('ADMIN_ID'));
+  const propiedades = PropertiesService.getScriptProperties();
+  const admin = SpreadsheetApp.openById(propiedades.getProperty('ADMIN_ID'));
   [[CARGA.HOJAS.ventanas, CARGA.ENCABEZADOS.ventanas], [CARGA.HOJAS.feriados, CARGA.ENCABEZADOS.feriados],
-    [CARGA.HOJAS.asignaciones, CARGA.ENCABEZADOS.asignaciones], [CARGA.HOJAS.registro, CARGA.REGISTRO]].forEach(([nombre, enc]) => {
+    [CARGA.HOJAS.asignaciones, CARGA.ENCABEZADOS.asignaciones], [CARGA.HOJAS.enlaces, CARGA.ENCABEZADOS.enlaces],
+    [CARGA.HOJAS.registro, CARGA.REGISTRO], [CARGA.HOJAS.correos, CORREO.COLUMNAS]].forEach(([nombre, enc]) => {
     if (admin.getSheetByName(nombre)) return;
     admin.insertSheet(nombre).getRange(1, 1, 1, enc.length).setValues([enc]).setFontWeight('bold');
   });
-  console.log('Listo. Completar Ventanas, Feriados y Asignaciones; proteger el Registro para que sólo lo edite esta cuenta.');
+  if (!propiedades.getProperty(ACCESO.PROPIEDAD_CLAVE)) {
+    // getUuid usa un generador aleatorio seguro: dos UUID v4 son 244 bits.
+    propiedades.setProperty(ACCESO.PROPIEDAD_CLAVE, (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, ''));
+    console.log('Se creó la propiedad ' + ACCESO.PROPIEDAD_CLAVE + ' (secreto de los enlaces). No la copies a otro lugar.');
+  }
+  console.log('Listo. Completar Ventanas, Feriados y Asignaciones; proteger Registro y Correos para que sólo los edite esta cuenta. ' +
+    'Para los correos: publicar la app web, guardar su URL /exec en la propiedad ' + CORREO.PROPIEDAD_URL + ' y ejecutar activarCorreosCarga.');
 }
 
-/** Problemas de configuración, de las grillas de las ventanas vigentes y del Registro (ver verificarConfiguracion_). */
+/** Problemas de configuración, de las grillas de las ventanas vigentes, del Registro, de los enlaces y de los correos. */
 function verificarCargaDocente() {
   soloPropietario_();
-  const r = verificarConfiguracion_(serviciosCarga_());
+  const servicios = serviciosCorreo_();
+  const r = verificarConfiguracion_(servicios);
+  r.problemas = r.problemas.concat(problemasAccesoCorreo_(servicios));
   console.log(['Ventanas vigentes o próximas:'].concat(r.ventanas.length ? r.ventanas : ['(ninguna)'], '', 'Problemas:',
     r.problemas.length ? r.problemas : ['(ninguno)']).join('\n'));
   return r;

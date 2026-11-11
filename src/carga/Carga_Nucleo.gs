@@ -82,15 +82,17 @@ const CARGA = {
   ESPERA_LOCK_MS: 10000,
   OPERACION: /^[A-Za-z0-9_-]{8,80}$/,
 
-  // Planilla de administración: el Equipo EPS edita Ventanas, Feriados y Asignaciones; el Registro lo escribe la carga.
-  HOJAS: { ventanas: 'Ventanas', feriados: 'Feriados', asignaciones: 'Asignaciones', registro: 'Registro' },
+  // Planilla de administración: el Equipo EPS edita Ventanas, Feriados, Asignaciones y Enlaces (#28); el Registro y
+  // Correos (#28) los escribe la carga.
+  HOJAS: { ventanas: 'Ventanas', feriados: 'Feriados', asignaciones: 'Asignaciones', enlaces: 'Enlaces', registro: 'Registro', correos: 'Correos' },
   ENCABEZADOS: {
     ventanas: ['Período', 'Desde', 'Hasta'],
     feriados: ['Fecha', 'Descripción'],
-    asignaciones: ['Orientación', 'Nivel', 'Materia', 'Docente', 'Correo']
+    asignaciones: ['Orientación', 'Nivel', 'Materia', 'Docente', 'Correo'],
+    enlaces: ['Correo', 'Versión']
   },
   // Columnas obligatorias de cada hoja (Descripción de Feriados es sólo para el Equipo EPS).
-  OBLIGATORIOS: { ventanas: ['Período', 'Desde', 'Hasta'], feriados: ['Fecha'], asignaciones: ['Orientación', 'Nivel', 'Materia', 'Docente', 'Correo'] },
+  OBLIGATORIOS: { ventanas: ['Período', 'Desde', 'Hasta'], feriados: ['Fecha'], asignaciones: ['Orientación', 'Nivel', 'Materia', 'Docente', 'Correo'], enlaces: ['Correo', 'Versión'] },
   // Registro: estado y detalle contiguos, para marcarlos con una sola escritura.
   REGISTRO: ['Fecha', 'Estado', 'Detalle', 'Intentos', 'Operación', 'Correo', 'Docente', 'Período', 'Fuente',
     'Orientación', 'Nivel', 'Materia', 'DNI', 'Estudiante', 'Campo', 'Anterior', 'Nuevo']
@@ -187,11 +189,11 @@ function tablaAdministracion_(filas, hoja) {
  *  - advertencias: filas que no se pueden vincular a nada; no habilitan a nadie.
  */
 function configuracion_(datos, ahora) {
-  const config = { problemas: [], advertencias: [], periodos: {}, asignaciones: [], porMateria: {} };
+  const config = { problemas: [], advertencias: [], periodos: {}, asignaciones: [], porMateria: {}, feriados: {} };
   CARGA.PERIODOS.forEach(p => { config.periodos[p] = { periodo: p, fuente: '', ventana: null, estado: 'sin ventana', problemas: [], problemasFuente: [] }; });
 
-  // Feriados nacionales y de CABA.
-  const feriados = {};
+  // Feriados nacionales y de CABA (también los usan los correos de #28 para los días hábiles).
+  const feriados = config.feriados;
   try {
     tablaAdministracion_(datos.feriados, 'feriados').forEach(f => {
       const fecha = fechaCivil_(f['Fecha']);
@@ -489,34 +491,47 @@ function consultarDocente_(servicios, correoDocente) {
     periodos: periodos.map(p => {
       const base = { periodo: p.periodo, fuente: p.fuente, desde: p.ventana.desde, hasta: p.ventana.hasta };
       if (p.problemas.length) return Object.assign(base, { problema: 'La carga de ' + p.periodo + ' no está disponible por un problema de configuración. Avisá al Equipo EPS.', materias: [] });
-      const hojas = {};
-      const hoja = orientacion => {
-        if (!hojas[orientacion]) {
-          try {
-            const valores = servicios.valoresHoja(p.fuente, orientacion);
-            hojas[orientacion] = { valores, estructura: estructuraGrilla_(valores, p.periodo) };
-          } catch (e) { hojas[orientacion] = { problema: e.rechazo ? e.message : 'No se pudo leer la hoja ' + orientacion + ' de la grilla de ' + p.periodo + '.' }; }
-        }
-        return hojas[orientacion];
-      };
       return Object.assign(base, {
         cierre: p.ventana.cierre.toISOString(),
         escala: CARGA.ESCALA_DOCENTE[p.periodo].slice(),
         opciones: { calidad: CARGA.OPCIONES.calidad.slice(), participacion: CARGA.OPCIONES.participacion.slice() },
-        materias: propias.map(a => {
-          const item = { orientacion: a.orientacion, nivel: a.nivel, materia: a.materia, clave: a.clave, estudiantes: [] };
-          if (a.ambigua) return Object.assign(item, { problema: 'La materia tiene una asignación ambigua. Avisá al Equipo EPS.' });
-          const h = hoja(a.orientacion);
-          if (h.problema) return Object.assign(item, { problema: h.problema });
-          const materia = h.estructura.materias.find(m => m.clave === a.clave);
-          if (!materia) return Object.assign(item, { problema: 'La materia no figura en la grilla de ' + p.periodo + '. Avisá al Equipo EPS.' });
-          if (materia.nivel !== a.nivel) return Object.assign(item, { problema: 'La asignación tiene un nivel distinto del de la grilla. Avisá al Equipo EPS.' });
-          const estudiantes = leerMateria_(h.valores, h.estructura, materia, p.periodo);
-          return Object.assign(item, { materia: materia.nombre, estudiantes, conteo: contar_(estudiantes) });
-        })
+        materias: materiasDocente_(propias, p, lectorHojas_(servicios))
       });
     })
   };
+}
+
+/**
+ * Lector de las hojas de las grillas con caché por fuente y orientación: { valores, estructura } o { problema }.
+ * La consulta lo usa por llamada; los correos (#28), uno solo para todos los docentes de la ejecución.
+ */
+function lectorHojas_(servicios) {
+  const hojas = {};
+  return (p, orientacion) => {
+    const k = p.fuente + '|' + orientacion;
+    if (!hojas[k]) {
+      try {
+        const valores = servicios.valoresHoja(p.fuente, orientacion);
+        hojas[k] = { valores, estructura: estructuraGrilla_(valores, p.periodo) };
+      } catch (e) { hojas[k] = { problema: e.rechazo ? e.message : 'No se pudo leer la hoja ' + orientacion + ' de la grilla de ' + p.periodo + '.' }; }
+    }
+    return hojas[k];
+  };
+}
+
+/** Las materias asignadas (propias) en el período p, con sus cursantes y conteo, o el problema que impide verlas. */
+function materiasDocente_(propias, p, hoja) {
+  return propias.map(a => {
+    const item = { orientacion: a.orientacion, nivel: a.nivel, materia: a.materia, clave: a.clave, estudiantes: [] };
+    if (a.ambigua) return Object.assign(item, { problema: 'La materia tiene una asignación ambigua. Avisá al Equipo EPS.' });
+    const h = hoja(p, a.orientacion);
+    if (h.problema) return Object.assign(item, { problema: h.problema });
+    const materia = h.estructura.materias.find(m => m.clave === a.clave);
+    if (!materia) return Object.assign(item, { problema: 'La materia no figura en la grilla de ' + p.periodo + '. Avisá al Equipo EPS.' });
+    if (materia.nivel !== a.nivel) return Object.assign(item, { problema: 'La asignación tiene un nivel distinto del de la grilla. Avisá al Equipo EPS.' });
+    const estudiantes = leerMateria_(h.valores, h.estructura, materia, p.periodo);
+    return Object.assign(item, { materia: materia.nombre, estudiantes, conteo: contar_(estudiantes) });
+  });
 }
 
 // ================================================================ Registro
@@ -817,7 +832,10 @@ function validarPedido_(pedido) {
 
 /**
  * Punto de entrada de cada guardado, para un docente ya identificado (la identificación es de #28).
- * servicios: { reloj, datos, hoja(fuente, orientación), registro, lock, flush }, leídos en cada operación.
+ * servicios: { reloj, datos, hoja(fuente, orientación), registro, lock, flush, acceso? }, leídos en cada operación.
+ * acceso(datos, config), opcional: lanza rechazo_('acceso') si la credencial con la que se identificó al docente ya no
+ * vale con esa configuración (revocada, vencida o sin asignaciones). Se llama al empezar y dentro del lock: una
+ * revocación ocurrida mientras el guardado esperaba el lock lo rechaza sin escribir.
  * Nunca lanza: devuelve 'guardado', 'coincide', 'conflicto', 'reintentar', 'incierto' o 'rechazado'. Un rechazo
  * garantiza que este pedido no intentó escribir; si la operación ya figuraba en el Registro, «previo» informa su estado.
  */
@@ -826,7 +844,10 @@ function guardarDocente_(servicios, correoDocente, pedido) {
   let ctx = null;
   try {
     validarPedido_(pedido);
-    const config = configuracion_(servicios.datos(), servicios.reloj());
+    const datos = servicios.datos();
+    const config = configuracion_(datos, servicios.reloj());
+    // #28: el acceso (enlace) vigente se comprueba al empezar y otra vez dentro del lock, antes que todo lo demás.
+    if (servicios.acceso) servicios.acceso(datos, config);
     const p = periodoHabilitado_(config, pedido.periodo, pedido.fuente);
     ctx = {
       config, grilla: servicios.hoja(p.fuente, pedido.orientacion), registro: servicios.registro(), lock: servicios.lock(),
@@ -834,7 +855,9 @@ function guardarDocente_(servicios, correoDocente, pedido) {
       correo, cierre: p.ventana.cierre, escribiendo: false,
       // Dentro del lock: la configuración vigente en ese momento, con la misma fuente que vio el docente.
       revalidar: materia => {
-        const vigente = configuracion_(servicios.datos(), servicios.reloj());
+        const datosVigentes = servicios.datos();
+        const vigente = configuracion_(datosVigentes, servicios.reloj());
+        if (servicios.acceso) servicios.acceso(datosVigentes, vigente);
         const q = periodoHabilitado_(vigente, p.periodo, p.fuente);
         autorizarMateria_(vigente, correo, pedido.orientacion, materia);
         ctx.config = vigente;

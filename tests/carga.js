@@ -1230,7 +1230,7 @@ prueba("invariantes: lock liberado siempre tras un flush; ningún «guardado» c
 
 // ================================================================ 10. adaptador con dobles de los servicios de Google
 
-seccion("10. Adaptador (Carga_Google.gs) con dobles de SpreadsheetApp, LockService, PropertiesService, Utilities y Session");
+seccion("10. Adaptador (Carga_Google.gs, con los demás .gs del proyecto) con dobles de SpreadsheetApp, LockService, PropertiesService, Utilities, Session y ScriptApp");
 function google(s, extra) {
   const control = Array.from({ length: 14 }, () => ["", ""]);
   CARGA.PERIODOS.forEach(p => { control[Number(CARGA.CELDAS_FUENTE[p].slice(1)) - 1][1] = s.control[p]; });
@@ -1255,12 +1255,17 @@ function google(s, extra) {
   const globales = {
     SpreadsheetApp: { openById: libro, flush: () => {} },
     LockService: { getScriptLock: () => estado.lock },
-    PropertiesService: { getScriptProperties: () => ({ getProperty: k => estado.props[k] || null }) },
-    Utilities: { formatDate: (d, zona, patron) => { if (patron !== "yyyy-MM-dd") throw new Error("patrón no simulado"); return new Intl.DateTimeFormat("en-CA", { timeZone: zona, year: "numeric", month: "2-digit", day: "2-digit" }).format(d); } },
-    Session: { getEffectiveUser: () => ({ getEmail: () => estado.propietario }), getActiveUser: () => ({ getEmail: () => estado.usuario }) }
+    PropertiesService: { getScriptProperties: () => ({ getProperty: k => estado.props[k] || null, setProperty: (k, v) => { estado.props[k] = v; } }) },
+    Utilities: {
+      formatDate: (d, zona, patron) => { if (patron !== "yyyy-MM-dd") throw new Error("patrón no simulado"); return new Intl.DateTimeFormat("en-CA", { timeZone: zona, year: "numeric", month: "2-digit", day: "2-digit" }).format(d); },
+      getUuid: () => require("crypto").randomUUID()
+    },
+    Session: { getEffectiveUser: () => ({ getEmail: () => estado.propietario }), getActiveUser: () => ({ getEmail: () => estado.usuario }) },
+    ScriptApp: { getProjectTriggers: () => [] }
   };
   globales.console = { log: () => {}, error: () => {} };
-  const ctx = contexto([NUCLEO, "src/carga/Carga_Google.gs"], globales);
+  // Como en Apps Script, todos los .gs del proyecto comparten el ámbito global.
+  const ctx = contexto(fs.readdirSync(path.join(RAIZ, "src/carga")).filter(a => a.endsWith(".gs")).map(a => "src/carga/" + a), globales);
   return { ctx, estado, control: estado.libros.GENERADOR_ficticio_00000001.hojas.Control };
 }
 function fechaCivilPrueba(t) { const m = String(t).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); if (m) return m[3] + "-" + m[2].padStart(2, "0") + "-" + m[1].padStart(2, "0"); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : ""; }
@@ -1310,9 +1315,17 @@ prueba("funciones del propietario: preparar crea sólo las hojas que faltan; ver
   ctx.prepararAdministracionCarga();
   igual(estado.libros.ADMIN_ficticia_000000000001.hojas.Feriados.v[0], ["Fecha", "Descripción"]);
   igual(diferencias(antes, asign), []);
+  // #28: crea Enlaces y Correos, y el secreto de los enlaces (64 caracteres); una segunda ejecución no lo reemplaza.
+  const hojasAdmin = estado.libros.ADMIN_ficticia_000000000001.hojas;
+  igual([hojasAdmin.Enlaces.v[0], hojasAdmin.Correos.v[0][0]], [["Correo", "Versión"], "Fecha"]);
+  const clave = estado.props.CLAVE_ENLACES;
+  cierto(/^[0-9a-f]{64}$/.test(clave), "secreto de los enlaces");
+  ctx.prepararAdministracionCarga();
+  igual(estado.props.CLAVE_ENLACES, clave);
   const r = ctx.verificarCargaDocente();
   cierto(r.problemas.some(p => /Faltan los feriados/.test(p)), "sin feriados, el cierre no se puede calcular");
   cierto(r.problemas.some(p => /ningún docente asignado/.test(p)), r.problemas.slice(0, 3).join(" | "));
+  cierto(r.problemas.some(p => /URL_CARGA/.test(p)) && r.problemas.some(p => /no están activados/.test(p)), "verificar informa lo que falta para los correos");
   estado.usuario = "visitante@bue.edu.ar";
   lanza(() => ctx.verificarCargaDocente(), /propietario/);
   lanza(() => ctx.resolverPendientesCarga(), /propietario/);

@@ -5,8 +5,8 @@
  *
  *   node tests/carga-interfaz.js
  *
- * 1. Límite de identidad (#28): sin el reemplazo de identificarDocente_, nada se lee ni se escribe; la página nunca
- *    elige la identidad.
+ * 1. Identidad (#28): sólo con el enlace real (calculado por el servidor) se lee o se escribe; la página nunca elige
+ *    la identidad. Las pruebas de enlaces, revocación y correos están en tests/carga-acceso.js y tests/carga-correo.js.
  * 2. Reglas del cliente iguales a las del núcleo (paridad).
  * 3. Cola de guardado, con un transporte simulado: identidad de cada operación en los reintentos, estados y avisos.
  * 4. Cola + servidor real (los tres .gs) con dobles de Google y fallas inyectadas.
@@ -65,11 +65,11 @@ const campos = ["calificacion", "calidad", "participacion", "observaciones"];
 
 // ================================================================ 1. límite de identidad (#28)
 
-seccion("1. Límite de identidad (#28): la página nunca elige la identidad; sin #28, nada se lee ni se escribe");
+seccion("1. Identidad (#28): la página nunca elige la identidad; sin un enlace vigente, nada se lee de las grillas ni se escribe");
 
-prueba("sin el reemplazo de #28, toda credencial se rechaza («acceso») sin abrir ninguna planilla ni escribir: vacía, un correo asignado, un token, un objeto, muy larga", () => {
+prueba("sin un enlace vigente, toda credencial se rechaza («acceso») sin abrir ninguna planilla ni escribir: vacía, un correo asignado, un token, un objeto, muy larga", () => {
   const S = D.servidor();
-  const credenciales = [undefined, null, "", "   ", D.DOCENTES.matematica.correo, "Zx81y_token-valido-de-aspecto", { correo: D.DOCENTES.matematica.correo }, "a".repeat(5000)];
+  const credenciales = [undefined, null, "", "   ", D.DOCENTES.matematica.correo, "Zx81y_token-valido-de-aspecto", { correo: D.DOCENTES.matematica.correo }, "a".repeat(5000), "A".repeat(42) + "=", "A".repeat(44)];
   credenciales.forEach(c => {
     const r = S.ctx.cargaConsultar(c);
     igual([r.estado, r.codigo], ["rechazado", "acceso"], "consulta con " + JSON.stringify(c));
@@ -84,10 +84,14 @@ prueba("sin el reemplazo de #28, toda credencial se rechaza («acceso») sin abr
 
 prueba("con credenciales locales: la identidad sale de la credencial; un «correo» en el pedido no llega al núcleo y el Registro atribuye el cambio al dueño de la credencial", () => {
   const S = D.servidor();
-  const mapa = D.sustituirIdentidad(S.ctx, [D.DOCENTES.lengua.correo, D.DOCENTES.matematica.correo]);
+  const mapa = D.enlacesReales(S.ctx, [D.DOCENTES.lengua.correo, D.DOCENTES.matematica.correo]);
   const deLengua = Object.keys(mapa).find(k => mapa[k] === D.DOCENTES.lengua.correo);
   const deMate = Object.keys(mapa).find(k => mapa[k] === D.DOCENTES.matematica.correo);
   igual(S.ctx.cargaConsultar("credencial-inventada").codigo, "acceso");
+  // Con la forma de una credencial pero falsa: se lee la administración para verificarla, nunca una grilla.
+  const aperturas = S.estado.aperturas.length;
+  igual(S.ctx.cargaConsultar("A".repeat(43)).codigo, "acceso");
+  igual(S.estado.aperturas.slice(aperturas).filter(id => id !== D.ADMIN_ID && id !== D.GENERADOR_ID), [], "no abrió grillas");
   const vista = S.ctx.cargaConsultar(deMate);
   const p = vista.periodos[0], m = p.materias.find(x => x.materia === "Matemática II");
   const e = m.estudiantes.find(x => x.situacion === "pendiente");
@@ -110,7 +114,7 @@ prueba("pedidoDePagina_ deja sólo los nueve campos conocidos y sólo si son tex
   igual(Object.keys(limpio).sort(), ["campo", "dni", "esperado", "fuente", "materia", "nuevo", "operacion", "orientacion", "periodo"]);
   igual(json(S.ctx.pedidoDePagina_({ esperado: 7, nuevo: null })), {});
   igual(S.ctx.pedidoDePagina_("texto"), null);
-  const mapa = D.sustituirIdentidad(S.ctx, [D.DOCENTES.matematica.correo]);
+  const mapa = D.enlacesReales(S.ctx, [D.DOCENTES.matematica.correo]);
   const r = S.ctx.cargaGuardar(Object.keys(mapa)[0], "no es un pedido");
   igual([r.estado, r.codigo], ["rechazado", "pedido"]);
 });
@@ -118,22 +122,28 @@ prueba("pedidoDePagina_ deja sólo los nueve campos conocidos y sólo si son tex
 prueba("si la verificación de identidad falla con una excepción: la consulta informa un error y el guardado responde «reintentar», sin escribir", () => {
   const S = D.servidor();
   vm.runInContext("identificarDocente_ = function () { throw new Error('servicio de enlaces caído (simulado)'); };", S.ctx);
-  igual(S.ctx.cargaConsultar("x").estado, "error");
-  igual(S.ctx.cargaGuardar("x", { operacion: "op-x-000002" }).estado, "reintentar");
+  const forma = "B".repeat(43); // con forma de credencial: llega a identificarDocente_
+  igual(S.ctx.cargaConsultar(forma).estado, "error");
+  igual(S.ctx.cargaGuardar(forma, { operacion: "op-x-000002" }).estado, "reintentar");
   igual(S.estado.aperturas, []);
 });
 
-prueba("funciones invocables desde la página: sólo doGet, cargaConsultar y cargaGuardar, más las tres del propietario (que exigen ser el propietario)", () => {
-  const publicas = ["src/carga/Carga_Nucleo.gs", "src/carga/Carga_Google.gs", "src/carga/Carga_Web.gs"]
-    .flatMap(a => [...D.leer(a).matchAll(/^function\s+([A-Za-z0-9_$]+)\s*\(/gm)].map(m => m[1]))
-    .filter(n => !n.endsWith("_")).sort();
-  igual(publicas, ["cargaConsultar", "cargaGuardar", "doGet", "prepararAdministracionCarga", "resolverPendientesCarga", "verificarCargaDocente"]);
+prueba("funciones invocables desde la página: sólo doGet, cargaConsultar y cargaGuardar; las demás públicas (de todos los .gs) exigen ser la propietaria o, enviarCorreosCarga, el activador real", () => {
+  const fs = require("fs");
+  const archivos = fs.readdirSync(require("path").join(__dirname, "../src/carga")).filter(a => a.endsWith(".gs")).map(a => "src/carga/" + a);
+  const publicas = archivos.flatMap(a => [...D.leer(a).matchAll(/^function\s+([A-Za-z0-9_$]+)\s*\(/gm)].map(m => m[1])).filter(n => !n.endsWith("_")).sort();
+  const propietaria = ["activarCorreosCarga", "desactivarCorreosCarga", "enviarCorreosCarga", "prepararAdministracionCarga", "previsualizarCorreosCarga", "resolverPendientesCarga", "verificarCargaDocente"];
+  igual(publicas, ["cargaConsultar", "cargaGuardar", "doGet"].concat(propietaria).sort());
   const S = D.servidor();
   S.estado.usuario = "visitante@ficticio.example";
-  ["prepararAdministracionCarga", "verificarCargaDocente", "resolverPendientesCarga"].forEach(f => {
+  propietaria.forEach(f => {
     let error = null; try { S.ctx[f](); } catch (e) { error = e; }
     cierto(error && /propietario/.test(error.message), f + " sin control de propietario");
   });
+  // Un visitante que inventa el evento de un activador tampoco puede disparar los correos.
+  let error = null; try { S.ctx.enviarCorreosCarga({ triggerUid: "ficticio-1001" }); } catch (e) { error = e; }
+  cierto(error && /propietario/.test(error.message), "triggerUid inventado");
+  igual([S.estado.correo.intentos, S.estado.activadores.length, S.s.admin.Correos.getLastRow()], [0, 0, 1]);
 });
 
 prueba("doGet: la credencial del enlace llega escapada a la página (sin inyección), se descarta si supera 512 caracteres, y la página incluye su lógica", () => {
@@ -145,6 +155,12 @@ prueba("doGet: la credencial del enlace llega escapada a la página (sin inyecci
   cierto(html.includes("var CargaCliente = (function"), "falta Carga_Cliente");
   cierto(S.ctx.doGet({ parameter: { k: "x".repeat(600) } }).contenido.includes('data-credencial=""'));
   cierto(S.ctx.doGet({}).contenido.includes('data-credencial=""'));
+});
+
+prueba("ajuste menor de #27: Observaciones muestra «Escribí una observación…», sin destacarla como la única opcional", () => {
+  const html = D.renderPagina("cred");
+  cierto(html.includes("placeholder: 'Escribí una observación…'"), "placeholder nuevo");
+  cierto(!/Texto libre|\(opcional\)/.test(html), "quedó el texto anterior");
 });
 
 prueba("la página no carga recursos externos (la credencial no viaja en ningún Referer) y sus pedidos sólo llevan credencial y pedido", () => {
@@ -183,7 +199,7 @@ prueba("identificadores de operación: cumplen CARGA.OPERACION y no se repiten e
 
 prueba("modelo: 2C y anual son materias distintas con claves distintas (la clave incluye período y fuente); se marcan los cursantes de otros grupos", () => {
   const S = D.servidor();
-  const mapa = D.sustituirIdentidad(S.ctx, [D.DOCENTES.matematica.correo]);
+  const mapa = D.enlacesReales(S.ctx, [D.DOCENTES.matematica.correo]);
   const m = K.modelo(S.ctx.cargaConsultar(Object.keys(mapa)[0]));
   igual(m.periodos.map(p => p.periodo), [D.P2C, D.PAN]);
   const [a, b] = m.periodos.map(p => p.materias.find(x => x.materia === "Matemática II"));
@@ -527,7 +543,7 @@ seccion("4. Cola + servidor real (Carga_Web.gs → Carga_Google.gs → Carga_Nuc
  * servidor la ejecuta y la respuesta se pierde).
  */
 function pagina(S, correo, opciones) {
-  const mapa = D.sustituirIdentidad(S.ctx, [correo]);
+  const mapa = D.enlacesReales(S.ctx, [correo]);
   const credencial = Object.keys(mapa)[0];
   const red = [];
   const envios = [];
@@ -824,13 +840,22 @@ prueba("el Equipo EPS cambia la grilla de 2C en Control: el guardado con la fuen
   igual([P.campo(nuevo, "calificacion").estado, S.s.grillas[D.OTRA_2C].EPSI.escrituras.length, grilla(S, D.P2C).escrituras.length], ["guardado", 1, 0]);
 });
 
-prueba("docente sin materias asignadas y período sin ventanas: la consulta lo dice sin datos", () => {
+prueba("docente sin materias asignadas, sin ventanas o después del cierre (#28): sin asignaciones o sin ventana empezada no hay enlace; después del cierre el enlace sigue abriendo la página, sin períodos", () => {
   const S = D.servidor();
-  const P = pagina(S, D.DOCENTES.sinMaterias.correo);
-  igual([P.consultar().estado, P.consultar().codigo], ["rechazado", "asignacion"]);
+  igual(Object.keys(D.enlacesReales(S.ctx, [D.DOCENTES.sinMaterias.correo])).length, 0, "sin asignaciones no hay enlace");
+  const P = pagina(S, D.DOCENTES.matematica.correo);
+  igual(P.consultar().estado, "ok");
+  // El enlace de una docente a la que le sacan todas sus materias deja de valer («acceso»), sin leer grillas.
+  const asignaciones = S.s.admin.Asignaciones.v.map(f => f.slice());
+  S.s.admin.Asignaciones.v = asignaciones.filter(f => f[4] !== D.DOCENTES.matematica.correo);
+  igual(P.consultar().codigo, "acceso");
+  S.s.admin.Asignaciones.v = asignaciones;
+  // Después del cierre, el mismo enlace muestra que no hay cargas abiertas.
+  S.reloj.desfase = new Date(P.modelo.periodos[0].cierre).getTime() - Date.now() + 1000;
+  igual([P.consultar().estado, P.modelo.periodos.length], ["ok", 0]);
+  // Sin ninguna ventana, ningún enlace vale.
   S.s.admin.Ventanas.v = [S.s.admin.Ventanas.v[0]];
-  const Q = pagina(S, D.DOCENTES.matematica.correo);
-  igual([Q.consultar().estado, Q.modelo.periodos.length], ["ok", 0]);
+  igual(P.consultar().codigo, "acceso");
 });
 
 // ================================================================ ejecución

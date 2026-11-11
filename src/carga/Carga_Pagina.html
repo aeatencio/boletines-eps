@@ -672,7 +672,7 @@
       var control, soloLectura = null, pie = null;
       caja.appendChild(h('label', { for: idControl, text: c.nombre }));
       if (c.id === 'observaciones') {
-        control = h('textarea', { id: idControl, rows: '1', maxlength: String(S.modelo.maxObservaciones), placeholder: 'Texto libre (opcional)' });
+        control = h('textarea', { id: idControl, rows: '1', maxlength: String(S.modelo.maxObservaciones), placeholder: 'Escribí una observación…' });
         var contador = h('span', { class: 'contador' });
         var guardar = h('button', { class: 'boton chico', type: 'button', text: 'Guardar', hidden: true, onclick: function () { guardarObservacion(clave, control); } });
         pie = h('div', { class: 'obs-pie' }, contador, guardar);
