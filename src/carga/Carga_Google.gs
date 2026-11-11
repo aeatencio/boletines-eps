@@ -8,9 +8,10 @@
  * Todo se lee de nuevo en cada operación: el Equipo EPS puede cambiar ventanas, feriados, asignaciones y fuentes
  * con la carga abierta. Las grillas se abren por el ID que figura en Control, nunca por otro camino.
  *
- * Todavía no hay doGet, enlaces ni correos: la interfaz es #27 y la identificación del docente, #28.
  * consultarCarga_ y guardarCampoCarga_ reciben el correo del docente ya identificado y, por terminar en "_",
- * google.script.run no puede invocarlas. Las funciones sin "_" son para el propietario, desde el editor.
+ * google.script.run no puede invocarlas. La página (#27, Carga_Web.gs) las llama después de identificar al docente
+ * en el servidor; la identificación es #28. Las demás funciones sin "_" de este archivo son para el propietario,
+ * desde el editor.
  */
 
 function serviciosCarga_() {

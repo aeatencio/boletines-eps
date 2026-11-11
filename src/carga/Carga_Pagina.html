@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Carga de valoraciones EPS</title>
+  <!--
+    Carga docente EPS (#27) · página docente. Sin recursos externos: la credencial del enlace no viaja en ningún
+    Referer. La lógica sin DOM (cola de guardado, situación, modelo) está en Carga_Cliente; las llamadas al servidor
+    son cargaConsultar y cargaGuardar (Carga_Web.gs), siempre con la credencial, nunca con una identidad.
+  -->
+  <style>
+    :root {
+      --fondo: #f3f4f7; --superficie: #ffffff; --texto: #1c2230; --suave: #5a6374; --borde: #d8dce3; --borde-fuerte: #b9bfca;
+      --acento: #1f5fa8; --acento-fondo: #e8f0fa;
+      --ok: #17703a; --ok-fondo: #e7f4ec;
+      --aviso: #8a5200; --aviso-fondo: #fff3dc; --aviso-borde: #f0c77a;
+      --error: #b42318; --error-fondo: #fdecea; --error-borde: #f2b8b2;
+      --neutro-fondo: #eef0f3;
+      --pendiente: #a65f00; --pendiente-fondo: #fff1d6;
+      --radio: 10px; --sombra: 0 1px 2px rgba(20, 30, 50, .06), 0 1px 3px rgba(20, 30, 50, .08);
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { margin: 0; background: var(--fondo); color: var(--texto); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+    button, select, textarea, input { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    h1, h2, h3, p { margin: 0; }
+    .oculto { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    :focus-visible { outline: 3px solid #7aa7e0; outline-offset: 1px; }
+
+    /* barra superior */
+    .barra { position: sticky; top: 0; z-index: 10; background: var(--superficie); border-bottom: 1px solid var(--borde); }
+    .barra-in { max-width: 1240px; margin: 0 auto; padding: 8px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .titulo { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+    .titulo strong { font-size: 16px; }
+    .titulo span { color: var(--suave); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .barra-acc { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .pildora { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; background: var(--neutro-fondo); color: var(--suave); border: 1px solid transparent; }
+    .pildora:empty { display: none; }
+    .pildora.ok { background: var(--ok-fondo); color: var(--ok); }
+    .pildora.curso { background: var(--acento-fondo); color: var(--acento); }
+    .pildora.aviso { background: var(--aviso-fondo); color: var(--aviso); border-color: var(--aviso-borde); }
+    button.pildora { cursor: pointer; }
+    .datos-al { color: var(--suave); font-size: 12px; }
+    .boton { border: 1px solid var(--borde-fuerte); background: var(--superficie); border-radius: 8px; padding: 6px 12px; min-height: 36px; }
+    .boton:hover { background: #f6f7f9; }
+    .boton:disabled { opacity: .55; cursor: default; }
+    .boton.primario { background: var(--acento); border-color: var(--acento); color: #fff; }
+    .boton.chico { padding: 3px 9px; min-height: 30px; font-size: 13px; }
+
+    main { max-width: 1240px; margin: 0 auto; padding: 16px 16px 72px; }
+    .mensaje { background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio); padding: 20px; box-shadow: var(--sombra); max-width: 640px; margin: 24px auto; }
+    .mensaje h2 { font-size: 18px; margin-bottom: 6px; }
+    .mensaje p + p, .mensaje p + .boton { margin-top: 10px; }
+    .banda { border-radius: 8px; padding: 10px 12px; margin: 10px 0; border: 1px solid; display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+    .banda p { flex: 1 1 260px; }
+    .banda.error { background: var(--error-fondo); border-color: var(--error-borde); color: #7a1a12; }
+    .banda.aviso { background: var(--aviso-fondo); border-color: var(--aviso-borde); color: #5e3a00; }
+    .banda.info { background: var(--acento-fondo); border-color: #bcd2ee; color: #183f6d; }
+    .cargando { color: var(--suave); padding: 32px 0; text-align: center; }
+
+    /* inicio: períodos y materias */
+    .saludo { margin: 4px 0 14px; color: var(--suave); }
+    .periodo { margin: 0 0 22px; }
+    .periodo-cab { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 10px; padding-left: 10px; border-left: 4px solid var(--p, var(--acento)); }
+    .periodo-cab h2 { font-size: 19px; }
+    .cierre { color: var(--suave); font-size: 13px; }
+    .cierre.cerca { color: var(--aviso); font-weight: 600; }
+    .cierre.cerrada { color: var(--error); font-weight: 600; }
+    .materias { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+    .materia-tarjeta { text-align: left; background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio); padding: 12px 14px; box-shadow: var(--sombra); display: flex; flex-direction: column; gap: 4px; border-top: 3px solid var(--p, var(--acento)); }
+    .materia-tarjeta:hover { border-color: var(--borde-fuerte); }
+    .materia-tarjeta:disabled { cursor: default; opacity: .8; }
+    .mt-nombre { font-weight: 650; font-size: 16px; }
+    .mt-detalle, .mt-cuenta { color: var(--suave); font-size: 13px; }
+    .mt-estado { font-size: 13px; font-weight: 600; }
+    .mt-estado.pend { color: var(--pendiente); }
+    .mt-estado.ok { color: var(--ok); }
+    .mt-estado.error { color: var(--error); font-weight: 500; }
+    .progreso { height: 6px; background: var(--neutro-fondo); border-radius: 3px; overflow: hidden; margin: 4px 0 2px; }
+    .progreso span { display: block; height: 100%; background: var(--p, var(--acento)); }
+
+    /* materia */
+    .materia-cab { background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio); padding: 12px 14px; box-shadow: var(--sombra); border-top: 4px solid var(--p, var(--acento)); margin-bottom: 12px; }
+    .materia-cab .fila { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+    .materia-cab h2 { font-size: 20px; }
+    .chip-periodo { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 13px; font-weight: 650; color: #fff; background: var(--p, var(--acento)); }
+    .otro-periodo { font-size: 13px; color: var(--suave); }
+    .otro-periodo button { margin-left: 4px; }
+    .resumen-materia { font-size: 13px; color: var(--suave); margin-top: 6px; }
+    .herramientas { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+    .herramientas input[type=search] { flex: 1 1 220px; min-height: 38px; padding: 6px 10px; border: 1px solid var(--borde-fuerte); border-radius: 8px; background: #fff; }
+    .filtros { display: flex; flex-wrap: wrap; gap: 6px; }
+    .filtro { border: 1px solid var(--borde-fuerte); background: var(--superficie); border-radius: 999px; padding: 4px 12px; min-height: 34px; font-size: 14px; }
+    .filtro[aria-pressed=true] { background: var(--texto); border-color: var(--texto); color: #fff; }
+
+    .lista { display: flex; flex-direction: column; gap: 10px; }
+    .encabezados { display: none; }
+    .est { background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio); padding: 12px 14px; box-shadow: var(--sombra);
+      display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+    .est.pendiente { box-shadow: inset 4px 0 0 var(--pendiente), var(--sombra); }
+    .est-id { grid-column: 1 / -1; }
+    .est-nombre { font-size: 16px; font-weight: 650; }
+    .marcas { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 3px; }
+    .marca { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--neutro-fondo); color: var(--suave); }
+    .marca.pendiente { background: var(--pendiente-fondo); color: var(--pendiente); }
+    .marca.valorada { background: var(--ok-fondo); color: var(--ok); }
+    .marca.revisar, .marca.problema { background: var(--error-fondo); color: var(--error); }
+    .marca.grupo { background: var(--acento-fondo); color: var(--acento); }
+    .campo { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .campo.calificacion, .campo.observaciones { grid-column: 1 / -1; }
+    .campo label { font-size: 12px; font-weight: 600; color: var(--suave); }
+    .campo select, .campo textarea { width: 100%; min-height: 40px; border: 1px solid var(--borde-fuerte); border-radius: 8px; padding: 7px 9px; background: #fff; }
+    .campo select:disabled, .campo textarea:disabled { background: var(--neutro-fondo); color: var(--suave); }
+    .campo textarea { resize: vertical; min-height: 40px; line-height: 1.35; }
+    .campo.sucio textarea { border-color: var(--aviso-borde); background: #fffdf6; }
+    .campo.atencion select, .campo.atencion textarea { border-color: var(--aviso); }
+    .solo-lectura { min-height: 40px; display: flex; flex-direction: column; justify-content: center; padding: 4px 10px; border-radius: 8px; background: var(--neutro-fondo); }
+    .solo-lectura b { font-size: 15px; }
+    .solo-lectura small { color: var(--suave); font-size: 12px; line-height: 1.25; }
+    .estado { font-size: 12px; color: var(--suave); }
+    .estado:empty { display: none; }
+    .estado.guardado { color: var(--ok); font-weight: 600; }
+    .estado.curso { color: var(--acento); }
+    .estado.aviso { color: var(--aviso); font-weight: 600; }
+    .estado.error { color: var(--error); font-weight: 600; }
+    .obs-pie { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+    .obs-pie .contador { font-size: 12px; color: var(--suave); margin-right: auto; }
+    .avisos { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; }
+    .avisos:empty { display: none; }
+    .aviso-campo { border-radius: 8px; padding: 8px 10px; font-size: 14px; border: 1px solid var(--aviso-borde); background: var(--aviso-fondo); color: #5e3a00; }
+    .aviso-campo.error { border-color: var(--error-borde); background: var(--error-fondo); color: #7a1a12; }
+    .aviso-campo .acciones { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .vacio { color: var(--suave); padding: 18px 4px; }
+
+    @media (min-width: 900px) {
+      .encabezados { display: grid; grid-template-columns: minmax(190px, 1.25fr) 150px 180px 150px minmax(240px, 2fr); gap: 12px; padding: 0 15px; font-size: 12px; font-weight: 650; color: var(--suave); text-transform: uppercase; letter-spacing: .03em; }
+      .lista { gap: 0; background: var(--superficie); border: 1px solid var(--borde); border-radius: var(--radio); box-shadow: var(--sombra); overflow: hidden; }
+      .lista .encabezados { padding: 10px 15px; border-bottom: 1px solid var(--borde); background: #fafbfc; }
+      .est { grid-template-columns: minmax(190px, 1.25fr) 150px 180px 150px minmax(240px, 2fr); border: 0; border-bottom: 1px solid var(--borde); border-radius: 0; box-shadow: none; align-items: start; }
+      .est:last-child { border-bottom: 0; }
+      .est.pendiente { box-shadow: inset 4px 0 0 var(--pendiente); }
+      .est-id, .campo.calificacion, .campo.observaciones { grid-column: auto; }
+      .campo label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .avisos { grid-column: 2 / -1; }
+      .estado, .estado:empty { display: block; min-height: 16px; } /* filas parejas: el estado no mueve la tabla */
+    }
+    @media (max-width: 420px) {
+      .barra-in { padding: 8px 12px; }
+      main { padding: 12px 12px 72px; }
+      .datos-al { display: none; }
+    }
+  </style>
+</head>
+<body data-credencial="<?= credencial ?>">
+  <header class="barra">
+    <div class="barra-in">
+      <div class="titulo"><strong>Carga de valoraciones EPS</strong><span id="docente"></span></div>
+      <div class="barra-acc">
+        <button type="button" id="estadoGlobal" class="pildora" aria-live="polite"></button>
+        <span id="datosAl" class="datos-al"></span>
+        <button type="button" id="actualizar" class="boton chico">Actualizar</button>
+      </div>
+    </div>
+  </header>
+  <main id="principal"><p class="cargando">Cargando tus materias…</p></main>
+
+  <?!= incluirCarga_('Carga_Cliente'); ?>
+
+  <script>
+  (function () {
+    'use strict';
+    var K = CargaCliente;
+    var CREDENCIAL = document.body.getAttribute('data-credencial') || '';
+    var ZONA = 'America/Argentina/Buenos_Aires';
+    var COLORES = { '1º bimestre': '#1f5fa8', '1º cuatrimestre': '#9b3d8f', '3º bimestre': '#1f5fa8', '2º cuatrimestre': '#6a3fc1', 'Anual': '#0b7a83' };
+    var NOMBRE_CAMPO = {}; K.CAMPOS.forEach(function (c) { NOMBRE_CAMPO[c.id] = c.corto; });
+    var REVISAR_MS = 10 * 60 * 1000; // al volver a la pestaña, se actualiza si los datos tienen más de 10 minutos
+
+    var S = {
+      modelo: null, desfase: 0, consultadoEn: 0, vista: { tipo: 'inicio' }, filtro: 'todos', busqueda: '',
+      cerrados: {}, bloqueos: { periodo: {}, materia: {}, estudiante: {} }, general: null, avisoActualizar: '',
+      orden: {}, lista: null, refs: {}, estRefs: {}, sucias: {}, consultando: false, huboGuardados: false, error: null
+    };
+    var $ = function (id) { return document.getElementById(id); };
+    var principal = $('principal');
+
+    // ------------------------------------------------------------ utilidades
+
+    function h(tag, attrs) {
+      var el = document.createElement(tag);
+      Object.keys(attrs || {}).forEach(function (k) {
+        var v = attrs[k];
+        if (v === null || v === undefined || v === false) return;
+        if (k === 'class') el.className = v;
+        else if (k === 'text') el.textContent = v;
+        else if (k.slice(0, 2) === 'on') el.addEventListener(k.slice(2), v);
+        else if (k === 'style') el.setAttribute('style', v);
+        else if (v === true) el.setAttribute(k, '');
+        else el.setAttribute(k, v);
+      });
+      for (var i = 2; i < arguments.length; i++) agregar(el, arguments[i]);
+      return el;
+    }
+    function agregar(el, x) {
+      if (x === null || x === undefined || x === false) return;
+      if (Array.isArray(x)) return x.forEach(function (y) { agregar(el, y); });
+      el.appendChild(typeof x === 'string' ? document.createTextNode(x) : x);
+    }
+    function vaciar(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+    function llamar(fn) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      return new Promise(function (ok, mal) {
+        var r = google.script.run.withSuccessHandler(ok).withFailureHandler(mal);
+        r[fn].apply(r, args);
+      });
+    }
+    function relojServidor() { return Date.now() + S.desfase; }
+    var fmtPartes = new Intl.DateTimeFormat('es-AR', { timeZone: ZONA, weekday: 'long', day: 'numeric', month: 'numeric', hour: 'numeric', minute: '2-digit', hourCycle: 'h23' });
+    function partes(ms) {
+      var r = {};
+      fmtPartes.formatToParts(new Date(ms)).forEach(function (p) { r[p.type] = p.value; });
+      return r;
+    }
+    /** «miércoles 18/11 a las 8:00», en hora de Buenos Aires. */
+    function textoCierre(ms) { var p = partes(ms); return p.weekday + ' ' + p.day + '/' + p.month + ' a las ' + Number(p.hour) + ':' + p.minute; }
+    function hora(ms) { var p = partes(ms); return Number(p.hour) + ':' + p.minute; }
+    function faltan(ms) {
+      var min = Math.max(0, Math.round(ms / 60000));
+      if (min < 60) return min <= 1 ? 'falta menos de un minuto' : 'faltan ' + min + ' minutos';
+      var hs = Math.floor(min / 60);
+      if (hs < 48) return 'faltan ' + hs + ' h ' + (min % 60) + ' min';
+      return 'faltan ' + Math.floor(hs / 24) + ' días';
+    }
+    function comillas(campo, v) { return '«' + K.mostrar(campo, v) + '»'; }
+    function color(periodo) { return '--p:' + (COLORES[periodo] || '#1f5fa8'); }
+
+    // ------------------------------------------------------------ modelo vigente
+
+    function idEstudiante(materia, e) { return materia.id + '|' + e.dni; }
+    function valorVigente(clave, porDefecto) {
+      var c = cola.campo(clave);
+      if (!c) return porDefecto;
+      if (c.confirmado === null) return porDefecto;
+      return c.confirmado;
+    }
+    function calificacionDe(e) { return valorVigente(e.claves.calificacion, e.valores.calificacion); }
+    function buscarPeriodo(nombre) { return (S.modelo ? S.modelo.periodos : []).filter(function (p) { return p.periodo === nombre; })[0] || null; }
+    function buscarMateria(id) {
+      var r = null;
+      (S.modelo ? S.modelo.periodos : []).forEach(function (p) { p.materias.forEach(function (m) { if (m.id === id) r = { periodo: p, materia: m }; }); });
+      return r;
+    }
+    function claveMateria(orientacion, materia) { return orientacion + '|' + materia; }
+    /** Por qué no se puede editar nada en esta materia (o '' si se puede). */
+    function bloqueoMateria(p, m) {
+      if (S.general) return S.general;
+      if (S.cerrados[p.periodo]) return S.cerrados[p.periodo];
+      if (S.bloqueos.periodo[p.periodo]) return S.bloqueos.periodo[p.periodo];
+      if (p.problema) return p.problema;
+      if (S.bloqueos.materia[claveMateria(m.orientacion, m.clave)]) return S.bloqueos.materia[claveMateria(m.orientacion, m.clave)];
+      return m.problema || '';
+    }
+    function editable(p, m, e, campo) {
+      if (bloqueoMateria(p, m) || e.problema || S.bloqueos.estudiante[idEstudiante(m, e)]) return false;
+      var c = cola.campo(e.claves[campo]);
+      if (c && c.bloqueado) return false;
+      var s = K.situacion(p.escala, calificacionDe(e));
+      if (s === 'no cursa') return false;
+      return campo !== 'calificacion' || K.calificacionEditable(s);
+    }
+
+    // ------------------------------------------------------------ cola de guardado
+
+    var cola = K.crearCola({
+      enviar: function (pedido) { return llamar('cargaGuardar', CREDENCIAL, pedido); },
+      esperar: function (ms) { return new Promise(function (ok) { setTimeout(ok, ms); }); },
+      nuevoId: function () { return K.nuevoIdOperacion(); },
+      ahora: function () { return Date.now(); },
+      alCambiar: function (clave, c) {
+        if (c.estado === 'guardado') S.huboGuardados = true;
+        actualizarCampo(clave);
+        programarPintura();
+      },
+      alRechazo: alRechazo
+    });
+
+    /** Un rechazo del servidor bloquea lo que corresponde a su alcance, para no seguir enviando lo que no puede guardarse. */
+    function alRechazo(clave, r, pedido) {
+      var alcance = K.alcanceRechazo(r.codigo);
+      var motivo = r.motivo || 'No se pudo guardar.';
+      if (alcance === 'todo') {
+        S.general = motivo;
+        cola.bloquear(function () { return true; }, motivo);
+      } else if (alcance === 'periodo') {
+        S.bloqueos.periodo[pedido.periodo] = motivo;
+        if (r.codigo === 'ventana') S.cerrados[pedido.periodo] = motivo;
+        cola.bloquear(function (b) { return b.periodo === pedido.periodo; }, motivo);
+      } else if (alcance === 'materia') {
+        // Las asignaciones no dependen del período: la misma materia queda bloqueada en todos.
+        S.bloqueos.materia[claveMateria(pedido.orientacion, pedido.materia)] = motivo;
+        cola.bloquear(function (b) { return b.orientacion === pedido.orientacion && b.materia === pedido.materia; }, motivo);
+      } else if (alcance === 'estudiante') {
+        S.bloqueos.estudiante[[pedido.periodo, pedido.orientacion, pedido.materia, pedido.dni].join('|')] = motivo;
+        cola.bloquear(function (b) { return b.periodo === pedido.periodo && b.orientacion === pedido.orientacion && b.materia === pedido.materia && b.dni === pedido.dni; }, motivo);
+      } else if (alcance === 'campo') {
+        cola.bloquear(function (b) { return K.claveCampo(b) === clave; }, motivo);
+      }
+      // Cada bloqueo se muestra donde corresponde: banda general (todo), del período o de la materia, marca del
+      // estudiante o aviso del campo.
+      if (alcance !== 'local') render();
+    }
+
+    // ------------------------------------------------------------ consulta
+
+    function consultar() {
+      if (S.consultando) return;
+      S.consultando = true;
+      pintarBarra();
+      var desde = Date.now();
+      llamar('cargaConsultar', CREDENCIAL).then(function (r) {
+        S.consultando = false;
+        if (r && r.estado === 'ok') aplicarConsulta(r, desde);
+        else falloConsulta(r || { estado: 'error' });
+      }, function (e) {
+        S.consultando = false;
+        falloConsulta({ estado: 'error', motivo: 'No se pudo conectar con la carga' + (e && e.message ? ' (' + e.message + ')' : '') + '. Revisá la conexión y volvé a intentarlo.' });
+      });
+    }
+
+    function falloConsulta(r) {
+      var motivo = r.motivo || 'No se pudo leer la carga. Volvé a intentarlo; si persiste, avisá al Equipo EPS.';
+      if (r.estado === 'rechazado') {
+        // Sin acceso, sin materias o configuración rota: no se puede guardar nada más.
+        S.general = motivo;
+        cola.bloquear(function () { return true; }, motivo);
+        if (!S.modelo || r.codigo === 'acceso') { S.error = { titulo: r.codigo === 'acceso' ? 'Acceso no verificado' : 'La carga no está disponible', motivo: motivo }; }
+      } else if (!S.modelo) {
+        S.error = { titulo: 'No se pudo abrir la carga', motivo: motivo, reintentar: true };
+      } else {
+        S.avisoActualizar = 'No se pudo actualizar: ' + motivo;
+      }
+      render();
+    }
+
+    function aplicarConsulta(r, desde) {
+      var m = K.modelo(r);
+      S.desfase = m.al - Date.now();
+      S.consultadoEn = Date.now();
+      var vigentes = {};
+      m.periodos.forEach(function (p) {
+        p.materias.forEach(function (mat) {
+          mat.estudiantes.forEach(function (e) {
+            K.CAMPOS.forEach(function (c) {
+              var clave = e.claves[c.id];
+              vigentes[clave] = true;
+              cola.registrar(clave, K.base(p, mat, e, c.id), e.valores[c.id], desde);
+            });
+          });
+        });
+      });
+      cola.bloquear(function (b) { return !vigentes[K.claveCampo(b)]; }, 'Ya no figura en tu carga.');
+      S.modelo = m;
+      S.general = null; S.error = null; S.avisoActualizar = '';
+      S.bloqueos = { periodo: {}, materia: {}, estudiante: {} };
+      S.cerrados = {};
+      revisarCierres(true);
+      S.lista = null;
+      render();
+    }
+
+    // ------------------------------------------------------------ cierre de la ventana con la página abierta
+
+    var temporizador = null;
+    function revisarCierres(silencioso) {
+      if (!S.modelo) return;
+      var cambio = false;
+      S.modelo.periodos.forEach(function (p) {
+        if (S.cerrados[p.periodo] || !p.cierre || relojServidor() < p.cierre) return;
+        var motivo = 'La carga de ' + p.periodo + ' cerró (' + textoCierre(p.cierre) + '). Ya no se pueden hacer cambios.';
+        S.cerrados[p.periodo] = motivo;
+        cola.bloquear(function (b) { return b.periodo === p.periodo; }, motivo);
+        cambio = true;
+      });
+      if (cambio && !silencioso) render();
+      programarCierre();
+    }
+    function programarCierre() {
+      clearTimeout(temporizador);
+      var proximo = null;
+      (S.modelo ? S.modelo.periodos : []).forEach(function (p) {
+        if (!S.cerrados[p.periodo] && p.cierre && (proximo === null || p.cierre < proximo)) proximo = p.cierre;
+      });
+      if (proximo === null) return;
+      // Los teléfonos suspenden los temporizadores: también se revisa cada 30 s y al volver a la pestaña.
+      temporizador = setTimeout(function () { revisarCierres(false); }, Math.max(0, Math.min(proximo - relojServidor() + 50, 30000)));
+    }
+    setInterval(function () { if (S.modelo) { revisarCierres(false); pintarCierres(); } }, 30000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible' || !S.modelo) return;
+      revisarCierres(false);
+      if (Date.now() - S.consultadoEn > REVISAR_MS && !hayEdicionEnCurso()) consultar();
+    });
+    function hayEdicionEnCurso() { return Object.keys(S.sucias).length > 0 || (document.activeElement && document.activeElement.tagName === 'TEXTAREA'); }
+
+    // ------------------------------------------------------------ navegación (con el botón «atrás» del navegador)
+
+    var historial = (typeof google !== 'undefined' && google.script && google.script.history) ? google.script.history : null;
+    function navegar(vista, reemplazar) {
+      S.vista = vista; S.filtro = 'todos'; S.busqueda = ''; S.lista = null;
+      var estado = { v: vista.tipo, id: vista.id || '' };
+      try {
+        if (historial) historial[reemplazar ? 'replace' : 'push'](estado, {}, '');
+        else window.history[reemplazar ? 'replaceState' : 'pushState'](estado, '', '');
+      } catch (e) { /* sin historial: sólo navegación interna */ }
+      render();
+      window.scrollTo(0, 0);
+    }
+    function alVolver(estado) {
+      S.vista = estado && estado.v === 'materia' ? { tipo: 'materia', id: estado.id } : { tipo: 'inicio' };
+      S.filtro = 'todos'; S.busqueda = ''; S.lista = null;
+      render();
+    }
+    if (historial) historial.setChangeHandler(function (e) { alVolver(e.state); });
+    else window.addEventListener('popstate', function (e) { alVolver(e.state); });
+
+    // ------------------------------------------------------------ barra superior
+
+    var pinturaPendiente = false;
+    function programarPintura() {
+      if (pinturaPendiente) return;
+      pinturaPendiente = true;
+      (window.requestAnimationFrame || setTimeout)(function () {
+        pinturaPendiente = false;
+        pintarBarra();
+        if (S.vista.tipo === 'inicio') pintarContadoresInicio(); else pintarContadoresMateria();
+      });
+    }
+    function pintarBarra() {
+      $('docente').textContent = S.modelo ? S.modelo.docente : '';
+      $('datosAl').textContent = S.consultando ? 'Actualizando…' : S.consultadoEn ? 'Datos de las ' + hora(S.consultadoEn + S.desfase) : '';
+      $('actualizar').disabled = S.consultando;
+      // Lo escrito en Observaciones y todavía no enviado (S.sucias) también cuenta: nunca «Todo guardado» con eso.
+      var ind = K.indicadorGlobal(cola.resumen(), Object.keys(S.sucias).length, S.huboGuardados);
+      var g = $('estadoGlobal');
+      g.className = 'pildora' + (ind.clase ? ' ' + ind.clase : '');
+      g.disabled = !ind.avisos;
+      g.textContent = ind.texto;
+    }
+    $('actualizar').addEventListener('click', function () { consultar(); });
+    $('estadoGlobal').addEventListener('click', function () {
+      if (S.vista.tipo === 'materia') { S.filtro = 'avisos'; S.lista = null; render(); }
+      else { var id = primeraMateriaConAvisos(); if (id) { navegar({ tipo: 'materia', id: id }); S.filtro = 'avisos'; S.lista = null; render(); } }
+    });
+
+    // ------------------------------------------------------------ vistas
+
+    function render() {
+      pintarBarra();
+      S.refs = {}; S.estRefs = {};
+      vaciar(principal);
+      if (S.error) return renderError();
+      if (!S.modelo) { principal.appendChild(h('p', { class: 'cargando', text: 'Cargando tus materias…' })); return; }
+      if (S.vista.tipo === 'materia') renderMateria(S.vista.id); else renderInicio();
+    }
+
+    function renderError() {
+      principal.appendChild(h('section', { class: 'mensaje', role: 'alert' },
+        h('h2', { text: S.error.titulo }), h('p', { text: S.error.motivo }),
+        S.error.reintentar ? h('button', { class: 'boton primario', type: 'button', text: 'Volver a intentar', onclick: function () { S.error = null; render(); consultar(); } }) : null));
+    }
+
+    function bandas() {
+      var r = [];
+      if (S.general) r.push(h('div', { class: 'banda error', role: 'alert' }, h('p', { text: S.general })));
+      else if (S.avisoActualizar) r.push(h('div', { class: 'banda aviso', role: 'status' }, h('p', { text: S.avisoActualizar }),
+        h('button', { class: 'boton chico', type: 'button', text: 'Actualizar', onclick: consultar })));
+      return r;
+    }
+
+    function renderInicio() {
+      var m = S.modelo;
+      agregar(principal, bandas());
+      if (!m.periodos.length) {
+        principal.appendChild(h('section', { class: 'mensaje' }, h('h2', { text: 'No hay cargas abiertas' }),
+          h('p', { text: 'En este momento no está abierta la carga de ningún período. Se habilita en las fechas que define el Equipo EPS.' })));
+        return;
+      }
+      principal.appendChild(h('p', { class: 'saludo', text: m.periodos.length > 1
+        ? 'Tenés abiertas las cargas de ' + m.periodos.map(function (p) { return p.periodo; }).join(' y ') + '. Cada período se guarda por separado.'
+        : 'Elegí una materia para cargar o corregir valoraciones.' }));
+      m.periodos.forEach(function (p) {
+        var sec = h('section', { class: 'periodo', style: color(p.periodo), 'aria-labelledby': 'per-' + slug(p.periodo) },
+          h('div', { class: 'periodo-cab' }, h('h2', { id: 'per-' + slug(p.periodo), text: p.periodo }), h('span', { class: 'cierre', 'data-cierre': p.periodo })));
+        var b = S.cerrados[p.periodo] || S.bloqueos.periodo[p.periodo] || p.problema;
+        if (b) sec.appendChild(h('div', { class: 'banda ' + (p.problema ? 'error' : 'aviso') }, h('p', { text: b })));
+        var grilla = h('div', { class: 'materias' });
+        p.materias.forEach(function (mat) { grilla.appendChild(tarjetaMateria(p, mat)); });
+        if (!p.materias.length && !p.problema) grilla.appendChild(h('p', { class: 'vacio', text: 'No tenés materias asignadas en este período.' }));
+        sec.appendChild(grilla);
+        principal.appendChild(sec);
+      });
+      pintarCierres();
+      pintarContadoresInicio();
+    }
+    function slug(t) { return K.norm(t).replace(/[^A-Z0-9]+/g, '-').toLowerCase(); }
+
+    function tarjetaMateria(p, mat) {
+      var problema = mat.problema || S.bloqueos.materia[claveMateria(mat.orientacion, mat.clave)] || '';
+      var boton = h('button', { class: 'materia-tarjeta', type: 'button', 'data-materia': mat.id, disabled: !!mat.problema,
+        onclick: function () { navegar({ tipo: 'materia', id: mat.id }); } },
+        h('span', { class: 'mt-nombre', text: mat.materia }),
+        h('span', { class: 'mt-detalle', text: mat.orientacion + ' · ' + mat.nivel + ' · ' + p.periodo }));
+      if (problema) boton.appendChild(h('span', { class: 'mt-estado error', text: problema }));
+      else agregar(boton, [h('span', { class: 'mt-estado' }), h('span', { class: 'progreso' }, h('span', {})), h('span', { class: 'mt-cuenta' })]);
+      return boton;
+    }
+    function pintarContadoresInicio() {
+      if (!S.modelo) return;
+      S.modelo.periodos.forEach(function (p) {
+        p.materias.forEach(function (mat) {
+          var t = document.querySelector('[data-materia="' + cssEsc(mat.id) + '"]');
+          if (!t || mat.problema) return;
+          var c = K.contar(p, mat, calificacionDe);
+          var avisos = contarAvisos(mat);
+          var est = t.querySelector('.mt-estado'), barra = t.querySelector('.progreso span'), cuenta = t.querySelector('.mt-cuenta');
+          if (!est) return;
+          est.className = 'mt-estado ' + (avisos ? 'error' : c.pendiente ? 'pend' : 'ok');
+          est.textContent = avisos ? '⚠ ' + avisos + (avisos === 1 ? ' cambio necesita' : ' cambios necesitan') + ' atención'
+            : c.pendiente ? c.pendiente + (c.pendiente === 1 ? ' calificación pendiente' : ' calificaciones pendientes')
+            : c.total ? 'Sin calificaciones pendientes' : 'Nadie cursa esta materia según la grilla';
+          barra.style.width = (c.total ? Math.round(100 * (c.total - c.pendiente) / c.total) : 0) + '%';
+          var partes = [(c.total - c.pendiente) + ' de ' + c.total + ' con calificación'];
+          if (c.administrativo) partes.push(c.administrativo + ' del Equipo EPS');
+          if (c['a revisar']) partes.push(c['a revisar'] + ' a revisar');
+          cuenta.textContent = partes.join(' · ');
+        });
+      });
+    }
+    function pintarCierres() {
+      var nodos = document.querySelectorAll('[data-cierre]');
+      Array.prototype.forEach.call(nodos, function (n) {
+        var p = buscarPeriodo(n.getAttribute('data-cierre'));
+        if (!p || !p.cierre) return;
+        var resta = p.cierre - relojServidor();
+        if (S.cerrados[p.periodo] || resta <= 0) { n.className = 'cierre cerrada'; n.textContent = 'Cerró el ' + textoCierre(p.cierre); return; }
+        n.className = 'cierre' + (resta < 24 * 3600000 ? ' cerca' : '');
+        n.textContent = 'Cierra el ' + textoCierre(p.cierre) + ' · ' + faltan(resta);
+      });
+    }
+    function contarAvisos(mat) {
+      var n = 0;
+      mat.estudiantes.forEach(function (e) { K.CAMPOS.forEach(function (c) { if (cola.necesitaAtencion(e.claves[c.id])) n++; }); });
+      return n;
+    }
+    function primeraMateriaConAvisos() {
+      var id = null;
+      (S.modelo ? S.modelo.periodos : []).forEach(function (p) { p.materias.forEach(function (m) { if (!id && contarAvisos(m)) id = m.id; }); });
+      return id;
+    }
+    function cssEsc(t) { return String(t).replace(/["\\]/g, '\\$&'); }
+
+    // ------------------------------------------------------------ materia
+
+    function renderMateria(id) {
+      var x = buscarMateria(id);
+      agregar(principal, bandas());
+      var volver = h('button', { class: 'boton', type: 'button', text: '← Mis materias', onclick: function () { navegar({ tipo: 'inicio' }); } });
+      if (!x) {
+        principal.appendChild(h('section', { class: 'mensaje' }, h('h2', { text: 'Esta materia ya no está en tu carga' }),
+          h('p', { text: 'Puede haber cerrado la carga del período o cambiado la asignación. Si es un error, avisá al Equipo EPS.' }), volver));
+        return;
+      }
+      var p = x.periodo, mat = x.materia;
+      var otro = (S.modelo.periodos.filter(function (q) { return q.periodo !== p.periodo; }).map(function (q) {
+        return q.materias.filter(function (m) { return m.orientacion === mat.orientacion && m.clave === mat.clave; })[0];
+      }).filter(Boolean));
+      var cab = h('section', { class: 'materia-cab', style: color(p.periodo) },
+        h('div', { class: 'fila' }, volver,
+          otro.length ? h('span', { class: 'otro-periodo' }, 'También en ', otro.map(function (o) {
+            return h('button', { class: 'boton chico', type: 'button', text: o.periodo, style: color(o.periodo), onclick: function () { navegar({ tipo: 'materia', id: o.id }); } });
+          })) : null),
+        h('div', { class: 'fila', style: 'margin-top:10px' }, h('h2', { text: mat.materia }), h('span', { class: 'chip-periodo', text: p.periodo })),
+        h('p', { class: 'resumen-materia' }, mat.orientacion + ' · ' + mat.nivel + ' · ', h('span', { 'data-cierre': p.periodo })),
+        h('p', { class: 'resumen-materia', id: 'resumenMateria' }));
+      var bloqueo = bloqueoMateria(p, mat);
+      if (bloqueo && bloqueo !== S.general) cab.appendChild(h('div', { class: 'banda ' + (S.cerrados[p.periodo] ? 'aviso' : 'error') }, h('p', { text: bloqueo }),
+        S.cerrados[p.periodo] ? null : h('button', { class: 'boton chico', type: 'button', text: 'Actualizar', onclick: consultar })));
+      var busqueda = h('input', { type: 'search', placeholder: 'Buscar por apellido o nombre', 'aria-label': 'Buscar estudiante', value: S.busqueda,
+        oninput: function () { S.busqueda = busqueda.value; S.lista = null; pintarLista(p, mat); } });
+      var filtros = h('div', { class: 'filtros', role: 'group', 'aria-label': 'Mostrar' });
+      [['todos', 'Todos'], ['pendientes', 'Pendientes'], ['avisos', 'Con avisos']].forEach(function (f) {
+        filtros.appendChild(h('button', { class: 'filtro', type: 'button', 'data-filtro': f[0], 'aria-pressed': S.filtro === f[0] ? 'true' : 'false',
+          onclick: function () { S.filtro = f[0]; S.lista = null; render(); } }, f[1], ' ', h('span', { 'data-conteo': f[0] })));
+      });
+      cab.appendChild(h('div', { class: 'herramientas' }, busqueda, filtros));
+      principal.appendChild(cab);
+      principal.appendChild(h('div', { id: 'lista', class: 'lista' }));
+      pintarLista(p, mat);
+      pintarCierres();
+      pintarContadoresMateria();
+    }
+
+    /** La lista se arma al entrar o al cambiar el filtro y se mantiene: un estudiante no desaparece mientras se lo edita. */
+    function pintarLista(p, mat) {
+      var lista = $('lista');
+      if (!lista) return;
+      vaciar(lista);
+      S.refs = {}; S.estRefs = {};
+      lista.appendChild(h('div', { class: 'encabezados', 'aria-hidden': 'true' },
+        h('span', { text: 'Estudiante' }), h('span', { text: 'Calificación' }), h('span', { text: 'Calidad' }), h('span', { text: 'Participación' }), h('span', { text: 'Observaciones' })));
+      if (!S.orden[mat.id]) S.orden[mat.id] = K.ordenar(p, mat.estudiantes, calificacionDe).map(function (e) { return e.dni; });
+      else { // estudiantes nuevos de una actualización, al final
+        var conocidos = {}; S.orden[mat.id].forEach(function (d) { conocidos[d] = true; });
+        S.orden[mat.id] = S.orden[mat.id].concat(K.ordenar(p, mat.estudiantes.filter(function (e) { return !conocidos[e.dni]; }), calificacionDe).map(function (e) { return e.dni; }));
+      }
+      var porDni = {}; mat.estudiantes.forEach(function (e) { porDni[e.dni] = e; });
+      var q = K.norm(S.busqueda);
+      var visibles = S.orden[mat.id].map(function (d) { return porDni[d]; }).filter(Boolean).filter(function (e) {
+        if (q && K.norm(e.nombre).indexOf(q) < 0) return false;
+        if (S.filtro === 'pendientes') return K.situacion(p.escala, calificacionDe(e)) === 'pendiente';
+        if (S.filtro === 'avisos') return K.CAMPOS.some(function (c) { return cola.necesitaAtencion(e.claves[c.id]); });
+        return true;
+      });
+      if (!visibles.length) {
+        lista.appendChild(h('p', { class: 'vacio', text: !mat.estudiantes.length ? 'Nadie cursa esta materia según la grilla. Si falta alguien, avisá al Equipo EPS.'
+          : S.filtro === 'pendientes' ? 'No quedan calificaciones pendientes.' : S.filtro === 'avisos' ? 'No hay cambios que necesiten atención.' : 'Ningún estudiante coincide con la búsqueda.' }));
+        return;
+      }
+      visibles.forEach(function (e) { lista.appendChild(tarjetaEstudiante(p, mat, e)); });
+    }
+
+    function pintarContadoresMateria() {
+      if (S.vista.tipo !== 'materia') return;
+      var x = buscarMateria(S.vista.id);
+      if (!x) return;
+      var c = K.contar(x.periodo, x.materia, calificacionDe);
+      var avisos = contarAvisos(x.materia);
+      var n = { todos: c.total, pendientes: c.pendiente, avisos: avisos };
+      Object.keys(n).forEach(function (k) { var el = document.querySelector('[data-conteo="' + k + '"]'); if (el) el.textContent = '(' + n[k] + ')'; });
+      var r = $('resumenMateria');
+      if (r) {
+        var partes = [c.total + (c.total === 1 ? ' estudiante cursa' : ' estudiantes cursan'), c.pendiente + ' con calificación pendiente'];
+        if (c.administrativo) partes.push(c.administrativo + ' con calificación del Equipo EPS');
+        if (c['a revisar']) partes.push(c['a revisar'] + ' a revisar con el Equipo EPS');
+        r.textContent = partes.join(' · ');
+      }
+    }
+
+    // ------------------------------------------------------------ estudiante y campos
+
+    function tarjetaEstudiante(p, mat, e) {
+      var eid = idEstudiante(mat, e);
+      var art = h('article', { class: 'est', 'aria-label': e.nombre, 'data-dni': e.dni });
+      var marcas = h('div', { class: 'marcas' });
+      art.appendChild(h('div', { class: 'est-id' }, h('h3', { class: 'est-nombre', text: e.nombre || 'Sin nombre en la grilla' }), marcas));
+      var refs = S.estRefs[eid] = { art: art, marcas: marcas, avisos: h('div', { class: 'avisos', 'aria-live': 'polite' }), p: p, mat: mat, e: e, campos: {} };
+      K.CAMPOS.forEach(function (c) { art.appendChild(campo(p, mat, e, c, refs)); });
+      art.appendChild(refs.avisos);
+      actualizarEstudiante(eid);
+      return art;
+    }
+
+    function campo(p, mat, e, c, refs) {
+      var clave = e.claves[c.id];
+      var idControl = 'c' + Math.random().toString(36).slice(2, 10);
+      var caja = h('div', { class: 'campo ' + c.id });
+      var estado = h('div', { class: 'estado', role: 'status' });
+      var control, soloLectura = null, pie = null;
+      caja.appendChild(h('label', { for: idControl, text: c.nombre }));
+      if (c.id === 'observaciones') {
+        control = h('textarea', { id: idControl, rows: '1', maxlength: String(S.modelo.maxObservaciones), placeholder: 'Texto libre (opcional)' });
+        var contador = h('span', { class: 'contador' });
+        var guardar = h('button', { class: 'boton chico', type: 'button', text: 'Guardar', hidden: true, onclick: function () { guardarObservacion(clave, control); } });
+        pie = h('div', { class: 'obs-pie' }, contador, guardar);
+        control.addEventListener('input', function () {
+          S.sucias[clave] = control.value;
+          guardar.hidden = false; caja.classList.add('sucio');
+          ajustarAltura(control);
+          contador.textContent = control.value.length > S.modelo.maxObservaciones - 200 ? control.value.length + '/' + S.modelo.maxObservaciones : '';
+          estado.className = 'estado aviso'; estado.textContent = 'Sin guardar';
+          programarPintura(); // la barra deja de decir «Todo guardado»
+        });
+        control.addEventListener('change', function () { guardarObservacion(clave, control); });
+        control.addEventListener('keydown', function (ev) {
+          // Observaciones se guarda en una sola línea (el núcleo une los renglones): Enter guarda.
+          if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); control.blur(); }
+        });
+        refs.guardarObs = guardar; refs.contador = contador;
+      } else {
+        control = h('select', { id: idControl, onchange: function () { cola.cambiar(clave, control.value); } });
+        if (c.id === 'calificacion') soloLectura = h('div', { class: 'solo-lectura', hidden: true });
+      }
+      caja.appendChild(control);
+      if (soloLectura) caja.appendChild(soloLectura);
+      if (pie) caja.appendChild(pie);
+      caja.appendChild(estado);
+      S.refs[clave] = { caja: caja, control: control, estado: estado, soloLectura: soloLectura, campo: c.id, eid: idEstudiante(mat, e), p: p, mat: mat, e: e };
+      refs.campos[c.id] = clave;
+      actualizarCampo(clave, true);
+      return caja;
+    }
+
+    function guardarObservacion(clave, control) {
+      if (!(clave in S.sucias)) return;
+      var r = S.refs[clave];
+      var c = cola.campo(clave);
+      var motivo = c && c.bloqueado ? c.bloqueado : r && !editable(r.p, r.mat, r.e, 'observaciones') ? (bloqueoMateria(r.p, r.mat) || 'el campo no se puede editar.') : '';
+      if (motivo || !cola.cambiar(clave, control.value)) {
+        // No se descarta lo escrito: queda a la vista, sin guardar, con el motivo.
+        if (r) { r.estado.className = 'estado error'; r.estado.textContent = '✕ No se envió: ' + (motivo || 'el campo no se puede editar.'); }
+        return;
+      }
+      delete S.sucias[clave];
+      if (r) { r.caja.classList.remove('sucio'); var refs = S.estRefs[r.eid]; if (refs && refs.guardarObs) refs.guardarObs.hidden = true; }
+      actualizarCampo(clave);
+      programarPintura();
+    }
+    function ajustarAltura(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 240) + 'px'; }
+
+    /** Valor que muestra el control: lo que eligió el docente mientras se guarda; si no, lo que tiene la grilla. */
+    function valorMostrado(c) {
+      if (c.siguiente !== null) return c.siguiente;
+      if (c.pedido) return c.pedido.nuevo;
+      return c.confirmado;
+    }
+
+    function opcionesSelect(sel, p, campoId, valor) {
+      // Rehacer las opciones de un select abierto lo cierra (sobre todo en el celular): sólo si cambia el valor.
+      var firma = valor === null ? '\u0000' : String(valor);
+      if (sel.getAttribute('data-firma') === firma && sel.options.length) return;
+      sel.setAttribute('data-firma', firma);
+      vaciar(sel);
+      var lista = campoId === 'calificacion' ? [[K.PENDIENTE, 'Pendiente']].concat(p.escala.map(function (v) { return [v, v]; }))
+        : [['', '—']].concat((p.opciones[campoId] || []).map(function (v) { return [v, v]; }));
+      var elegido = null;
+      if (valor === null) { sel.appendChild(h('option', { value: '', text: '¿? (sin confirmar)' })); elegido = ''; }
+      else if (campoId === 'calificacion') elegido = K.canonico(lista.map(function (x) { return x[0]; }), valor);
+      else elegido = lista.some(function (x) { return x[0] === valor; }) ? valor : null;
+      if (valor !== null && elegido === null) { sel.appendChild(h('option', { value: valor, text: valor === '' ? '—' : valor + ' (fuera de las opciones)' })); elegido = valor; }
+      lista.forEach(function (x) { sel.appendChild(h('option', { value: x[0], text: x[1] })); });
+      sel.value = elegido;
+    }
+
+    var ESTADOS = {
+      'en-espera': ['curso', 'En espera…'], enviando: ['curso', 'Guardando…'], reintentando: ['curso', 'Reintentando…'],
+      coincide: ['', '= Ya figura así en la grilla'], conflicto: ['aviso', '⚠ Cambió en la grilla'], incierto: ['aviso', '⚠ Sin confirmar'],
+      'sin-confirmar': ['aviso', '⚠ Sin respuesta del servidor'], 'sin-enviar': ['error', '✕ No se guardó'], rechazado: ['error', '✕ No se guardó'],
+      'no-enviado': ['error', '✕ No se envió']
+    };
+
+    function actualizarCampo(clave, inicial) {
+      var r = S.refs[clave];
+      if (!r) return;
+      var c = cola.campo(clave);
+      if (!c) return;
+      var puede = editable(r.p, r.mat, r.e, r.campo);
+      var foco = document.activeElement === r.control;
+      if (r.campo === 'observaciones') {
+        if (!foco && !(clave in S.sucias)) { r.control.value = valorMostrado(c) || ''; ajustarAltura(r.control); }
+        else if (inicial && clave in S.sucias) { r.control.value = S.sucias[clave]; r.caja.classList.add('sucio'); }
+      } else {
+        opcionesSelect(r.control, r.p, r.campo, valorMostrado(c));
+      }
+      r.control.disabled = !puede;
+      if (r.soloLectura) {
+        var s = K.situacion(r.p.escala, calificacionDe(r.e));
+        var ro = s === 'administrativo' || s === 'a revisar';
+        r.soloLectura.hidden = !ro; r.control.hidden = ro;
+        vaciar(r.soloLectura);
+        if (ro) agregar(r.soloLectura, [h('b', { text: calificacionDe(r.e) }), h('small', { text: s === 'administrativo' ? 'La establece el Equipo EPS' : 'Valor a revisar con el Equipo EPS' })]);
+      }
+      var est = c.verificando ? ['curso', 'Verificando…'] : c.estado === 'guardado' ? ['guardado', '✓ Guardado ' + hora(c.hora + S.desfase)] : ESTADOS[c.estado] || ['', ''];
+      if (clave in S.sucias && (c.estado === 'listo' || c.estado === 'guardado' || c.estado === 'coincide')) est = ['aviso', 'Sin guardar'];
+      r.estado.className = 'estado ' + est[0];
+      r.estado.textContent = est[1];
+      r.caja.classList.toggle('atencion', cola.necesitaAtencion(clave));
+      if (r.campo === 'calificacion') actualizarEstudiante(r.eid); else actualizarAvisos(r.eid);
+    }
+
+    function actualizarEstudiante(eid) {
+      var refs = S.estRefs[eid];
+      if (!refs) return;
+      var p = refs.p, mat = refs.mat, e = refs.e;
+      var s = K.situacion(p.escala, calificacionDe(e));
+      vaciar(refs.marcas);
+      var marcas = {
+        pendiente: ['pendiente', 'Calificación pendiente'], valorada: ['valorada', 'Con calificación'], administrativo: ['', 'Calificación del Equipo EPS'],
+        'a revisar': ['revisar', 'Calificación a revisar con el Equipo EPS'], 'no cursa': ['revisar', 'Ya no cursa según la grilla']
+      };
+      refs.marcas.appendChild(h('span', { class: 'marca ' + marcas[s][0], text: marcas[s][1] }));
+      if (e.otroGrupo) refs.marcas.appendChild(h('span', { class: 'marca grupo', text: 'Grupo ' + e.grupo, title: 'Cursa esta materia desde otro grupo' }));
+      var problema = e.problema || S.bloqueos.estudiante[idEstudiante(mat, e)];
+      if (problema) refs.marcas.appendChild(h('span', { class: 'marca problema', text: problema }));
+      refs.art.classList.toggle('pendiente', s === 'pendiente');
+      // La situación decide qué campos se pueden editar: se actualizan los demás controles.
+      K.CAMPOS.forEach(function (c) {
+        var r = S.refs[refs.campos[c.id]];
+        if (r && c.id !== 'calificacion') r.control.disabled = !editable(p, mat, e, c.id);
+      });
+      actualizarAvisos(eid);
+    }
+
+    var PREVIO = {
+      aplicado: 'El Registro indica que ese cambio se había guardado.',
+      inferido: 'La grilla mostraba ese valor, sin confirmación de que lo guardó la carga.',
+      incierto: 'Ese cambio quedó sin confirmar: consultá al Equipo EPS.',
+      pendiente: 'Ese cambio quedó sin confirmar: consultá al Equipo EPS.',
+      revisar: 'Ese cambio quedó para revisar por el Equipo EPS.',
+      'no aplicado': 'Ese cambio no llegó a guardarse.',
+      desconocido: 'No se pudo consultar qué pasó con ese cambio.'
+    };
+
+    function actualizarAvisos(eid) {
+      var refs = S.estRefs[eid];
+      if (!refs) return;
+      vaciar(refs.avisos);
+      K.CAMPOS.forEach(function (cd) {
+        var clave = refs.campos[cd.id];
+        var c = cola.campo(clave);
+        if (!c || !cola.necesitaAtencion(clave)) return;
+        var nombre = cd.corto + ': ';
+        var tuyo = comillas(cd.id, c.propuesto);
+        var grilla = c.confirmado === null ? null : comillas(cd.id, c.confirmado);
+        var bloqueado = !!c.bloqueado || !editable(refs.p, refs.mat, refs.e, cd.id);
+        var acciones = [];
+        var texto = '';
+        var error = false;
+        if (c.estado === 'conflicto') {
+          texto = 'la grilla ahora dice ' + grilla + ' (lo cambió otra persona o el Equipo EPS). Tu valor ' + tuyo + ' no se guardó.';
+          if (!bloqueado) acciones.push(boton('Guardar ' + tuyo, function () { cola.usarPropuesto(clave); }));
+          acciones.push(boton('Dejar ' + grilla, function () { cola.descartar(clave); }));
+        } else if (c.estado === 'incierto') {
+          texto = 'no se pudo confirmar si se guardó ' + tuyo + '. ' + (grilla ? 'La grilla muestra ' + grilla + '.' : 'No se pudo leer la grilla.');
+          acciones.push(boton('Verificar de nuevo', function () { cola.verificar(clave); }));
+          if (!bloqueado && grilla && !K.igual(cd.id, c.propuesto, c.confirmado)) acciones.push(boton('Volver a cargar ' + tuyo, function () { cola.usarPropuesto(clave); }));
+          if (grilla) acciones.push(boton('Dejar ' + grilla, function () { cola.descartar(clave); }));
+        } else if (c.estado === 'sin-confirmar') {
+          texto = 'no hubo respuesta del servidor para ' + tuyo + ': puede haberse guardado o no. Reintentar lo consulta sin duplicarlo.';
+          acciones.push(boton('Reintentar', function () { cola.reintentar(clave); }));
+        } else if (c.estado === 'sin-enviar') {
+          error = true;
+          texto = 'no se pudo guardar ' + tuyo + (c.mensaje ? ' (' + c.mensaje + ')' : '') + '.';
+          acciones.push(boton('Reintentar', function () { cola.reintentar(clave); }));
+        } else if (c.estado === 'rechazado' || c.estado === 'no-enviado') {
+          error = true;
+          texto = (c.estado === 'rechazado' ? 'no se guardó ' : 'no se envió ') + tuyo + ': ' + (c.mensaje || 'no se pudo guardar.');
+          if (c.previo && PREVIO[c.previo.estado]) texto += ' ' + PREVIO[c.previo.estado];
+          acciones.push(boton('Entendido', function () { cola.descartar(clave); }));
+        }
+        refs.avisos.appendChild(h('div', { class: 'aviso-campo' + (error ? ' error' : '') }, h('p', {}, h('b', { text: nombre }), texto),
+          acciones.length ? h('div', { class: 'acciones' }, acciones) : null));
+      });
+    }
+    function boton(texto, fn) { return h('button', { class: 'boton chico', type: 'button', text: texto, onclick: fn }); }
+
+    window.addEventListener('beforeunload', function (ev) {
+      if (cola.hayPendientes() || Object.keys(S.sucias).length) { ev.preventDefault(); ev.returnValue = ''; }
+    });
+
+    try { if (historial) historial.replace({ v: 'inicio', id: '' }, {}, ''); else window.history.replaceState({ v: 'inicio', id: '' }, '', ''); } catch (e) { /* sin historial */ }
+    consultar();
+  })();
+  </script>
+</body>
+</html>

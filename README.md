@@ -40,7 +40,13 @@ Otra opción es armar un generador nuevo como en *Puesta en funcionamiento* y co
 
 La carga docente reemplazará la edición directa de las grillas por parte de los docentes ([#30](https://github.com/aeatencio/boletines-eps/issues/30)). Es un proyecto de Apps Script propio, separado del generador, en `src/carga/`. Las grillas siguen siendo la fuente de las valoraciones: la carga escribe en ellas y el generador las lee como hasta ahora.
 
-**Implementado** ([#26](https://github.com/aeatencio/boletines-eps/issues/26), sólo con pruebas locales): el núcleo de consulta y guardado por campo (`Carga_Nucleo.gs`) y su adaptador a los servicios de Google (`Carga_Google.gs`). **Pendiente**: el piloto en Google con datos ficticios (#26), la interfaz docente (#27), el acceso individual y los correos (#28) y la puesta en funcionamiento (#29). Todavía no hay una app web para publicar.
+**Implementado**, sólo con pruebas locales:
+- [#26](https://github.com/aeatencio/boletines-eps/issues/26): el núcleo de consulta y guardado por campo (`Carga_Nucleo.gs`) y su adaptador a los servicios de Google (`Carga_Google.gs`);
+- [#27](https://github.com/aeatencio/boletines-eps/issues/27), primer incremento: la página docente (`Carga_Web.gs`, con `doGet`, y los archivos HTML `Carga_Pagina` y `Carga_Cliente`). El docente recorre sus materias por período, ve a todos los que las cursan y guarda cada campo por separado, con estados de guardado, conflicto y resultado sin confirmar.
+
+**Pendiente**: el piloto en Google con datos ficticios (#26), el acceso individual y los correos (#28) y la puesta en funcionamiento (#29).
+
+**No publicar la app web hasta resolver #28.** La página identifica al docente sólo en el servidor, con la credencial del enlace (`identificarDocente_` en `Carga_Web.gs`). Hoy esa función rechaza todo acceso: la página abre, pero no muestra ni guarda nada.
 
 El Equipo EPS configura la carga en una planilla de administración, sin tocar el código:
 
@@ -93,6 +99,15 @@ node tests/carga.js [corridas]
 ```
 
 Usan dobles de los servicios de Google: no reemplazan el piloto en Google real.
+
+La interfaz docente tiene sus propias pruebas y un servidor local para usarla en el navegador, con datos ficticios:
+
+```
+node tests/carga-interfaz.js
+node tests/carga-dev.js [puerto]
+```
+
+El servidor local escucha sólo en `127.0.0.1` (puerto 8787 por defecto) y muestra un enlace por docente ficticio. Usa los archivos reales de `src/carga/` y reemplaza sólo `identificarDocente_` por credenciales aleatorias creadas al arrancar. En `/dev` hay un panel para simular fallas de guardado y cambios del Equipo EPS con la página abierta, y para ver el Registro.
 
 ## Datos
 
