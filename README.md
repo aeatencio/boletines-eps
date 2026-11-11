@@ -41,18 +41,17 @@ Otra opción es armar un generador nuevo como en *Puesta en funcionamiento* y co
 La carga docente reemplazará la edición directa de las grillas por parte de los docentes ([#30](https://github.com/aeatencio/boletines-eps/issues/30)). Es un proyecto de Apps Script propio, separado del generador, en `src/carga/`. Las grillas siguen siendo la fuente de las valoraciones: la carga escribe en ellas y el generador las lee como hasta ahora.
 
 **Implementado**, sólo con pruebas locales:
-- [#26](https://github.com/aeatencio/boletines-eps/issues/26): el núcleo de consulta y guardado por campo (`Carga_Nucleo.gs`) y su adaptador a los servicios de Google (`Carga_Google.gs`);
+- [#26](https://github.com/aeatencio/boletines-eps/issues/26): el núcleo de consulta y guardado por campo (`Carga_Nucleo.gs`) y su adaptador a los servicios de Google (`Carga_Google.gs`); el calendario de feriados (`Carga_Calendario.gs`, #29);
 - [#27](https://github.com/aeatencio/boletines-eps/issues/27), primer incremento: la página docente (`Carga_Web.gs`, con `doGet`, y los archivos HTML `Carga_Pagina` y `Carga_Cliente`). El docente recorre sus materias por período, ve a todos los que las cursan y guarda cada campo por separado, con estados de guardado, conflicto y resultado sin confirmar;
 - [#28](https://github.com/aeatencio/boletines-eps/issues/28): el enlace individual de cada docente (`Carga_Acceso.gs`) y los correos de apertura, seguimiento y cierre (`Carga_Correo.gs`, y su adaptador a MailApp y al activador diario, `Carga_Correo_Google.gs`).
 
-**Pendiente**: el piloto en Google con datos ficticios (#26 y #28: acceso a la app web, entrega real del correo, activador) y la puesta en funcionamiento (#29).
+**Pendiente** ([#29](https://github.com/aeatencio/boletines-eps/issues/29)): la prueba integrada controlada sobre la infraestructura definitiva (acceso a la app web, escrituras reales, entrega del correo y activador) y la habilitación institucional. Las dos se hacen con el manual operativo [`docs/puesta-en-marcha-carga-docente.md`](docs/puesta-en-marcha-carga-docente.md), que reemplaza al piloto separado con datos ficticios.
 
-**Todavía no publicar la app web para docentes reales.** El acceso y los correos sólo se probaron con dobles locales de Google; antes hace falta el piloto en Google.
+**No habilitar la carga a los docentes antes de completar esa prueba y de que el Equipo EPS autorice la apertura.** El acceso y los correos sólo se probaron con dobles locales de Google. Publicar la app web no la habilita: sin filas en `Ventanas` ningún enlace vale, y los correos sólo salen hacia quienes figuran en `Asignaciones`.
 
 El Equipo EPS configura la carga en una planilla de administración, sin tocar el código:
 
 - `Ventanas`: `Período`, `Desde`, `Hasta`, una fila por período habilitado. La carga abre a las 0:00 de `Desde` y cierra a las 8:00 (hora de Buenos Aires) del primer día hábil posterior a `Hasta`. Los períodos con las mismas fechas, como 2º cuatrimestre y anual, comparten ventana, pero cada uno escribe en su propia grilla.
-- `Feriados`: `Fecha` y `Descripción`, con los feriados nacionales y de CABA. Si falta cargar los del año en que cae un cierre, ese período no abre: la carga no adivina el cierre.
 - `Asignaciones`: `Orientación` (EPSI o EPSG), `Nivel` (EPS1 a EPS4), `Materia` (como en el encabezado de la grilla), `Docente` y `Correo`. Un único docente por orientación y materia; si hay dos, o una fila incompleta, nadie carga esa materia hasta corregirla.
 - `Enlaces`: `Correo` y `Versión`. Normalmente vacía. Para revocar el enlace de un docente (por ejemplo, si lo reenvió), agregar su correo con `Versión` 2, o aumentar la que tenga: el enlace anterior deja de valer en la operación siguiente, también si un guardado está en curso, y el nuevo le llega en el próximo correo, el siguiente día hábil. No borrar filas ni bajar versiones: eso rehabilita enlaces revocados. Sin esta hoja, ningún enlace vale.
 - `Registro`: lo escribe la carga, una fila por cambio intentado, con fecha, período, grilla, orientación, nivel, materia, estudiante, campo, valor anterior y nuevo, y docente. Su `Estado` distingue lo confirmado de lo inferido:
@@ -68,15 +67,17 @@ El Equipo EPS configura la carga en una planilla de administración, sin tocar e
 
 Mientras una ventana está abierta, el Equipo EPS no debería insertar, borrar ni ordenar filas o columnas de las grillas. La carga ubica cada celda por DNI y encabezado, y vuelve a comprobarla antes de escribir. Aun así, un cambio de forma en el instante exacto de una escritura puede desviarla; si ocurre, queda `revisar` con la celda a verificar. Editar valores en la grilla sí se puede: la carga no pisa lo que cambió desde que el docente lo vio.
 
-La grilla de cada período es la que figura en `Control` del generador (`B10` a `B14`), leída en cada operación. Si el Equipo EPS la cambia con la carga abierta, los guardados con la grilla anterior se rechazan. Dos períodos nunca comparten grilla: si en `Control` figuran iguales, ninguno de los dos abre. Ventanas, feriados y asignaciones también se leen en cada operación.
+La grilla de cada período es la que figura en `Control` del generador (`B10` a `B14`), leída en cada operación. Si el Equipo EPS la cambia con la carga abierta, los guardados con la grilla anterior se rechazan. Dos períodos nunca comparten grilla: si en `Control` figuran iguales, ninguno de los dos abre. Ventanas y asignaciones también se leen en cada operación.
 
-Propiedades del script: `ADMIN_ID` (planilla de administración), `GENERADOR_ID` (planilla del generador), `CLAVE_ENLACES` (secreto de los enlaces; lo crea `prepararAdministracionCarga`; borrarlo y volver a crearlo invalida todos los enlaces a la vez) y `URL_CARGA` (la URL `/exec` de la app web publicada, para los enlaces de los correos). Desde el editor, la cuenta propietaria puede ejecutar `prepararAdministracionCarga` (crea las hojas que falten, sólo con sus encabezados, y `CLAVE_ENLACES` si falta), `verificarCargaDocente` (problemas de configuración, de las grillas, del Registro, de los enlaces y de los correos) y `resolverPendientesCarga` (resuelve las filas `pendiente` viejas mirando la celda).
+Los feriados no se administran en una planilla: están en el código, en `Carga_Calendario.gs`, organizados por año, con sus fuentes oficiales. Hoy incluye 2026. Día hábil es de lunes a viernes, salvo los feriados nacionales y los que rigen en CABA. Los días no laborables (por ejemplo, los turísticos) están anotados aparte y no cambian los días hábiles. Lo que necesita un día de un año sin calendario no adivina: el período cuyo cierre cae en ese año no abre, y los correos de ese día no salen y se informa el problema. Lo demás sigue funcionando. Al preparar un ciclo lectivo, se agrega el año y se publica una versión nueva de la app web ([manual](docs/puesta-en-marcha-carga-docente.md#f8-actualizar-el-calendario-de-feriados)). Una hoja `Feriados` que haya quedado en la planilla de administración no se lee: no hace falta borrarla.
+
+Propiedades del script: `ADMIN_ID` (planilla de administración), `GENERADOR_ID` (planilla del generador), `CLAVE_ENLACES` (secreto de los enlaces; lo crea `prepararAdministracionCarga`; borrarlo y volver a crearlo invalida todos los enlaces a la vez; con una ventana abierta, hay que aumentar además la versión de cada docente en `Enlaces` para que todos reciban el nuevo, porque los correos no detectan el cambio de secreto) y `URL_CARGA` (la URL `/exec` de la app web publicada, para los enlaces de los correos). Desde el editor, la cuenta propietaria puede ejecutar `prepararAdministracionCarga` (crea las hojas que falten, sólo con sus encabezados, y `CLAVE_ENLACES` si falta), `verificarCargaDocente` (problemas de configuración, de las grillas, del Registro, de los enlaces y de los correos, y un resumen de lo que contiene cada grilla de las ventanas vigentes o próximas, para revisar una grilla recién preparada) y `resolverPendientesCarga` (resuelve las filas `pendiente` viejas mirando la celda).
 
 ### Acceso y correos (#28)
 
 Cada docente entra con **su enlace**, que le llega por correo. El enlace no se guarda en ningún lado: el servidor lo verifica en cada operación a partir del correo de `Asignaciones`, su versión en `Enlaces` y la ventana vigente. Es el mismo durante toda la ventana (2º cuatrimestre y anual comparten uno), sigue abriendo la página después del cierre, sin nada para cargar, y vence cuando empieza la ventana siguiente. Un docente sin asignaciones no tiene enlace. Quien tenga el enlace actúa como ese docente, así que no hay que reenviarlo. Las asignaciones vigentes siguen decidiendo qué ve y qué carga.
 
-Los correos salen de la cuenta propietaria, como «Equipo EPS», como máximo uno por docente y día, y sólo en días hábiles de CABA (lunes a viernes que no figuren en `Feriados`). Si faltan los feriados del año, no se envía ninguno. Cada correo muestra el estado de las grillas en el momento de enviarlo, por período, materia y nivel. Lista a cada estudiante con su calificación, sin DNI y sin el contenido de Calidad, Participación ni Observaciones:
+Los correos salen de la cuenta propietaria, como «Equipo EPS», como máximo uno por docente y día, y sólo en días hábiles de CABA (lunes a viernes que no sean feriado, según `Carga_Calendario.gs`). Si hay algo que informar y el año no tiene calendario, no se envía ninguno. Cada correo muestra el estado de las grillas en el momento de enviarlo, por período, materia y nivel. Lista a cada estudiante con su calificación, sin DNI y sin el contenido de Calidad, Participación ni Observaciones:
 
 - **Apertura**: el primer día hábil de la ventana, a todos los docentes asignados, con el enlace y el estado inicial. Quien no la recibió (porque lo asignaron después o porque el envío falló) la recibe el siguiente día hábil.
 - **Seguimiento**: los días hábiles siguientes, sólo a quien tiene calificaciones `CURSA` pendientes o desaprobaciones (5 o menos, o `En proceso`) con Calidad, Participación u Observaciones vacías.
@@ -85,11 +86,12 @@ Los correos salen de la cuenta propietaria, como «Equipo EPS», como máximo un
 
 Cuando coinciden varios períodos, todo va en un mismo correo.
 
-Para activarlos: publicar la app web (ejecutar como la cuenta propietaria), guardar su URL `/exec` en `URL_CARGA` y ejecutar `activarCorreosCarga`. El activador corre todos los días en algún minuto entre las 8:00 y las 9:00 (Apps Script no garantiza el minuto) y nunca envía antes de las 8:00. `previsualizarCorreosCarga` muestra en el registro de ejecución qué se enviaría en ese momento, sin enviar nada. `desactivarCorreosCarga` borra el activador. Si una ejecución tiene problemas, errores de envío o correos sin procesar (por cuota o tiempo), termina con error, y Google avisa por correo a la cuenta propietaria. Ejecutar `enviarCorreosCarga` a mano el mismo día completa lo que faltó, sin repetir a quien ya lo recibió.
+Para activarlos: publicar la app web (ejecutar como la cuenta propietaria), guardar su URL `/exec` en `URL_CARGA` y ejecutar `activarCorreosCarga`. La instalación completa, la prueba y la habilitación, con sus comprobaciones, están en el [manual de puesta en marcha](docs/puesta-en-marcha-carga-docente.md). El activador corre todos los días en algún minuto entre las 8:00 y las 9:00 (Apps Script no garantiza el minuto) y nunca envía antes de las 8:00. `previsualizarCorreosCarga` muestra en el registro de ejecución qué se enviaría en ese momento, sin enviar nada. `desactivarCorreosCarga` borra el activador. Si una ejecución tiene problemas, errores de envío o correos sin procesar (por cuota o tiempo), termina con error, y Google avisa por correo a la cuenta propietaria. Ejecutar `enviarCorreosCarga` a mano el mismo día completa lo que faltó, sin repetir a quien ya lo recibió.
 
 ## Organización
 
 - `src/`: estado actual del generador (planilla y Apps Script); en `src/carga/`, la carga docente.
+- `docs/`: manual operativo de la carga docente para el Equipo EPS ([`puesta-en-marcha-carga-docente.md`](docs/puesta-en-marcha-carga-docente.md)).
 - `tests/`: pruebas locales.
 - `reference/`: casos de prueba y datos sintéticos.
 - `legacy/`: versiones anteriores, como referencia.
@@ -132,6 +134,12 @@ El acceso y los correos tienen sus propias pruebas. El número opcional es la ca
 ```
 node tests/carga-acceso.js
 node tests/carga-correo.js [corridas]
+```
+
+El recorrido del [manual de puesta en marcha](docs/puesta-en-marcha-carga-docente.md), de la verificación a la limpieza, tiene su ensayo local: falla si el código deja de coincidir con los resultados que cita el manual.
+
+```
+node tests/carga-recorrido.js
 ```
 
 ## Datos

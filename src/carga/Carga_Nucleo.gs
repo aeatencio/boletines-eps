@@ -82,17 +82,17 @@ const CARGA = {
   ESPERA_LOCK_MS: 10000,
   OPERACION: /^[A-Za-z0-9_-]{8,80}$/,
 
-  // Planilla de administración: el Equipo EPS edita Ventanas, Feriados, Asignaciones y Enlaces (#28); el Registro y
-  // Correos (#28) los escribe la carga.
-  HOJAS: { ventanas: 'Ventanas', feriados: 'Feriados', asignaciones: 'Asignaciones', enlaces: 'Enlaces', registro: 'Registro', correos: 'Correos' },
+  // Planilla de administración: el Equipo EPS edita Ventanas, Asignaciones y Enlaces (#28); el Registro y Correos
+  // (#28) los escribe la carga. Los feriados están en el código (Carga_Calendario.gs, #29): una hoja Feriados que haya
+  // quedado de una instalación anterior no se lee.
+  HOJAS: { ventanas: 'Ventanas', asignaciones: 'Asignaciones', enlaces: 'Enlaces', registro: 'Registro', correos: 'Correos' },
   ENCABEZADOS: {
     ventanas: ['Período', 'Desde', 'Hasta'],
-    feriados: ['Fecha', 'Descripción'],
     asignaciones: ['Orientación', 'Nivel', 'Materia', 'Docente', 'Correo'],
     enlaces: ['Correo', 'Versión']
   },
-  // Columnas obligatorias de cada hoja (Descripción de Feriados es sólo para el Equipo EPS).
-  OBLIGATORIOS: { ventanas: ['Período', 'Desde', 'Hasta'], feriados: ['Fecha'], asignaciones: ['Orientación', 'Nivel', 'Materia', 'Docente', 'Correo'], enlaces: ['Correo', 'Versión'] },
+  // Columnas obligatorias de cada hoja.
+  OBLIGATORIOS: { ventanas: ['Período', 'Desde', 'Hasta'], asignaciones: ['Orientación', 'Nivel', 'Materia', 'Docente', 'Correo'], enlaces: ['Correo', 'Versión'] },
   // Registro: estado y detalle contiguos, para marcarlos con una sola escritura.
   REGISTRO: ['Fecha', 'Estado', 'Detalle', 'Intentos', 'Operación', 'Correo', 'Docente', 'Período', 'Fuente',
     'Orientación', 'Nivel', 'Materia', 'DNI', 'Estudiante', 'Campo', 'Anterior', 'Nuevo']
@@ -140,14 +140,15 @@ function diaSiguiente_(fechaIso) {
 
 /**
  * 8:00 del primer día hábil posterior a «Hasta»: ni sábado, ni domingo, ni feriado nacional o de CABA.
- * Si un día que hay que mirar es de un año sin feriados cargados, no se adivina: es un problema de configuración.
+ * feriados: { 'aaaa-mm-dd': true } (feriadosCalendario_). Si un día que hay que mirar es de un año sin calendario,
+ * no se adivina: es un problema de ese período.
  */
 function cierreVentana_(hastaIso, feriados) {
   const anios = {};
   Object.keys(feriados).forEach(f => { anios[f.slice(0, 4)] = true; });
   let dia = diaSiguiente_(hastaIso);
   for (let i = 0; i < CARGA.MAX_DIAS_HASTA_CIERRE; i++, dia = diaSiguiente_(dia)) {
-    if (!anios[dia.slice(0, 4)]) throw new Error('Faltan los feriados de ' + dia.slice(0, 4) + ' en la hoja ' + CARGA.HOJAS.feriados + ': no se puede calcular el cierre.');
+    if (!anios[dia.slice(0, 4)]) throw new Error(sinCalendario_(dia.slice(0, 4), 'no se puede calcular el cierre'));
     const semana = new Date(dia + 'T12:00:00Z').getUTCDay();
     if (semana !== 0 && semana !== 6 && !feriados[dia]) return { dia, instante: instanteLocal_(dia, CARGA.HORA_CIERRE) };
   }
@@ -180,27 +181,20 @@ function tablaAdministracion_(filas, hoja) {
 }
 
 /**
- * Configuración vigente, leída en cada operación. datos: { ventanas, feriados, asignaciones } (matrices con
- * encabezado; fechas como 'aaaa-mm-dd' o 'dd/mm/aaaa') y fuentes: { período: valor de su celda de Control }.
+ * Configuración vigente, leída en cada operación. datos: { ventanas, asignaciones } (matrices con encabezado; fechas
+ * como 'aaaa-mm-dd' o 'dd/mm/aaaa') y fuentes: { período: valor de su celda de Control }. Los feriados salen del
+ * calendario del código (Carga_Calendario.gs); si datos trae otros, se ignoran.
  * Nunca lanza por un problema de datos. Lo anota donde bloquea lo mínimo, siempre cerrando y nunca adivinando:
- *  - problemas: hojas ilegibles o feriados mal cargados; bloquean toda la carga;
- *  - problemas de un período (fuente, fechas, cierre): bloquean ese período;
+ *  - problemas: hojas ilegibles; bloquean toda la carga;
+ *  - problemas de un período (fuente, fechas, cierre en un año sin calendario): bloquean ese período;
  *  - materias ambiguas (dos docentes, niveles distintos o una fila inválida): bloquean esa materia;
  *  - advertencias: filas que no se pueden vincular a nada; no habilitan a nadie.
  */
 function configuracion_(datos, ahora) {
-  const config = { problemas: [], advertencias: [], periodos: {}, asignaciones: [], porMateria: {}, feriados: {} };
+  // Feriados nacionales y de CABA, del código (también los usan los correos de #28 para los días hábiles).
+  const feriados = feriadosCalendario_();
+  const config = { problemas: [], advertencias: [], periodos: {}, asignaciones: [], porMateria: {}, feriados };
   CARGA.PERIODOS.forEach(p => { config.periodos[p] = { periodo: p, fuente: '', ventana: null, estado: 'sin ventana', problemas: [], problemasFuente: [] }; });
-
-  // Feriados nacionales y de CABA (también los usan los correos de #28 para los días hábiles).
-  const feriados = config.feriados;
-  try {
-    tablaAdministracion_(datos.feriados, 'feriados').forEach(f => {
-      const fecha = fechaCivil_(f['Fecha']);
-      if (!fecha) config.problemas.push('Feriados, fila ' + f.fila + ': fecha no reconocida ("' + f['Fecha'] + '").');
-      else feriados[fecha] = true;
-    });
-  } catch (e) { config.problemas.push(e.message); }
 
   // Fuentes: la grilla de cada período en Control del generador. Dos períodos nunca comparten grilla.
   const ids = {};
@@ -934,7 +928,12 @@ function resolverPendientes_(servicios, edadMs) {
 
 /**
  * Problemas que el Equipo EPS debe resolver antes o durante una ventana: configuración, asignaciones que no
- * coinciden con la grilla, materias con cursantes y sin docente, DNI repetidos y filas del Registro sin resolver.
+ * coinciden con la grilla, materias con cursantes y sin docente, DNI repetidos, calificaciones que la carga no
+ * reconoce, bloques de estudiante incompletos y filas del Registro sin resolver.
+ * grillas: una línea por hoja de cada ventana vigente o próxima con lo que contiene (#29). Sirve para revisar una
+ * grilla recién preparada antes de abrir: lo esperable es CURSA (o NO CURSA / vacío para quien no cursa) y
+ * ACREDITÓ / EQUIVALENCIA del Equipo EPS; calificaciones o complementarios ya cargados pueden ser restos de la grilla
+ * de la que se copió.
  * servicios: { reloj, datos, valoresHoja(fuente, orientación), registro }.
  */
 function verificarConfiguracion_(servicios) {
@@ -942,6 +941,7 @@ function verificarConfiguracion_(servicios) {
   const config = configuracion_(servicios.datos(), ahora);
   const problemas = config.problemas.concat(config.advertencias);
   const ventanas = [];
+  const grillas = [];
   CARGA.PERIODOS.forEach(nombre => {
     const p = config.periodos[nombre];
     p.problemas.forEach(x => problemas.push(nombre + ': ' + x));
@@ -959,11 +959,32 @@ function verificarConfiguracion_(servicios) {
         if (!m) problemas.push(nombre + ' · ' + orientacion + ': la materia asignada "' + a.materia + '" no figura en la grilla (Asignaciones, fila ' + a.fila + ').');
         else if (m.nivel !== a.nivel) problemas.push(nombre + ' · ' + orientacion + ': ' + a.materia + ' es de ' + m.nivel + ' en la grilla y de ' + a.nivel + ' en Asignaciones (fila ' + a.fila + ').');
       });
+      const fila = e => filasConDni_(valores, e.dni)[0] + 1;
+      const cuenta = { pendiente: 0, valorada: 0, administrativo: 0, 'a revisar': 0, complementarios: 0 };
+      const incompletos = {};
       estructura.materias.forEach(m => {
-        if (asignacionDe_(config, orientacion, m.clave)) return;
-        const cursan = leerMateria_(valores, estructura, m, nombre).length;
-        if (cursan) problemas.push(nombre + ' · ' + orientacion + ' ' + m.nivel + ' · ' + m.nombre + ': ' + cursan + ' cursantes y ningún docente asignado.');
+        const cursantes = leerMateria_(valores, estructura, m, nombre);
+        const enMateria = nombre + ' · ' + orientacion + ' ' + m.nivel + ' · ' + m.nombre + ': ';
+        cursantes.forEach(e => {
+          cuenta[e.situacion]++;
+          if (['calidad', 'participacion', 'observaciones'].some(c => e.campos[c])) cuenta.complementarios++;
+          if (e.problema && dnis[e.dni] === 1) incompletos[fila(e)] = true;
+        });
+        const revisar = cursantes.filter(e => e.situacion === 'a revisar');
+        if (revisar.length) {
+          problemas.push(enMateria + revisar.length + (revisar.length === 1 ? ' calificación que la carga no reconoce' : ' calificaciones que la carga no reconoce') +
+            ' (' + (revisar.length === 1 ? 'fila ' : 'filas ') + revisar.map(fila).join(', ') + '). El docente no puede ' +
+            (revisar.length === 1 ? 'cargarla hasta corregirla.' : 'cargarlas hasta corregirlas.'));
+        }
+        if (cursantes.length && !asignacionDe_(config, orientacion, m.clave)) problemas.push(enMateria + cursantes.length + ' cursantes y ningún docente asignado.');
       });
+      const filasIncompletas = Object.keys(incompletos).map(Number).sort((a, b) => a - b);
+      if (filasIncompletas.length) {
+        problemas.push(nombre + ' · ' + orientacion + ': el bloque de cuatro filas no está completo para ' + (filasIncompletas.length === 1 ? 'el estudiante de la fila ' : 'los estudiantes de las filas ') +
+          filasIncompletas.join(', ') + '. Nadie puede cargarles valoraciones hasta corregirlo.');
+      }
+      grillas.push(nombre + ' · ' + orientacion + ': calificaciones ' + cuenta.pendiente + ' CURSA, ' + cuenta.valorada + ' cargadas, ' + cuenta.administrativo +
+        ' del Equipo EPS, ' + cuenta['a revisar'] + ' a revisar; ' + cuenta.complementarios + ' con Calidad, Participación u Observaciones cargadas.');
     });
   });
   try {
@@ -977,7 +998,7 @@ function verificarConfiguracion_(servicios) {
       });
     }
   } catch (e) { problemas.push(e.message); }
-  return { ventanas, problemas };
+  return { ventanas, grillas, problemas };
 }
 
 // ================================================================ utilidades (copias mínimas de las del generador)

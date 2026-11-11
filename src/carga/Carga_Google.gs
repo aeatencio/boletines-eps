@@ -2,13 +2,13 @@
  * Carga docente EPS (#26) · adaptador a los servicios de Google del núcleo (Carga_Nucleo.gs).
  *
  * Propiedades del script:
- *   ADMIN_ID       planilla de administración de la carga: Ventanas, Feriados, Asignaciones, Enlaces, Registro y Correos
+ *   ADMIN_ID       planilla de administración de la carga: Ventanas, Asignaciones, Enlaces, Registro y Correos
  *   GENERADOR_ID   planilla del generador; sólo se lee Control!B10:B14 (la grilla de cada período)
  *   CLAVE_ENLACES  secreto de los enlaces individuales (#28); lo crea prepararAdministracionCarga si falta
  *   URL_CARGA      URL /exec de la app web publicada (#28); la usan los correos para armar los enlaces
  *
- * Todo se lee de nuevo en cada operación: el Equipo EPS puede cambiar ventanas, feriados, asignaciones y fuentes
- * con la carga abierta. Las grillas se abren por el ID que figura en Control, nunca por otro camino.
+ * Todo se lee de nuevo en cada operación: el Equipo EPS puede cambiar ventanas, asignaciones y fuentes con la carga
+ * abierta. Los feriados están en el código (Carga_Calendario.gs); una hoja Feriados que haya quedado no se lee. Las grillas se abren por el ID que figura en Control, nunca por otro camino.
  *
  * consultarCarga_ y guardarCampoCarga_ reciben el correo del docente ya identificado y, por terminar en "_",
  * google.script.run no puede invocarlas. La página (#27, Carga_Web.gs) las llama después de identificar al docente
@@ -69,7 +69,7 @@ function firmaEnlaces_(propiedades) {
 }
 
 /**
- * Datos crudos de la configuración. Las fechas de Ventanas y Feriados se convierten a 'aaaa-mm-dd' con la zona
+ * Datos crudos de la configuración. Las fechas de Ventanas se convierten a 'aaaa-mm-dd' con la zona
  * horaria de la planilla de administración (la misma con la que Sheets las muestra); el texto queda como está.
  */
 function datosCarga_(admin, generador) {
@@ -89,7 +89,7 @@ function datosCarga_(admin, generador) {
   const valores = control.getRange(primera, 2, Math.max.apply(null, filas) - primera + 1, 1).getDisplayValues();
   const fuentes = {};
   CARGA.PERIODOS.forEach((p, i) => { fuentes[p] = valores[filas[i] - primera][0]; });
-  return { ventanas: tabla(CARGA.HOJAS.ventanas), feriados: tabla(CARGA.HOJAS.feriados), asignaciones: tabla(CARGA.HOJAS.asignaciones), enlaces: tabla(CARGA.HOJAS.enlaces), fuentes };
+  return { ventanas: tabla(CARGA.HOJAS.ventanas), asignaciones: tabla(CARGA.HOJAS.asignaciones), enlaces: tabla(CARGA.HOJAS.enlaces), fuentes };
 }
 
 /** Lo que el docente puede ver y cargar ahora (ver consultarDocente_). servicios: los de la identificación, si los hay. */
@@ -129,8 +129,8 @@ function guardarCampoCarga_(correo, pedido, servicios) {
 function prepararAdministracionCarga() {
   soloPropietario_();
   const propiedades = PropertiesService.getScriptProperties();
-  const admin = SpreadsheetApp.openById(propiedades.getProperty('ADMIN_ID'));
-  [[CARGA.HOJAS.ventanas, CARGA.ENCABEZADOS.ventanas], [CARGA.HOJAS.feriados, CARGA.ENCABEZADOS.feriados],
+  const admin = serviciosCarga_().admin(); // sin ADMIN_ID o GENERADOR_ID, un error que las nombra
+  [[CARGA.HOJAS.ventanas, CARGA.ENCABEZADOS.ventanas],
     [CARGA.HOJAS.asignaciones, CARGA.ENCABEZADOS.asignaciones], [CARGA.HOJAS.enlaces, CARGA.ENCABEZADOS.enlaces],
     [CARGA.HOJAS.registro, CARGA.REGISTRO], [CARGA.HOJAS.correos, CORREO.COLUMNAS]].forEach(([nombre, enc]) => {
     if (admin.getSheetByName(nombre)) return;
@@ -141,18 +141,22 @@ function prepararAdministracionCarga() {
     propiedades.setProperty(ACCESO.PROPIEDAD_CLAVE, (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, ''));
     console.log('Se creó la propiedad ' + ACCESO.PROPIEDAD_CLAVE + ' (secreto de los enlaces). No la copies a otro lugar.');
   }
-  console.log('Listo. Completar Ventanas, Feriados y Asignaciones; proteger Registro y Correos para que sólo los edite esta cuenta. ' +
+  console.log('Listo. Completar Ventanas y Asignaciones; proteger Registro y Correos para que sólo los edite esta cuenta. ' +
+    'Los feriados están en el código: calendario de ' + aniosCalendario_().join(', ') + '. ' +
     'Para los correos: publicar la app web, guardar su URL /exec en la propiedad ' + CORREO.PROPIEDAD_URL + ' y ejecutar activarCorreosCarga.');
 }
 
-/** Problemas de configuración, de las grillas de las ventanas vigentes, del Registro, de los enlaces y de los correos. */
+/**
+ * Problemas de configuración, de las grillas de las ventanas vigentes, del Registro, de los enlaces y de los correos.
+ * La primera línea del registro dice qué años tiene el calendario de feriados del código.
+ */
 function verificarCargaDocente() {
   soloPropietario_();
   const servicios = serviciosCorreo_();
   const r = verificarConfiguracion_(servicios);
   r.problemas = r.problemas.concat(problemasAccesoCorreo_(servicios));
-  console.log(['Ventanas vigentes o próximas:'].concat(r.ventanas.length ? r.ventanas : ['(ninguna)'], '', 'Problemas:',
-    r.problemas.length ? r.problemas : ['(ninguno)']).join('\n'));
+  console.log(['Calendario de feriados: ' + aniosCalendario_().join(', '), '', 'Ventanas vigentes o próximas:'].concat(r.ventanas.length ? r.ventanas : ['(ninguna)'], '', 'Grillas de esas ventanas:',
+    r.grillas.length ? r.grillas : ['(ninguna)'], '', 'Problemas:', r.problemas.length ? r.problemas : ['(ninguno)']).join('\n'));
   return r;
 }
 

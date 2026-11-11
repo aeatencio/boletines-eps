@@ -6,8 +6,9 @@
  *
  *   node tests/carga-correo.js [corridas]     corridas de la simulación de una ventana completa (10 por defecto)
  *
- * Calendario ficticio: 2º cuatrimestre y anual comparten la ventana del sábado 5/12/2026 al viernes 11/12/2026; el
- * martes 8/12 es feriado (ficticio); el cierre es el lunes 14/12/2026 a las 8:00.
+ * Calendario: el real de 2026 (Carga_Calendario.gs). 2º cuatrimestre y anual comparten la ventana del sábado 5/12/2026
+ * al viernes 11/12/2026; el lunes 7/12 es día no laborable (hábil para la carga) y el martes 8/12, feriado; el cierre
+ * es el lunes 14/12/2026 a las 8:00.
  */
 "use strict";
 const vm = require("vm");
@@ -23,14 +24,12 @@ function lanza(fn, re) { let e = null; try { fn(); } catch (x) { e = x; } cierto
 
 const MATE = D.DOCENTES.matematica.correo, LENGUA = D.DOCENTES.lengua.correo, REEMPLAZO = D.DOCENTES.reemplazo.correo;
 const P2C = D.P2C, PAN = D.PAN;
-const FERIADOS = [["Fecha", "Descripción"], ["2026-12-08", "Feriado ficticio"], ["2026-12-25", "Navidad"], ["2027-01-01", "Año Nuevo"]];
 const VENTANAS = [["Período", "Desde", "Hasta"], [P2C, "2026-12-05", "2026-12-11"], [PAN, "2026-12-05", "2026-12-11"]];
 
 /** Entorno con el calendario ficticio. */
 function entorno(opciones) {
   const S = D.servidor(opciones);
   S.s.admin.Ventanas.v = VENTANAS.map(f => f.slice());
-  S.s.admin.Feriados.v = FERIADOS.map(f => f.slice());
   S.en = local => { S.reloj.desfase = Date.parse(local + ":00-03:00") - Date.now(); };
   S.correr = () => S.ctx.enviarCorreosDia_(S.ctx.serviciosCorreo_(), {});
   S.mails = () => S.estado.correo.enviados;
@@ -71,11 +70,11 @@ function ponerCursa(S, periodo, orientacion, materia) {
 
 seccion("1. Días hábiles de CABA y horario");
 
-prueba("diaHabil_: sábados, domingos y feriados no son hábiles; sin feriados del año no adivina; primer día hábil desde un sábado es el lunes", () => {
+prueba("diaHabil_ con el calendario del código: sábados, domingos y feriados no son hábiles (el 7/12, no laborable, sí); un año sin calendario no se adivina; primer día hábil desde un sábado es el lunes", () => {
   const S = entorno();
-  const f = { "2026-12-08": true, "2026-12-25": true };
+  const f = S.ctx.feriadosCalendario_();
   igual(["2026-12-04", "2026-12-05", "2026-12-06", "2026-12-07", "2026-12-08", "2026-12-09"].map(d => S.ctx.diaHabil_(d, f)), [true, false, false, true, false, true]);
-  lanza(() => S.ctx.diaHabil_("2027-03-01", f), /Faltan los feriados de 2027/);
+  lanza(() => S.ctx.diaHabil_("2099-03-01", f), /Falta el calendario de feriados de 2099 en Carga_Calendario\.gs/);
   igual([S.ctx.primerDiaHabilDesde_("2026-12-05", f), S.ctx.primerDiaHabilDesde_("2026-12-08", f), S.ctx.primerDiaHabilDesde_("2026-12-24", f)], ["2026-12-07", "2026-12-09", "2026-12-24"]);
 });
 
@@ -383,23 +382,39 @@ prueba("cuota de MailApp agotada o tiempo agotado: lo que falta queda «sin proc
   igual([r.enviados.length, r.sinProcesar.length, T.mails().length], [0, 2, 0]);
 });
 
-prueba("configuración: sin feriados del año o con un problema global, ningún correo; un período con problema (sin grilla en Control) no se informa y se avisa", () => {
+prueba("configuración: año sin calendario o problema global, ningún correo; un período con problema (sin grilla en Control) no se informa y se avisa", () => {
   const S = entorno();
-  S.s.admin.Feriados.v = [FERIADOS[0], ["2027-01-01", "Año Nuevo"]];
+  const restituir = D.sinAnioDeCalendario(S.ctx, "2026");
   S.en("2026-12-07T08:05");
   let r = S.correr();
+  restituir();
   igual([r.enviados.length], [0]);
-  cierto(/Faltan los feriados de 2026/.test(r.problemas.join()));
-  S.s.admin.Feriados.v = FERIADOS.concat([["no es fecha", "x"]]);
+  cierto(/Falta el calendario de feriados de 2026 en Carga_Calendario\.gs/.test(r.problemas.join()), r.problemas.join());
+  const asignaciones = S.s.admin.Asignaciones.v;
+  S.s.admin.Asignaciones.v = [asignaciones[0].concat(["Correo"])].concat(asignaciones.slice(1));
   r = S.correr();
   igual([r.enviados.length], [0]);
-  cierto(/Configuración: Feriados, fila/.test(r.problemas.join()), r.problemas.join());
-  S.s.admin.Feriados.v = FERIADOS.map(f => f.slice());
+  cierto(/^Configuración: La hoja Asignaciones debe tener una única columna/.test(r.problemas.join()), r.problemas.join());
+  S.s.admin.Asignaciones.v = asignaciones;
   S.s.control.v[13][1] = ""; // sin grilla de anual
   r = S.correr();
   igual(r.enviados.length, 2);
   cierto(/^Anual: no se envían sus correos/.test(r.problemas[0]), r.problemas.join());
   cierto(!para(S, MATE)[0].htmlBody.includes("Anual"));
+});
+
+prueba("#29: sin ventanas en curso ni cierres por informar, un año sin calendario no bloquea: la ejecución termina sin problemas; con algo que informar, sí", () => {
+  const S = entorno();
+  const restituir = D.sinAnioDeCalendario(S.ctx, "2026");
+  try {
+    S.en("2026-11-20T08:30"); // la ventana del 5/12 todavía no empezó
+    let r = S.correr();
+    igual([r.motivo, r.problemas, r.enviados.length], ["No hay ventanas en curso ni cierres para informar.", [], 0]);
+    S.en("2026-12-07T08:30");
+    r = S.correr();
+    igual(r.enviados.length, 0);
+    cierto(/Falta el calendario de feriados de 2026/.test(r.problemas.join()), r.problemas.join());
+  } finally { restituir(); }
 });
 
 prueba("sin URL_CARGA válida no se envían correos con enlace (se informa); un cierre, que no lleva enlace, sale igual", () => {

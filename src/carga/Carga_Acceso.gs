@@ -58,7 +58,7 @@ function versionesEnlaces_(filas) {
 /**
  * Tramo de acceso vigente: { desde, inicio, fin } del último tramo ya empezado, o null si no empezó ninguno.
  * Un tramo une las ventanas que se superponen o se tocan (de su apertura a su cierre). Si un cierre no se pudo
- * calcular (faltan feriados), para unir se usa el día siguiente a «Hasta».
+ * calcular (año sin calendario de feriados), para unir se usa el día siguiente a «Hasta».
  */
 function tramoAcceso_(config, ahora) {
   const ventanas = CARGA.PERIODOS.map(n => config.periodos[n].ventana).filter(Boolean)

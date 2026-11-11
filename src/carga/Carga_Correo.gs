@@ -4,8 +4,9 @@
  * corre igual en Apps Script y en las pruebas locales (tests/carga-correo.js).
  *
  * Una ejecución por día (activador diario, Carga_Correo_Google.gs). En cada una, enviarCorreosDia_:
- *  1. no hace nada antes de las 8:00 (hora de Buenos Aires) ni en un día no hábil de CABA (sábado, domingo o
- *     feriado de la hoja Feriados). Sin los feriados del año, no adivina: no envía e informa el problema;
+ *  1. no hace nada antes de las 8:00 (hora de Buenos Aires), ni sin ventanas en curso o cierres por informar, ni en
+ *     un día no hábil de CABA (sábado, domingo o feriado de Carga_Calendario.gs). Si hay algo que informar y el año no
+ *     tiene calendario, no adivina: no envía e informa el problema;
  *  2. lee la configuración vigente y la hoja Correos (lo ya enviado);
  *  3. arma a lo sumo un mensaje por docente (planCorreos_), con TODOS sus períodos relevantes de ese día:
  *     - apertura: el primer día hábil de la ventana, a todos los docentes asignados, con el enlace y el estado
@@ -52,9 +53,9 @@ function anioConFeriados_(dia, feriados) {
   return Object.keys(feriados).some(f => f.slice(0, 4) === anio);
 }
 
-/** Lunes a viernes y no feriado. Sin feriados cargados para ese año, lanza: no se adivina. */
+/** Lunes a viernes y no feriado. feriados: feriadosCalendario_(). Para un año sin calendario, lanza: no se adivina. */
 function diaHabil_(dia, feriados) {
-  if (!anioConFeriados_(dia, feriados)) throw new Error('Faltan los feriados de ' + dia.slice(0, 4) + ' en la hoja ' + CARGA.HOJAS.feriados + ': no se puede saber si ' + dia + ' es hábil.');
+  if (!anioConFeriados_(dia, feriados)) throw new Error(sinCalendario_(dia.slice(0, 4), 'no se puede saber si ' + dia + ' es hábil'));
   const semana = new Date(dia + 'T12:00:00Z').getUTCDay();
   return semana !== 0 && semana !== 6 && !feriados[dia];
 }
@@ -187,6 +188,10 @@ function planCorreos_(config, ahora, historial, hoja, enlace) {
     plan.problemas = config.problemas.map(x => 'Configuración: ' + x + ' No se envía ningún correo hasta resolverlo.');
     return plan;
   }
+  // Sin ventanas en curso ni cierres recientes no hay nada que informar, y el calendario no hace falta (#29).
+  const relevante = p => p.ventana && (p.estado === 'abierta' ||
+    (p.estado === 'cerrada' && p.ventana.diaCierre && diasEntre_(p.ventana.diaCierre, dia) >= 0 && diasEntre_(p.ventana.diaCierre, dia) <= CORREO.MAX_DIAS_CIERRE));
+  if (!CARGA.PERIODOS.some(n => relevante(config.periodos[n]))) { plan.motivo = 'No hay ventanas en curso ni cierres para informar.'; return plan; }
   try {
     if (!diaHabil_(dia, config.feriados)) { plan.motivo = fechaTexto_(dia) + ' no es día hábil: no se envían correos.'; return plan; }
   } catch (e) { plan.problemas.push(e.message); return plan; }

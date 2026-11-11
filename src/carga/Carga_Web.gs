@@ -10,7 +10,12 @@
  * Las asignaciones vigentes siguen decidiendo qué puede ver y cargar cada docente (lo comprueba el núcleo).
  *
  * Despliegue (appsscript.json, sección webapp): se ejecuta como la cuenta propietaria; los docentes no necesitan
- * acceso a las grillas ni a la administración. Quién puede abrir la app («access») se confirma en el piloto en Google.
+ * acceso a las grillas ni a la administración. Acceso ANYONE_ANONYMOUS (#29; en el diálogo, «Cualquier persona» /
+ * «Anyone»): la identidad la da sólo el enlace, nunca la cuenta de Google del visitante (que la app ni siquiera puede
+ * leer para cuentas de otra organización), así que no se exige iniciar sesión. Si la política de la organización no lo
+ * permite, la alternativa es ANYONE («Cualquier persona con una cuenta de Google» / «Anyone with Google account»): la
+ * credencial de la app sigue siendo el mismo enlace firmado, y Google exige además iniciar sesión antes de abrir la
+ * página. Ver docs/puesta-en-marcha-carga-docente.md.
  *
  * Funciones invocables por google.script.run (sin "_"): cargaConsultar y cargaGuardar. El pedido de guardado se
  * reduce a sus campos conocidos: un campo de más (por ejemplo, un correo) nunca llega al núcleo.
@@ -66,7 +71,7 @@ function accesoCarga_() {
 }
 
 /**
- * #28. Docente verificado para una credencial opaca: { correo } o null. Lee la configuración (Ventanas, Feriados,
+ * #28. Docente verificado para una credencial opaca: { correo } o null. Lee la configuración (Ventanas,
  * Asignaciones, Enlaces) y nunca una grilla. Si la credencial vale:
  *  - la consulta o el guardado reutilizan esa misma lectura (servicios.reutilizarDatos), sin leer dos veces;
  *  - servicios.acceso queda listo para que el núcleo la vuelva a comprobar con cada configuración que lea, también

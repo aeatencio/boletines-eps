@@ -20,7 +20,7 @@ const crypto = require("crypto");
 
 const RAIZ = path.resolve(__dirname, "..");
 const leer = p => fs.readFileSync(path.join(RAIZ, p), "utf8");
-const ARCHIVOS_SERVIDOR = ["src/carga/Carga_Nucleo.gs", "src/carga/Carga_Google.gs", "src/carga/Carga_Acceso.gs", "src/carga/Carga_Correo.gs",
+const ARCHIVOS_SERVIDOR = ["src/carga/Carga_Calendario.gs", "src/carga/Carga_Nucleo.gs", "src/carga/Carga_Google.gs", "src/carga/Carga_Acceso.gs", "src/carga/Carga_Correo.gs",
   "src/carga/Carga_Correo_Google.gs", "src/carga/Carga_Web.gs"];
 // Secreto y URL ficticios (nunca los de un proyecto real).
 const CLAVE_FICTICIA = "clave-ficticia-de-pruebas-0123456789abcdef0123456789abcdef";
@@ -193,7 +193,7 @@ const isoBA = ms => new Intl.DateTimeFormat("en-CA", { timeZone: ZONA, year: "nu
 
 /**
  * Estado completo de un entorno: planilla de administración (Ventanas con 2C y anual compartiendo ventana alrededor
- * de «hoy», 3B ya cerrado; Feriados; Asignaciones; Registro), Control del generador y grillas de 2C, anual y 3B.
+ * de «hoy», 3B ya cerrado; Asignaciones; Registro), Control del generador y grillas de 2C, anual y 3B.
  * opciones: { hoy (ms; por defecto, ahora), porNivel }.
  */
 function escenario(C, opciones) {
@@ -219,7 +219,6 @@ function escenario(C, opciones) {
     hoy, grillas,
     admin: {
       Ventanas: new Hoja([["Período", "Desde", "Hasta"], [P2C, desde, hasta], [PAN, desde, hasta], ["3er bimestre", isoBA(hoy - 60 * 86400000), isoBA(hoy - 45 * 86400000)]]),
-      Feriados: new Hoja([["Fecha", "Descripción"], [(anio - 1) + "-12-25", "Navidad"], [anio + "-12-25", "Navidad"], [(anio + 1) + "-01-01", "Año Nuevo"]]),
       Asignaciones: new Hoja(ASIGNACIONES.map(f => f.slice())),
       Enlaces: new Hoja([["Correo", "Versión"]]),
       Registro: new Hoja([cargaDe(C).REGISTRO.slice()]),
@@ -318,8 +317,30 @@ function servidor(opciones) {
   const ctx = Object.assign({}, globales);
   vm.createContext(ctx);
   ARCHIVOS_SERVIDOR.forEach(a => vm.runInContext(leer(a), ctx, { filename: a }));
+  const anioReal = Number(isoBA(Date.now()).slice(0, 4));
+  const aniosFicticios = calendarioDePrueba(ctx, [anioReal - 1, anioReal, anioReal + 1]);
   estado.s = escenario(ctx, o);
-  return { ctx, estado, reloj, consola: registroConsola, get s() { return estado.s; }, reiniciar: op => { estado.s = escenario(ctx, Object.assign({}, o, op)); } };
+  return { ctx, estado, reloj, consola: registroConsola, aniosFicticios, get s() { return estado.s; }, reiniciar: op => { estado.s = escenario(ctx, Object.assign({}, o, op)); } };
+}
+
+/**
+ * Calendario de feriados FICTICIO, sólo para pruebas (#29): para cada año que Carga_Calendario.gs no tiene, agrega
+ * uno con 1/1 y 25/12, para que las pruebas que usan el reloj real no dependan del año en que se corren. Nunca toca un
+ * año del calendario real. Devuelve los años agregados (para quitarlos con sinAnioDeCalendario).
+ */
+function calendarioDePrueba(ctx, anios) {
+  const cal = vm.runInContext("CALENDARIO_FERIADOS", ctx);
+  return anios.map(String).filter(a => !cal[a]).map(a => {
+    cal[a] = { feriados: { [a + "-01-01"]: "Año Nuevo (ficticio, pruebas)", [a + "-12-25"]: "Navidad (ficticio, pruebas)" }, noLaborables: {} };
+    return a;
+  });
+}
+/** Quita un año del calendario del contexto y devuelve una función que lo restituye. */
+function sinAnioDeCalendario(ctx, anio) {
+  const cal = vm.runInContext("CALENDARIO_FERIADOS", ctx);
+  const previo = cal[anio];
+  delete cal[anio];
+  return () => { if (previo) cal[anio] = previo; };
 }
 
 /**
@@ -364,5 +385,5 @@ function cliente() {
   return ctx.CargaCliente;
 }
 
-module.exports = { cargaDe, Hoja, nuevoLock, grillaSintetica, escenario, servidor, enlacesReales, renderPagina, cliente, escHtml, leer, CLAVE_FICTICIA, URL_APP,
+module.exports = { cargaDe, Hoja, nuevoLock, grillaSintetica, escenario, servidor, enlacesReales, calendarioDePrueba, sinAnioDeCalendario, renderPagina, cliente, escHtml, leer, CLAVE_FICTICIA, URL_APP,
   P2C, PAN, P3B, ID, OTRA_2C, URL, DOCENTES, ADMIN_ID, GENERADOR_ID, ZONA, isoBA };

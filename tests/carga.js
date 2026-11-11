@@ -26,7 +26,9 @@ function contexto(archivos, globales) {
   return ctx;
 }
 const NUCLEO = "src/carga/Carga_Nucleo.gs";
-const C = contexto([NUCLEO]);
+const CALENDARIO = "src/carga/Carga_Calendario.gs";
+const C = contexto([CALENDARIO, NUCLEO]);
+const { calendarioDePrueba, sinAnioDeCalendario } = require("./carga-dobles.js");
 const G = contexto(["src/Generador_EPS.gs"]);
 const enG = (expr, datos) => { G.__d = JSON.parse(JSON.stringify(datos === undefined ? null : datos)); return vm.runInContext(expr, G); };
 const CARGA = vm.runInContext("CARGA", C);
@@ -208,12 +210,10 @@ const LENGUA = "docente.lengua@bue.edu.ar";
 const REEMPLAZO = "docente.reemplazo@bue.edu.ar";
 const AHORA = new Date("2026-11-20T15:00:00-03:00"); // viernes, dentro de la ventana de 2C y anual
 
-// Ventana compartida de 2C y anual: del lunes 16/11 al viernes 4/12. Sábado, domingo y dos feriados (lunes 7,
-// ficticio para la prueba, y martes 8, Inmaculada Concepción): cierra el miércoles 9/12 a las 8:00.
-// El 3º bimestre ya cerró: hasta el viernes 9/10, con el lunes 12/10 feriado → martes 13/10 a las 8:00.
-const VENTANAS = [["Período", "Desde", "Hasta"], ["2º cuatrimestre", "16/11/2026", "04/12/2026"], ["Anual", "2026-11-16", "2026-12-04"], ["3er bimestre", "28/09/2026", "09/10/2026"]];
-const FERIADOS = [["Fecha", "Descripción"], ["12/10/2026", "Día del Respeto a la Diversidad Cultural"], ["07/12/2026", "Feriado ficticio de la prueba"],
-  ["08/12/2026", "Inmaculada Concepción de María"], ["25/12/2026", "Navidad"]];
+// Calendario real de 2026 (Carga_Calendario.gs). Ventana compartida de 2C y anual: del lunes 16/11 al lunes 7/12 (día
+// no laborable con fines turísticos, que no cambia los días hábiles); el martes 8/12 es feriado: cierra el miércoles
+// 9/12 a las 8:00. El 3º bimestre ya cerró: hasta el viernes 9/10, con el lunes 12/10 feriado → martes 13/10 a las 8:00.
+const VENTANAS = [["Período", "Desde", "Hasta"], ["2º cuatrimestre", "16/11/2026", "07/12/2026"], ["Anual", "2026-11-16", "2026-12-07"], ["3er bimestre", "28/09/2026", "09/10/2026"]];
 const ASIGNACIONES = [["Orientación", "Nivel", "Materia", "Docente", "Correo"],
   ["EPSI", "EPS2", "Matemática II", "Docente Ficticio de Matemática", MATE],
   ["EPSI", "EPS2", "Inglés I", "Docente Ficticio de Matemática", "Docente.Matematica@bue.edu.ar"],
@@ -236,13 +236,13 @@ function escenario() {
   const s = {
     ahora: new Date(AHORA.getTime()), grillas,
     control: { [P1B]: URL(ID[P1B]), [P1C]: ID[P1C], [P3B]: URL(ID[P3B]), [P2C]: URL(ID[P2C]), [PAN]: URL(ID[PAN]) },
-    ventanas: VENTANAS.map(f => f.slice()), feriados: FERIADOS.map(f => f.slice()), asignaciones: ASIGNACIONES.map(f => f.slice()),
+    ventanas: VENTANAS.map(f => f.slice()), asignaciones: ASIGNACIONES.map(f => f.slice()),
     registro: new Hoja([CARGA.REGISTRO.slice()], { esRegistro: true }), lock: nuevoLock(), lecturasDatos: 0,
     flushFallas: [] // una entrada por flush, en orden: 'fallar' o vacío
   };
   s.servicios = {
     reloj: () => new Date(s.ahora.getTime()),
-    datos: () => { s.lecturasDatos++; return JSON.parse(JSON.stringify({ ventanas: s.ventanas, feriados: s.feriados, asignaciones: s.asignaciones, fuentes: s.control })); },
+    datos: () => { s.lecturasDatos++; return JSON.parse(JSON.stringify({ ventanas: s.ventanas, asignaciones: s.asignaciones, fuentes: s.control })); },
     hoja: (fuente, orientacion) => { const g = s.grillas[fuente]; if (!g || !g[orientacion]) throw C.rechazo_("grilla", "No se encontró la hoja."); return g[orientacion]; },
     valoresHoja: (fuente, orientacion) => s.servicios.hoja(fuente, orientacion).getDataRange().getDisplayValues(),
     registro: () => s.registro,
@@ -379,8 +379,8 @@ prueba("períodos, celdas de Control, hojas, encabezados de la cola y normalizac
 
 // ================================================================ 2. ventanas, feriados y cierre
 
-seccion("2. Ventanas configurables: cierre a las 8:00 del primer día hábil posterior, con feriados nacionales y de CABA");
-prueba("2C y anual comparten ventana: cierran el miércoles 9/12 a las 8:00 (salta sábado, domingo y dos feriados); el 3B ya cerró el martes 13/10 a las 8:00", () => {
+seccion("2. Ventanas configurables: cierre a las 8:00 del primer día hábil posterior, con el calendario de feriados del código");
+prueba("2C y anual comparten ventana: cierran el miércoles 9/12 a las 8:00 (salta el feriado del 8/12); el 3B ya cerró el martes 13/10 a las 8:00", () => {
   const c = config(escenario());
   igual([c.problemas, c.periodos[P2C].problemas, c.periodos[PAN].problemas], [[], [], []]);
   igual([c.periodos[P2C].estado, c.periodos[PAN].estado, c.periodos[P3B].estado, c.periodos[P1B].estado], ["abierta", "abierta", "cerrada", "sin ventana"]);
@@ -396,26 +396,46 @@ prueba("límites: abre a las 00:00 de «Desde»; sigue abierta a las 7:59:59.999
   igual([estado("2026-11-15T23:59:59.999-03:00"), estado("2026-11-16T00:00:00-03:00"), estado("2026-12-04T23:59:59-03:00"), estado("2026-12-07T12:00:00-03:00"),
     estado("2026-12-09T07:59:59.999-03:00"), estado("2026-12-09T08:00:00.000-03:00")], ["futura", "abierta", "abierta", "abierta", "abierta", "cerrada"]);
 });
-prueba("sin feriados ni fin de semana: cierra al día siguiente a las 8:00; un feriado de CABA cargado en la lista también se salta", () => {
+prueba("calendario 2026 (#29): sin feriado ni fin de semana, al día siguiente; salta los feriados de la visita papal (9/11 nacional y 10/11 en CABA) y el trasladado de la Soberanía (23/11); un día no laborable (7/12) es hábil", () => {
   const s = escenario();
-  s.ventanas = [VENTANAS[0], ["Anual", "17/11/2026", "18/11/2026"]];
-  igual(horaBA(config(s).periodos[PAN].ventana.cierre), "jueves, 19/11/2026, 08:00:00");
-  s.feriados.push(["19/11/2026", "Feriado de CABA ficticio para la prueba"]);
-  igual(horaBA(config(s).periodos[PAN].ventana.cierre), "viernes, 20/11/2026, 08:00:00");
+  const cierre = (desde, hasta) => { s.ventanas = [VENTANAS[0], ["Anual", desde, hasta]]; return horaBA(config(s, new Date("2026-11-02T10:00:00-03:00")).periodos[PAN].ventana.cierre); };
+  igual(cierre("02/11/2026", "18/11/2026"), "jueves, 19/11/2026, 08:00:00");
+  igual(cierre("02/11/2026", "06/11/2026"), "miércoles, 11/11/2026, 08:00:00");
+  igual(cierre("02/11/2026", "20/11/2026"), "martes, 24/11/2026, 08:00:00");
+  igual(cierre("02/11/2026", "04/12/2026"), "lunes, 07/12/2026, 08:00:00");
 });
-prueba("si faltan los feriados del año en que cae el cierre, el período queda bloqueado en lugar de adivinar; al cargarlos, cierra el lunes 4/1/2027", () => {
+prueba("calendario (#29): fechas válidas de su año; feriados y no laborables no se superponen; trasladados en lunes; no laborables turísticos en lunes o viernes", () => {
+  const cal = vm.runInContext("CALENDARIO_FERIADOS", C);
+  igual(C.aniosCalendario_(), ["2026"]);
+  Object.keys(cal).forEach(anio => {
+    const { feriados, noLaborables } = cal[anio];
+    const todas = Object.keys(feriados).concat(Object.keys(noLaborables));
+    todas.forEach(f => igual(C.fechaCivil_(f), f, "fecha válida"));
+    cierto(todas.every(f => f.startsWith(anio + "-")), "fechas de " + anio);
+    igual(Object.keys(feriados).filter(f => noLaborables[f]), []);
+    const dia = f => new Date(f + "T12:00:00Z").getUTCDay();
+    Object.keys(feriados).filter(f => /trasladado/.test(feriados[f])).forEach(f => igual(dia(f), 1, f));
+    Object.keys(noLaborables).filter(f => /turísticos/.test(noLaborables[f])).forEach(f => cierto([1, 5].includes(dia(f)), f));
+  });
+  igual(Object.keys(cal[2026].feriados).length, 18);
+});
+prueba("si el cierre cae en un año sin calendario, sólo ese período queda bloqueado en lugar de adivinar; con el año en el calendario, cierra el lunes 4/1/2027", () => {
   const s = escenario();
-  s.ventanas = [VENTANAS[0], ["Anual", "21/12/2026", "31/12/2026"]];
+  s.ventanas = [VENTANAS[0], ["Anual", "21/12/2026", "31/12/2026"], ["2º cuatrimestre", "16/11/2026", "07/12/2026"]];
   const c = config(s, new Date("2026-12-28T10:00:00-03:00"));
-  cierto(/Faltan los feriados de 2027/.test(c.periodos[PAN].problemas.join()), c.periodos[PAN].problemas.join());
+  igual(c.problemas, []);
+  cierto(/Falta el calendario de feriados de 2027 en Carga_Calendario\.gs: no se puede calcular el cierre/.test(c.periodos[PAN].problemas.join()), c.periodos[PAN].problemas.join());
   lanza(() => C.periodoHabilitado_(c, PAN, ID[PAN]), /problema de configuración/);
-  s.feriados.push(["01/01/2027", "Año Nuevo"]);
-  igual(horaBA(config(s).periodos[PAN].ventana.cierre), "lunes, 04/01/2027, 08:00:00");
+  igual(c.periodos[P2C].problemas, []);
+  const agregados = calendarioDePrueba(C, [2027]);
+  try { igual(horaBA(config(s).periodos[PAN].ventana.cierre), "lunes, 04/01/2027, 08:00:00"); } finally { agregados.forEach(a => sinAnioDeCalendario(C, a)); }
 });
-prueba("errores de configuración: feriado ilegible bloquea toda la carga; período repetido, fechas inválidas o invertidas bloquean ese período; período desconocido no abre nada", () => {
+prueba("errores de configuración: una hoja Feriados que quedó de una instalación anterior se ignora; período repetido, fechas inválidas o invertidas bloquean ese período; período desconocido no abre nada", () => {
   const s = escenario();
-  s.feriados.push(["31/02/2026", "inexistente"]);
-  cierto(config(s).problemas.some(p => /Feriados, fila 6/.test(p)));
+  const datos = s.servicios.datos();
+  datos.feriados = [["Fecha", "Descripción"], ["31/02/2026", "inexistente"], ["19/11/2026", "un feriado que ya no se lee"]];
+  const c0 = C.configuracion_(datos, s.ahora);
+  igual([c0.problemas, horaBA(c0.periodos[P2C].ventana.cierre)], [[], "miércoles, 09/12/2026, 08:00:00"]);
   const s2 = escenario();
   s2.ventanas.push(["Anual", "20/11/2026", "30/11/2026"], ["1º bimestre", "32/03/2026", "10/04/2026"], ["1º cuatrimestre", "10/07/2026", "01/07/2026"], ["2do cuatri", "16/11/2026", "04/12/2026"]);
   const c = config(s2);
@@ -1044,7 +1064,7 @@ prueba("REGRESIÓN 3: mientras el guardado espera el lock, el Equipo EPS reasign
     ["asignacion", s => { s.asignaciones[1] = ["EPSI", "EPS2", "Matemática II", "Reemplazo", REEMPLAZO]; }],
     ["fuente", s => { s.control[P2C] = URL(OTRA_2C); }],
     ["ventana", s => { s.ventanas[1][2] = "18/11/2026"; }],
-    ["configuracion", s => { s.feriados.push(["no es una fecha", ""]); }],
+    ["configuracion", s => { s.asignaciones[0] = s.asignaciones[0].concat(["Correo"]); }],
     ["asignacion", s => { s.asignaciones[1][1] = "EPS3"; }]
   ];
   casos.forEach(([codigo, cambio]) => {
@@ -1240,7 +1260,8 @@ function google(s, extra) {
     props: { ADMIN_ID: "ADMIN_ficticia_000000000001", GENERADOR_ID: "GENERADOR_ficticio_00000001" },
     aperturas: [], lock: s.lock, propietario: "eps@cfp7.edu.ar", usuario: "eps@cfp7.edu.ar",
     libros: {
-      ADMIN_ficticia_000000000001: { zona: "America/Argentina/Buenos_Aires", hojas: { Ventanas: new Hoja(conFechas(s.ventanas)), Feriados: new Hoja(conFechas(s.feriados)), Asignaciones: new Hoja(s.asignaciones), Registro: s.registro } },
+      // Feriados: hoja de una instalación anterior, con basura: la carga no la lee (#29).
+      ADMIN_ficticia_000000000001: { zona: "America/Argentina/Buenos_Aires", hojas: { Ventanas: new Hoja(conFechas(s.ventanas)), Feriados: new Hoja([["Fecha", "Descripción"], ["no es una fecha", "x"]]), Asignaciones: new Hoja(s.asignaciones), Registro: s.registro } },
       GENERADOR_ficticio_00000001: { zona: "America/Argentina/Buenos_Aires", hojas: { Control: new Hoja(control) } }
     }
   };
@@ -1266,6 +1287,9 @@ function google(s, extra) {
   globales.console = { log: () => {}, error: () => {} };
   // Como en Apps Script, todos los .gs del proyecto comparten el ámbito global.
   const ctx = contexto(fs.readdirSync(path.join(RAIZ, "src/carga")).filter(a => a.endsWith(".gs")).map(a => "src/carga/" + a), globales);
+  // El adaptador usa el reloj real: calendario ficticio para los años que Carga_Calendario.gs no tenga.
+  const anio = new Date().getUTCFullYear();
+  calendarioDePrueba(ctx, [anio - 1, anio, anio + 1]);
   return { ctx, estado, control: estado.libros.GENERADOR_ficticio_00000001.hojas.Control };
 }
 function fechaCivilPrueba(t) { const m = String(t).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); if (m) return m[3] + "-" + m[2].padStart(2, "0") + "-" + m[1].padStart(2, "0"); return /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : ""; }
@@ -1275,8 +1299,6 @@ function ventanasAlrededorDeHoy(s) {
   const iso = d => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
   const desde = iso(new Date(hoy.getTime() - 3 * 86400000)), hasta = iso(new Date(hoy.getTime() + 10 * 86400000));
   s.ventanas = [VENTANAS[0], ["2º cuatrimestre", desde, hasta], ["Anual", desde, hasta]];
-  const anio = Number(iso(hoy).slice(0, 4));
-  s.feriados = [FERIADOS[0], [anio + "-12-25", "Navidad"], [(anio + 1) + "-01-01", "Año Nuevo"]];
 }
 prueba("consulta y guardado de punta a punta: fechas de Sheets, fuente leída de Control!B13 por su URL, y la grilla abierta por ese ID", () => {
   const s = escenario(); ventanasAlrededorDeHoy(s);
@@ -1307,13 +1329,17 @@ prueba("sin propiedades del script o sin Control: error explícito en la consult
   igual(g2.ctx.consultarCarga_(MATE).estado, "error");
   igual(todasLasEscrituras(s).length, 0);
 });
-prueba("funciones del propietario: preparar crea sólo las hojas que faltan; verificar informa materias sin docente y filas a revisar; otro usuario no puede", () => {
+prueba("funciones del propietario: preparar crea sólo las hojas que faltan (ya no Feriados, y no toca la que quedó); verificar informa materias sin docente y filas a revisar; otro usuario no puede", () => {
   const s = escenario(); ventanasAlrededorDeHoy(s);
   const { ctx, estado } = google(s);
-  delete estado.libros.ADMIN_ficticia_000000000001.hojas.Feriados;
-  const asign = estado.libros.ADMIN_ficticia_000000000001.hojas.Asignaciones; const antes = copia(asign);
+  const hojas = estado.libros.ADMIN_ficticia_000000000001.hojas;
+  const feriadosViejos = hojas.Feriados; const antesFeriados = copia(feriadosViejos);
+  const asign = hojas.Asignaciones; const antes = copia(asign);
   ctx.prepararAdministracionCarga();
-  igual(estado.libros.ADMIN_ficticia_000000000001.hojas.Feriados.v[0], ["Fecha", "Descripción"]);
+  igual([hojas.Feriados === feriadosViejos, diferencias(antesFeriados, feriadosViejos)], [true, []]);
+  delete hojas.Feriados;
+  ctx.prepararAdministracionCarga();
+  igual(hojas.Feriados, undefined);
   igual(diferencias(antes, asign), []);
   // #28: crea Enlaces y Correos, y el secreto de los enlaces (64 caracteres); una segunda ejecución no lo reemplaza.
   const hojasAdmin = estado.libros.ADMIN_ficticia_000000000001.hojas;
@@ -1323,12 +1349,42 @@ prueba("funciones del propietario: preparar crea sólo las hojas que faltan; ver
   ctx.prepararAdministracionCarga();
   igual(estado.props.CLAVE_ENLACES, clave);
   const r = ctx.verificarCargaDocente();
-  cierto(r.problemas.some(p => /Faltan los feriados/.test(p)), "sin feriados, el cierre no se puede calcular");
+  cierto(!r.problemas.some(p => /feriado/i.test(p)), "sin problemas de feriados: " + r.problemas.filter(p => /feriado/i.test(p)).join(" | "));
   cierto(r.problemas.some(p => /ningún docente asignado/.test(p)), r.problemas.slice(0, 3).join(" | "));
   cierto(r.problemas.some(p => /URL_CARGA/.test(p)) && r.problemas.some(p => /no están activados/.test(p)), "verificar informa lo que falta para los correos");
   estado.usuario = "visitante@bue.edu.ar";
   lanza(() => ctx.verificarCargaDocente(), /propietario/);
   lanza(() => ctx.resolverPendientesCarga(), /propietario/);
+});
+prueba("#29: verificar revisa las grillas preparadas: resume cada hoja y ubica calificaciones no reconocidas y bloques incompletos, sin escribir", () => {
+  const s = escenario(); ventanasAlrededorDeHoy(s);
+  const h = hoja(s, P2C);
+  // Un resto de la grilla copiada, fuera de la escala, y una etiqueta alterada en el bloque de otro estudiante.
+  const e = conSituacion(s, P2C, "EPSI", "Matemática II", "pendiente");
+  const u = ubicar(h, P2C, "Matemática II", e.dni);
+  h.v[u.fila][u.col] = "7,5";
+  const otro = conSituacion(s, P2C, "EPSI", "Lengua y Literatura I", "pendiente");
+  const v = ubicar(h, P2C, "Lengua y Literatura I", otro.dni, "participacion");
+  h.v[v.fila][v.col - 1] = "Otra etiqueta";
+  const antes = copia(h);
+  const r = google(s).ctx.verificarCargaDocente();
+  igual(r.grillas.map(g => g.split(":")[0]), [P2C + " · EPSI", P2C + " · EPSG", PAN + " · EPSI", PAN + " · EPSG"]);
+  cierto(r.grillas.every(g => /calificaciones \d+ CURSA, \d+ cargadas, \d+ del Equipo EPS, \d+ a revisar; \d+ con Calidad, Participación u Observaciones cargadas\.$/.test(g)), r.grillas.join(" | "));
+  const filas = p => ((p || "").match(/filas? ([\d, ]+)/) || [, ""])[1].split(", ").map(Number);
+  const noReconocida = r.problemas.find(p => p.startsWith(P2C + " · EPSI EPS2 · Matemática II: ") && /no reconoce/.test(p));
+  cierto(filas(noReconocida).includes(u.fila + 1), noReconocida);
+  const bloque = r.problemas.find(p => p.startsWith(P2C + " · EPSI: el bloque de cuatro filas"));
+  cierto(filas(bloque).includes(v.fila - 1), bloque); // la fila de Calificación del estudiante (Participación es la tercera)
+  // La grilla de anual, con los mismos valores iniciales, no tiene esos problemas: cada período se revisa por separado.
+  cierto(!r.problemas.some(p => p.startsWith(PAN + " · EPSI EPS2 · Matemática II: ") && filas(p).includes(u.fila + 1) && /no reconoce/.test(p)));
+  igual(diferencias(antes, h), []);
+  igual(todasLasEscrituras(s).length, 0);
+});
+prueba("#29: preparar sin ADMIN_ID ni GENERADOR_ID: error que nombra las propiedades, sin crear nada", () => {
+  const { ctx, estado } = google(escenario());
+  estado.props = {};
+  lanza(() => ctx.prepararAdministracionCarga(), /ADMIN_ID o GENERADOR_ID/);
+  igual(estado.props, {});
 });
 
 console.log("\n" + (fallas ? fallas + " de " + total + " pruebas fallaron" : "Las " + total + " pruebas pasaron"));
