@@ -132,7 +132,8 @@ prueba("funciones invocables desde la página: sólo doGet, cargaConsultar y car
   const fs = require("fs");
   const archivos = fs.readdirSync(require("path").join(__dirname, "../src/carga")).filter(a => a.endsWith(".gs")).map(a => "src/carga/" + a);
   const publicas = archivos.flatMap(a => [...D.leer(a).matchAll(/^function\s+([A-Za-z0-9_$]+)\s*\(/gm)].map(m => m[1])).filter(n => !n.endsWith("_")).sort();
-  const propietaria = ["activarCorreosCarga", "desactivarCorreosCarga", "enviarCorreosCarga", "prepararAdministracionCarga", "previsualizarCorreosCarga", "resolverPendientesCarga", "verificarCargaDocente"];
+  const propietaria = ["activarCorreosCarga", "desactivarCorreosCarga", "enviarCorreosCarga", "prepararAdministracionCarga", "prepararPeriodosCarga", "previsualizarCorreosCarga",
+    "previsualizarPeriodosCarga", "resolverPendientesCarga", "verificarCargaDocente"];
   igual(publicas, ["cargaConsultar", "cargaGuardar", "doGet"].concat(propietaria).sort());
   const S = D.servidor();
   S.estado.usuario = "visitante@ficticio.example";

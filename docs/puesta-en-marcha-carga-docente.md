@@ -23,7 +23,7 @@ Manual operativo del Equipo EPS para instalar, probar, habilitar y mantener la c
 |---|---|---|
 | Generador | La planilla del generador con su Apps Script. La carga sólo lee `Control!B10:B14` (la grilla de cada período) | Equipo EPS |
 | Grillas de 2º cuatrimestre y anual | Una planilla por período, con hojas `EPSI` y `EPSG`. Son la fuente de las valoraciones: la carga escribe en ellas y el generador las lee | Equipo EPS en Sheets; los docentes, sólo a través de la app |
-| Planilla de administración | `Ventanas`, `Asignaciones`, `Enlaces` (las edita el Equipo EPS), `Registro` y `Correos` (las escribe la carga) | Equipo EPS; `Registro` y `Correos`, sólo la cuenta propietaria |
+| Planilla de administración | `Ventanas`, `Asignaciones`, `Enlaces` (las edita el Equipo EPS), `Registro` y `Correos` (las escribe la carga). La preparación de A3 agrega `Asignaciones (borrador)`, `Preparación` y `Preparación · cambios` | Equipo EPS; `Registro`, `Correos` y `Preparación · cambios`, sólo la cuenta propietaria |
 | Proyecto de Apps Script «Carga docente EPS» | Proyecto independiente con los archivos de `src/carga/`: la app web y el activador diario de los correos | Sólo la cuenta propietaria |
 | Calendario de feriados | `Carga_Calendario.gs`, dentro del proyecto: los feriados por año que deciden los días hábiles (cierre de las ventanas y días de envío de correos). No hay hoja de feriados | Responsable técnico, al preparar cada año (F8) |
 | Cuenta propietaria | Cuenta institucional del Equipo EPS (hoy, una cuenta de `cfp7.edu.ar`). Es dueña del proyecto, ejecuta la app para todos (los docentes no necesitan permisos sobre las planillas), crea el activador y envía los correos como «Equipo EPS» | — |
@@ -79,9 +79,32 @@ Se preparan a partir de la del 1º cuatrimestre (*Archivo > Hacer una copia*, **
 | Protecciones | Si hay rangos protegidos, la cuenta propietaria tiene que poder editar las cuatro filas de cada estudiante en las columnas de valoración |
 | Compartir | Equipo EPS y cuenta propietaria como editores. **Los docentes no necesitan acceso**: si lo tuvieran, podrían editar fuera de la ventana y sin Registro |
 
-En el generador, completar `Control!B13` (2º cuatrimestre) y `B14` (anual) con la URL o el ID de cada grilla.
+En el generador, completar `Control!B13` (2º cuatrimestre) y `B14` (anual) con la URL o el ID de cada grilla. `B11` (1º cuatrimestre) y `B12` (3º bimestre) tienen que seguir apuntando a sus grillas: la preparación las usa.
 
-**Comprobar**: lo revisa `verificarCargaDocente` en el paso B4 (estructura, DNI repetidos, valores no reconocidos, bloques incompletos y un resumen de cada hoja).
+#### A3.1 Preparación automática de cursadas y asignaciones (#32)
+
+Las reglas de la tabla anterior no se aplican a mano: lo hace `prepararPeriodosCarga`, después de A5 a A7 (necesita el proyecto y la planilla de administración) y **antes de cargar `Ventanas`** de 2º cuatrimestre o anual: con una fila de esos períodos en `Ventanas`, no modifica nada. Respeta las ediciones que el Equipo EPS ya hizo en los borradores.
+
+| Qué hace | Regla |
+|---|---|
+| Cursadas | `CURSA` donde **3º bimestre** (el último período calificado, con la matrícula vigente) tiene una calificación ordinaria (`En proceso`, `Suficiente`, `Avanzado`). `ACREDITÓ`, `EQUIVALENCIA`, `CURSA` sin calificar o vacío no habilitan `CURSA`. Anual se prepara con la misma evidencia: 2º cuatrimestre todavía no está calificado y no se usa |
+| Restos de la copia | Una calificación que sigue igual a la de 1º cuatrimestre pasa a `CURSA` sólo con esa evidencia; si no la hay, queda y se informa. Calidad, Participación y Observaciones iguales a las de 1º cuatrimestre se borran |
+| Lo que no toca | Lo que ya no es igual a 1º cuatrimestre (cambios del Equipo EPS), `ACREDITÓ` y `EQUIVALENCIA`, filas y columnas (nunca inserta, borra ni mueve), `ORIENTACIÓN` y los campos posteriores (`LISTO PARA EXPORTAR`, observaciones generales…), lo que la carga docente ya escribió (`Registro`), 1º cuatrimestre y 3º bimestre (sólo las lee) |
+| `Asignaciones (borrador)` | Una fila por orientación y materia con cursantes, con orientación, nivel y materia de la grilla. Correo: sólo si **todas** las protecciones por columna de las grillas (las de la carga directa anterior) que cubren esa materia nombran a la misma persona; si no, queda vacío y `Revisión` dice qué encontró. Nombre: sólo si ese correo ya tiene uno escrito en el borrador o en `Asignaciones`. En las filas existentes nunca cambia `Orientación`, `Nivel`, `Materia`, `Docente` ni `Correo`; reescribe sus columnas propias, `Cursantes` y `Revisión`, y agrega `Origen del correo` en las filas que crea. **No toca la hoja `Asignaciones`** |
+| Revisión | Matrícula, nombres, DNI, grupos, orientación, materias y niveles de cada borrador contra 3º bimestre y 1º cuatrimestre, y de los dos borradores entre sí |
+
+Pasos, con la cuenta propietaria, desde el editor del proyecto:
+
+1. Asignar nombre a la versión actual de las dos grillas («Antes de la preparación <fecha>»), como en C1.3.
+2. Ejecutar `previsualizarPeriodosCarga`. No modifica grillas ni el borrador: escribe el informe en la hoja `Preparación` de la planilla de administración y un resumen en el registro de ejecución.
+3. Revisar `Preparación`: el resumen (qué se pasaría a `CURSA`, qué se borraría, cuántas calificaciones eran iguales a 1º cuatrimestre) y la tabla, con una vista de filtro por `Prioridad`:
+   - **Bloqueo**: impide preparar todo, una hoja o un estudiante (estructura no reconocida, DNI repetido, bloque incompleto, ventana cargada, falta una grilla en `Control`). Se corrige antes de aplicar.
+   - **Decidir**: quedó sin preparar y lo decide una persona: una calificación de 1º cuatrimestre sin evidencia en 3º bimestre, una nota que no viene de la copia, un valor no reconocido, una fila sin DNI, una materia que no está en 3º bimestre, una fila del borrador sin correo o nombre.
+   - **Revisar**: se conservó lo del borrador, pero difiere de la evidencia o de lo esperado (estudiantes que faltan o sobran respecto de 3º bimestre, nombres distintos para un DNI, posible DNI mal escrito, cambios de grupo u orientación, diferencias entre 2º cuatrimestre y anual, `LISTO PARA EXPORTAR` u observaciones generales iguales a las de 1º cuatrimestre).
+4. Ejecutar `prepararPeriodosCarga`. Vuelve a armar el plan y, si no hay bloqueos generales, lo aplica: cada celda modificada queda en `Preparación · cambios` con su valor anterior y el estado verificado (`aplicado`; `no aplicado` si alguien la cambió desde la lectura; `revisar` si no quedó como se esperaba). Si no se aplicó, la ejecución termina con error y `Preparación` dice por qué.
+5. Resolver en las grillas y en `Asignaciones (borrador)` lo marcado **Decidir** y lo que corresponda de **Revisar**, y volver a ejecutar `prepararPeriodosCarga` hasta que sólo queden casos entendidos. Repetirla no cambia lo ya preparado ni duplica filas, y no deshace decisiones del Equipo EPS.
+
+**Comprobar**: `Preparación` sin **Bloqueo**; en `Preparación · cambios`, ninguna fila `pendiente` ni `revisar`; `Asignaciones (borrador)` con correo y nombre en cada fila y `Revisión` vacía. Después lo revisa `verificarCargaDocente` en el paso B4 (estructura, DNI repetidos, valores no reconocidos, bloques incompletos y un resumen de cada hoja). `Registro` y `Preparación · cambios` se protegen igual (A8).
 
 ### A4. Planilla de administración
 
@@ -104,13 +127,15 @@ En el generador, completar `Control!B13` (2º cuatrimestre) y `B14` (anual) con 
    | Secuencia de comandos | `Carga_Web` | `Carga_Web.gs` |
    | Secuencia de comandos | `Carga_Correo` | `Carga_Correo.gs` |
    | Secuencia de comandos | `Carga_Correo_Google` | `Carga_Correo_Google.gs` |
+   | Secuencia de comandos | `Carga_Preparacion` | `Carga_Preparacion.gs` |
+   | Secuencia de comandos | `Carga_Preparacion_Google` | `Carga_Preparacion_Google.gs` |
    | HTML | `Carga_Pagina` | `Carga_Pagina.html` |
    | HTML | `Carga_Cliente` | `Carga_Cliente.html` |
 
 4. Borrar el `Código.gs` inicial. Reemplazar el contenido de `appsscript.json` por el de `src/carga/appsscript.json`.
 5. Guardar.
 
-**Comprobar**: el editor guarda sin errores y lista 7 archivos `.gs`, 2 `.html` y `appsscript.json`. El manifiesto tiene zona `America/Argentina/Buenos_Aires`.
+**Comprobar**: el editor guarda sin errores y lista 9 archivos `.gs`, 2 `.html` y `appsscript.json`. En una instalación hecha antes de #32, agregar los dos archivos `Carga_Preparacion*` (no cambian la app web: son funciones del editor). El manifiesto tiene zona `America/Argentina/Buenos_Aires`.
 
 ### A6. Propiedades del script
 
@@ -136,7 +161,7 @@ En *Configuración del proyecto > Propiedades del script*, agregar:
 |---|---|
 | `Registro`, `Correos` | Vacías. Protegerlas: *Datos > Proteger hojas y rangos > Hoja*, editar sólo la cuenta propietaria. **Nunca** borrar ni editar sus filas, ni sus columnas `Estado` y `Detalle`. Para anotar algo, agregar una columna a la derecha (por ejemplo, «Nota EPS»): la carga sólo usa sus propias columnas |
 | `Ventanas` | **Vacía** (sólo el encabezado). Mientras esté vacía, ningún enlace vale |
-| `Asignaciones` | **Vacía**. La lista real se prepara en una hoja aparte, por ejemplo «Asignaciones (borrador)», con las mismas columnas. La carga sólo lee la hoja llamada exactamente `Asignaciones` |
+| `Asignaciones` | **Vacía**. La lista real se prepara en la hoja `Asignaciones (borrador)`, con las mismas columnas, que crea y completa la preparación (A3.1). La carga sólo lee la hoja llamada exactamente `Asignaciones` |
 | `Enlaces` | Vacía |
 
 No hay que cargar feriados: están en el código (`Carga_Calendario.gs`). Si la planilla tiene una hoja `Feriados` de una instalación anterior, la carga no la lee; no hace falta borrarla ni modificarla.
@@ -349,7 +374,7 @@ Si el correo cae en Spam o es rechazado, la causa probable es la autenticación 
 
 | Id | Hacer | Esperado / comprobar |
 |---|---|---|
-| E1 | Copiar la lista real de «Asignaciones (borrador)» a `Asignaciones` | Una fila por orientación y materia, con un único docente; materia como en el encabezado de la grilla (mayúsculas y acentos no importan; letras y números sí); nivel de su sección; correo institucional del docente |
+| E1 | Ejecutar `prepararPeriodosCarga` una última vez (A3.1, sin ventanas cargadas) y copiar la lista de `Asignaciones (borrador)` a `Asignaciones` (las columnas `Cursantes`, `Origen del correo` y `Revisión` se pueden copiar o no: la carga las ignora) | Una fila por orientación y materia, con un único docente; materia como en el encabezado de la grilla (mayúsculas y acentos no importan; letras y números sí); nivel de su sección; correo institucional del docente. En el borrador, `Revisión` vacía en todas las filas |
 | E2 | Revisar la primera línea de `verificarCargaDocente` | `Calendario de feriados` incluye el año de la ventana, de su día de cierre y de los 7 días siguientes. Si no, actualizar el calendario (F8) antes de seguir. Revisar también que no haya feriados nuevos decretados para esas fechas |
 | E3 | Cargar en `Ventanas` las filas de 2º cuatrimestre y anual con las fechas autorizadas, **al menos un día hábil antes del «Desde»** | La carga abre sola a las 0:00 de «Desde». Hasta entonces nadie tiene enlace |
 | E4 | `verificarCargaDocente` | Las dos ventanas `(futura)`, con el día de cierre esperado; grillas con `0 cargadas` y `0 a revisar` (salvo valores intencionales); **ningún problema**, salvo «Los correos no están activados». En especial, ninguna materia con «cursantes y ningún docente asignado», salvo que sea intencional (nadie podrá cargarla) |
@@ -416,7 +441,7 @@ Preferentemente sin ventanas abiertas:
 
 ### F7. Períodos y ciclos siguientes
 
-- **Cada período**: preparar su grilla como en A3 (copia de la del período anterior, con `CURSA` donde corresponda), ponerla en `Control!B10:B14` del generador sin ventanas abiertas, actualizar `Asignaciones` y repetir la etapa E. Cada período tiene una sola fila en `Ventanas`; se reemplaza la anterior.
+- **Cada período**: preparar su grilla como en A3 (copia de la del período anterior, con `CURSA` donde corresponda; la preparación automática de A3.1 es sólo para 2º cuatrimestre y anual copiados de 1º cuatrimestre, con evidencia de 3º bimestre), ponerla en `Control!B10:B14` del generador sin ventanas abiertas, actualizar `Asignaciones` y repetir la etapa E. Cada período tiene una sola fila en `Ventanas`; se reemplaza la anterior.
 - **Bimestres** (1º y 3º): escala `En proceso`, `Suficiente`, `Avanzado`. La carga los admite, pero nunca se probaron en Google: la primera vez, hacer antes una prueba corta (C2.5, C2.9, C2.10, C2.18 y D4) con la cuenta de prueba.
 - **Ciclo nuevo**: antes de la primera ventana del año, actualizar el calendario de feriados (F8). Al preparar el ciclo, se pueden depurar las filas de `Enlaces`: los enlaces de la ventana anterior vencen cuando empieza la siguiente. `Registro` y `Correos` se conservan.
 
@@ -457,6 +482,7 @@ Ninguno de estos puntos se comprobó. La etapa C cubre los marcados con su paso:
 | Bimestres en Google | F7 |
 | Calendario instalado: la primera línea de `verificarCargaDocente` muestra 2026 y el cierre de la prueba cae donde se espera | B1, B4 |
 | Estado `incierto` del servidor | No se puede provocar; sólo pruebas locales |
+| Preparación (#32): lectura real de las protecciones (`getEditors`) con la cuenta propietaria, escritura por `getRangeList`, duración con las grillas reales, y que el informe coincida con lo que el Equipo EPS sabe de los borradores | A3.1 (vista previa revisada antes de aplicar) |
 
 ## Anexo 2. Acta de la prueba
 

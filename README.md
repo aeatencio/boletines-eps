@@ -43,7 +43,8 @@ La carga docente reemplazará la edición directa de las grillas por parte de lo
 **Implementado**, sólo con pruebas locales:
 - [#26](https://github.com/aeatencio/boletines-eps/issues/26): el núcleo de consulta y guardado por campo (`Carga_Nucleo.gs`) y su adaptador a los servicios de Google (`Carga_Google.gs`); el calendario de feriados (`Carga_Calendario.gs`, #29);
 - [#27](https://github.com/aeatencio/boletines-eps/issues/27), primer incremento: la página docente (`Carga_Web.gs`, con `doGet`, y los archivos HTML `Carga_Pagina` y `Carga_Cliente`). El docente recorre sus materias por período, ve a todos los que las cursan y guarda cada campo por separado, con estados de guardado, conflicto y resultado sin confirmar;
-- [#28](https://github.com/aeatencio/boletines-eps/issues/28): el enlace individual de cada docente (`Carga_Acceso.gs`) y los correos de apertura, seguimiento y cierre (`Carga_Correo.gs`, y su adaptador a MailApp y al activador diario, `Carga_Correo_Google.gs`).
+- [#28](https://github.com/aeatencio/boletines-eps/issues/28): el enlace individual de cada docente (`Carga_Acceso.gs`) y los correos de apertura, seguimiento y cierre (`Carga_Correo.gs`, y su adaptador a MailApp y al activador diario, `Carga_Correo_Google.gs`);
+- [#32](https://github.com/aeatencio/boletines-eps/issues/32): la preparación de las grillas de 2º cuatrimestre y anual, copiadas de 1º cuatrimestre, y del borrador de asignaciones (`Carga_Preparacion.gs` y su adaptador, `Carga_Preparacion_Google.gs`). Ver más abajo.
 
 **Pendiente** ([#29](https://github.com/aeatencio/boletines-eps/issues/29)): la prueba integrada controlada sobre la infraestructura definitiva (acceso a la app web, escrituras reales, entrega del correo y activador) y la habilitación institucional. Las dos se hacen con el manual operativo [`docs/puesta-en-marcha-carga-docente.md`](docs/puesta-en-marcha-carga-docente.md), que reemplaza al piloto separado con datos ficticios.
 
@@ -71,7 +72,18 @@ La grilla de cada período es la que figura en `Control` del generador (`B10` a 
 
 Los feriados no se administran en una planilla: están en el código, en `Carga_Calendario.gs`, organizados por año, con sus fuentes oficiales. Hoy incluye 2026. Día hábil es de lunes a viernes, salvo los feriados nacionales y los que rigen en CABA. Los días no laborables (por ejemplo, los turísticos) están anotados aparte y no cambian los días hábiles. Lo que necesita un día de un año sin calendario no adivina: el período cuyo cierre cae en ese año no abre, y los correos de ese día no salen y se informa el problema. Lo demás sigue funcionando. Al preparar un ciclo lectivo, se agrega el año y se publica una versión nueva de la app web ([manual](docs/puesta-en-marcha-carga-docente.md#f8-actualizar-el-calendario-de-feriados)). Una hoja `Feriados` que haya quedado en la planilla de administración no se lee: no hace falta borrarla.
 
-Propiedades del script: `ADMIN_ID` (planilla de administración), `GENERADOR_ID` (planilla del generador), `CLAVE_ENLACES` (secreto de los enlaces; lo crea `prepararAdministracionCarga`; borrarlo y volver a crearlo invalida todos los enlaces a la vez; con una ventana abierta, hay que aumentar además la versión de cada docente en `Enlaces` para que todos reciban el nuevo, porque los correos no detectan el cambio de secreto) y `URL_CARGA` (la URL `/exec` de la app web publicada, para los enlaces de los correos). Desde el editor, la cuenta propietaria puede ejecutar `prepararAdministracionCarga` (crea las hojas que falten, sólo con sus encabezados, y `CLAVE_ENLACES` si falta), `verificarCargaDocente` (problemas de configuración, de las grillas, del Registro, de los enlaces y de los correos, y un resumen de lo que contiene cada grilla de las ventanas vigentes o próximas, para revisar una grilla recién preparada) y `resolverPendientesCarga` (resuelve las filas `pendiente` viejas mirando la celda).
+Propiedades del script: `ADMIN_ID` (planilla de administración), `GENERADOR_ID` (planilla del generador), `CLAVE_ENLACES` (secreto de los enlaces; lo crea `prepararAdministracionCarga`; borrarlo y volver a crearlo invalida todos los enlaces a la vez; con una ventana abierta, hay que aumentar además la versión de cada docente en `Enlaces` para que todos reciban el nuevo, porque los correos no detectan el cambio de secreto) y `URL_CARGA` (la URL `/exec` de la app web publicada, para los enlaces de los correos). Desde el editor, la cuenta propietaria puede ejecutar `prepararAdministracionCarga` (crea las hojas que falten, sólo con sus encabezados, y `CLAVE_ENLACES` si falta), `verificarCargaDocente` (problemas de configuración, de las grillas, del Registro, de los enlaces y de los correos, y un resumen de lo que contiene cada grilla de las ventanas vigentes o próximas, para revisar una grilla recién preparada) `resolverPendientesCarga` (resuelve las filas `pendiente` viejas mirando la celda) y, antes de cargar las ventanas de 2º cuatrimestre y anual, `previsualizarPeriodosCarga` y `prepararPeriodosCarga` (#32, más abajo).
+
+### Preparación de 2º cuatrimestre y anual (#32)
+
+Los borradores de esas dos grillas se copiaron de la de 1º cuatrimestre y se editaron a mano. `prepararPeriodosCarga`, desde el editor y con la cuenta propietaria, los deja listos para la carga en una sola ejecución; `previsualizarPeriodosCarga` muestra lo mismo sin modificar nada. Las dos escriben un informe en la hoja `Preparación` de la planilla de administración, con lo hecho y las excepciones por prioridad (**Bloqueo**, **Decidir**, **Revisar**).
+
+- **Cursadas**: `CURSA` donde 3º bimestre (último período calificado, matrícula vigente) tiene una calificación ordinaria. `ACREDITÓ`, `EQUIVALENCIA`, `CURSA` sin calificar o vacío no habilitan `CURSA`. Anual usa la misma evidencia: 2º cuatrimestre no está calificado.
+- **Restos de la copia**: sólo se modifica lo que sigue igual a 1º cuatrimestre (o una calificación vacía en una fila o columna agregada): una nota copiada pasa a `CURSA` sólo con evidencia, y Calidad, Participación y Observaciones copiadas se borran. Ninguna calificación anterior queda como valoración nueva sin informarse.
+- **Asignaciones (borrador)**: una fila por orientación y materia con cursantes, sin transcribir orientación, nivel ni materia. El correo, sólo si todas las protecciones por columna de las grillas que cubren la materia nombran a la misma persona. No toca la hoja `Asignaciones`.
+- **Revisión general**: matrícula, nombres y DNI, grupos, orientación, materias y niveles de cada borrador contra 3º bimestre y 1º cuatrimestre, y de los dos borradores entre sí.
+
+Nunca inserta, borra ni mueve filas o columnas, ni toca `ORIENTACIÓN` y los campos posteriores, 1º cuatrimestre o 3º bimestre. Conserva los cambios del Equipo EPS y lo que la carga docente ya escribió (`Registro`). Con una fila de 2º cuatrimestre o anual en `Ventanas`, no modifica nada. Escribe con el lock del script, vuelve a leer cada hoja antes de escribirla y anota cada celda en `Preparación · cambios` (valor anterior, nuevo, motivo y estado verificado). Se puede repetir: lo ya preparado no cambia y las filas del borrador no se duplican. El procedimiento está en el [manual, paso A3.1](docs/puesta-en-marcha-carga-docente.md#a31-preparación-automática-de-cursadas-y-asignaciones-32).
 
 ### Acceso y correos (#28)
 
@@ -140,6 +152,12 @@ El recorrido del [manual de puesta en marcha](docs/puesta-en-marcha-carga-docent
 
 ```
 node tests/carga-recorrido.js
+```
+
+La preparación de 2º cuatrimestre y anual (#32) tiene sus propias pruebas, con un escenario institucional ficticio y una prueba aleatoria de invariantes (el número opcional es la cantidad de corridas; 40 por defecto):
+
+```
+node tests/carga-preparacion.js [corridas]
 ```
 
 ## Datos

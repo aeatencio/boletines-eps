@@ -21,7 +21,7 @@ const crypto = require("crypto");
 const RAIZ = path.resolve(__dirname, "..");
 const leer = p => fs.readFileSync(path.join(RAIZ, p), "utf8");
 const ARCHIVOS_SERVIDOR = ["src/carga/Carga_Calendario.gs", "src/carga/Carga_Nucleo.gs", "src/carga/Carga_Google.gs", "src/carga/Carga_Acceso.gs", "src/carga/Carga_Correo.gs",
-  "src/carga/Carga_Correo_Google.gs", "src/carga/Carga_Web.gs"];
+  "src/carga/Carga_Correo_Google.gs", "src/carga/Carga_Web.gs", "src/carga/Carga_Preparacion.gs", "src/carga/Carga_Preparacion_Google.gs"];
 // Secreto y URL ficticios (nunca los de un proyecto real).
 const CLAVE_FICTICIA = "clave-ficticia-de-pruebas-0123456789abcdef0123456789abcdef";
 const URL_APP = "https://script.google.com/macros/s/AKfycb_ficticio_de_pruebas_000000000000/exec";
@@ -91,6 +91,24 @@ class Hoja {
     this.asegurar(r, fila.length);
     fila.forEach((x, j) => this.poner(r, j + 1, x));
   }
+  // #32: escrituras por lista de celdas A1 (como Sheet.getRangeList), protecciones de rango y borrado de la hoja.
+  getRangeList(a1s) {
+    const celdas = a1s.map(a1 => {
+      const m = /^([A-Z]+)(\d+)$/.exec(a1);
+      if (!m) throw new Error("A1 no simulado: " + a1);
+      return { f: Number(m[2]), c: m[1].split("").reduce((n, l) => n * 26 + l.charCodeAt(0) - 64, 0) };
+    });
+    const escribir = x => { celdas.forEach(({ f, c }) => { this.intentos++; this.asegurar(f, c); this.poner(f, c, x); this.escrituras.push({ fila: f - 1, col: c - 1, valor: this.ver(this.v[f - 1][c - 1]) }); }); };
+    return { setValue: x => escribir(x), clearContent: () => escribir("") };
+  }
+  getProtections() {
+    return (this.protecciones || []).map(p => ({
+      getRange: () => ({ getRow: () => p.filas[0] + 1, getLastRow: () => p.filas[1] + 1, getColumn: () => p.columnas[0] + 1, getLastColumn: () => p.columnas[1] + 1 }),
+      getEditors: () => p.editores.map(e => ({ getEmail: () => e })),
+      isWarningOnly: () => !!p.advertencia
+    }));
+  }
+  clearContents() { this.v = [[""]]; }
 }
 
 function nuevoLock() {
@@ -279,7 +297,7 @@ function servidor(opciones) {
   const globales = {
     console: consola,
     Date: RelojDate,
-    SpreadsheetApp: { openById: libro, flush: () => {} },
+    SpreadsheetApp: { openById: libro, flush: () => {}, ProtectionType: { RANGE: "RANGE", SHEET: "SHEET" } },
     LockService: { getScriptLock: () => estado.s.lock, getUserLock: () => estado.userLock },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in estado.props ? estado.props[k] : null), setProperty: (k, v) => { estado.props[k] = String(v); } }) },
     Utilities: {
