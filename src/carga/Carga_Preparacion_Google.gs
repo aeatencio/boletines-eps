@@ -8,7 +8,10 @@
  *                               de la primera aplicación y después de cambios grandes en los borradores.
  *   prepararPeriodosCarga       arma el plan y, si no hay bloqueos generales, lo aplica: escribe CURSA y borra los
  *                               restos de la copia en las grillas, anota cada celda en «Preparación · cambios» y
- *                               completa «Asignaciones (borrador)». Se puede repetir: lo ya preparado no cambia.
+ *                               completa «Asignaciones (borrador)»: una fila por materia con cursantes, la columna
+ *                               Docente con la lista de la hoja «Docentes» (la crea vacía si falta) y la columna
+ *                               Correo con una fórmula que lo toma de esa nómina. Se puede repetir: lo ya preparado
+ *                               no cambia y las decisiones posteriores se respetan.
  *
  * Ninguna toca Ventanas, Asignaciones, Enlaces, Registro ni Correos, ni abre ventanas o envía correos. Las grillas se
  * abren por los ID de Control del generador, como en la carga. La escritura se hace con el lock del script (el del
@@ -30,9 +33,9 @@ function ejecutarPreparacion_(aplicar) {
   const inicio = Date.now();
   const servicios = serviciosCarga_();
   const admin = servicios.admin();
-  const entrada = leerPreparacion_(servicios, admin, inicio);
+  const entrada = leerPreparacion_(servicios, admin);
   const plan = planificarPreparacion_(entrada);
-  const aplicacion = aplicar && plan.puedeAplicar ? aplicarPreparacion_(servicios, admin, plan, entrada) : null;
+  const aplicacion = aplicar && plan.puedeAplicar ? aplicarPreparacion_(servicios, admin, plan) : null;
   const informe = informePreparacion_(plan, aplicacion, aplicar);
   escribirInformePrep_(admin, informe);
   console.log(informe.texto + '\n\n(' + Math.round((Date.now() - inicio) / 1000) + ' s; informe completo en la hoja «' + PREPARACION.HOJA_INFORME + '» de la planilla de administración)');
@@ -43,38 +46,26 @@ function ejecutarPreparacion_(aplicar) {
   return resumen;
 }
 
-/** Lecturas que necesita el plan: configuración, las cuatro grillas con sus protecciones, el borrador y el Registro. */
-function leerPreparacion_(servicios, admin, inicio) {
+/** Lecturas que necesita el plan: configuración, las cuatro grillas, el borrador, la nómina, los cambios previos y el Registro. */
+function leerPreparacion_(servicios, admin) {
   const datos = servicios.datos();
   const ahora = servicios.reloj();
   const config = configuracion_(datos, ahora);
-  const grillas = {}, protecciones = {};
+  const grillas = {};
   [PREPARACION.COPIA, PREPARACION.EVIDENCIA].concat(PREPARACION.OBJETIVOS).forEach(p => {
     const id = config.periodos[p].fuente;
     if (!id) return;
     let libro;
     try { libro = SpreadsheetApp.openById(id); } catch (e) { grillas[p] = { problema: 'No se pudo abrir la grilla de ' + p + ' (' + e.message + ').' }; return; }
     grillas[p] = { hojas: {} };
-    protecciones[p] = {};
     CARGA.HOJAS_ORIGEN.forEach(h => {
       const hoja = libro.getSheetByName(h);
       grillas[p].hojas[h] = hoja ? hoja.getDataRange().getDisplayValues() : null;
-      if (hoja && PREPARACION.FUENTES_CORREO.includes(p)) protecciones[p][h] = leerProteccionesPrep_(hoja, inicio);
     });
   });
   const tabla = nombre => { const h = admin.getSheetByName(nombre); return h ? h.getDataRange().getDisplayValues() : null; };
-  return { ahora, datos, grillas, protecciones, borrador: tabla(PREPARACION.HOJA_BORRADOR), registro: tabla(CARGA.HOJAS.registro), usuario: Session.getEffectiveUser().getEmail() };
-}
-
-/** Protecciones de rango de una hoja (las de solo advertencia no restringen a nadie): filas y columnas en base 0. */
-function leerProteccionesPrep_(hoja, inicio) {
-  if (Date.now() - inicio > PREPARACION.MS_PROTECCIONES) return { problema: 'no alcanzó el tiempo de la ejecución' };
-  try {
-    return hoja.getProtections(SpreadsheetApp.ProtectionType.RANGE).filter(p => !p.isWarningOnly()).map(p => {
-      const r = p.getRange();
-      return { filas: [r.getRow() - 1, r.getLastRow() - 1], columnas: [r.getColumn() - 1, r.getLastColumn() - 1], editores: p.getEditors().map(u => correo_(u.getEmail())) };
-    });
-  } catch (e) { return { problema: e.message }; }
+  return { ahora, datos, grillas, borrador: tabla(PREPARACION.HOJA_BORRADOR), nomina: tabla(PREPARACION.HOJA_DOCENTES),
+    cambiosPrevios: tabla(PREPARACION.HOJA_CAMBIOS), registro: tabla(CARGA.HOJAS.registro) };
 }
 
 /**
@@ -82,7 +73,7 @@ function leerProteccionesPrep_(hoja, inicio) {
  * (confirmarCambiosPrep_); anota cada celda en «Preparación · cambios» como pendiente antes de escribirla y la marca
  * después de leerla de nuevo (verificarCambiosPrep_). Nunca lanza: un error queda en «error».
  */
-function aplicarPreparacion_(servicios, admin, plan, entrada) {
+function aplicarPreparacion_(servicios, admin, plan) {
   const r = { error: '', aplicados: 0, inferidos: 0, revisar: 0, descartados: 0, filasCambios: '', borrador: '' };
   const lock = servicios.lock();
   if (!lock.tryLock(CARGA.ESPERA_LOCK_MS)) { r.error = 'hay otra operación de la carga en curso. No se modificó nada; volver a ejecutar en unos minutos.'; return r; }
@@ -113,7 +104,7 @@ function aplicarPreparacion_(servicios, admin, plan, entrada) {
       log.getRange(primera, 2, verificados.length, 2).setValues(verificados.map(v => [textoPrep_(v.estado), textoPrep_(v.detalle)]));
       verificados.forEach(v => { r[v.estado === 'aplicado' ? 'aplicados' : v.estado === 'inferido' ? 'inferidos' : 'revisar']++; });
     });
-    r.borrador = escribirBorradorPrep_(admin, plan, entrada);
+    r.borrador = escribirBorradorPrep_(admin, plan);
   } catch (e) {
     r.error = 'error inesperado (' + e.message + '). Revisar «' + PREPARACION.HOJA_CAMBIOS + '»: las filas «pendiente» son celdas que pudieron cambiar.';
   } finally {
@@ -144,14 +135,22 @@ function anotarCambiosPrep_(hoja, filas) {
 
 /**
  * Borrador de Asignaciones, releído y replanificado dentro del lock: agrega las columnas propias que falten y las
- * filas nuevas, y reescribe Cursantes y Revisión de las existentes. Nunca toca sus otras columnas.
+ * filas nuevas, y reescribe Cursantes y Revisión de las existentes. En las filas nuevas y en las existentes sin docente
+ * ni correo, el Correo es una fórmula que lo busca en la nómina; la columna Docente ofrece la lista de la nómina.
+ * Nunca escribe Orientación, Nivel, Materia, Docente ni Correo de una fila que tenga datos.
  */
-function escribirBorradorPrep_(admin, plan, entrada) {
-  let hoja = admin.getSheetByName(PREPARACION.HOJA_BORRADOR);
+function escribirBorradorPrep_(admin, plan) {
+  const P_ = PREPARACION;
+  let docentes = admin.getSheetByName(P_.HOJA_DOCENTES);
+  let hoja = admin.getSheetByName(P_.HOJA_BORRADOR);
   const a = planAsignacionesPrep_({ g: plan.g, proyectado: plan.proyectado, borrador: hoja ? hoja.getDataRange().getDisplayValues() : null,
-    asignaciones: entrada.datos.asignaciones, protecciones: entrada.protecciones, usuario: entrada.usuario });
+    nomina: docentes ? docentes.getDataRange().getDisplayValues() : null });
   if (a.problema) return 'no se modificó: ' + a.problema;
-  if (!hoja) hoja = admin.insertSheet(PREPARACION.HOJA_BORRADOR);
+  if (!docentes) {
+    docentes = admin.insertSheet(P_.HOJA_DOCENTES);
+    docentes.getRange(1, 1, 1, P_.NOMINA.length).setValues([P_.NOMINA]).setFontWeight('bold');
+  }
+  if (!hoja) hoja = admin.insertSheet(P_.HOJA_BORRADOR);
   const ancho = a.encabezado.length;
   const previas = a.crear ? 0 : hoja.getDataRange().getDisplayValues()[0].length;
   if (ancho > previas) hoja.getRange(1, previas + 1, 1, ancho - previas).setValues([a.encabezado.slice(previas).map(textoPrep_)]).setFontWeight('bold');
@@ -162,6 +161,7 @@ function escribirBorradorPrep_(admin, plan, entrada) {
     a.actualizar.forEach(u => { valores[u.fila - 2][0] = textoPrep_(u[nombre]); });
     hoja.getRange(2, a.col[nombre] + 1, ultima - 1, 1).setValues(valores);
   });
+  let formulas = a.conFormula.slice();
   if (a.nuevas.length) {
     const desde = Math.max(hoja.getLastRow(), 1) + 1;
     hoja.getRange(desde, 1, a.nuevas.length, ancho).setValues(a.nuevas.map(n => {
@@ -169,16 +169,30 @@ function escribirBorradorPrep_(admin, plan, entrada) {
       Object.keys(n).forEach(c => { f[a.col[c]] = textoPrep_(n[c]); });
       return f;
     }));
+    formulas = formulas.concat(a.nuevas.map((n, i) => desde + i));
   }
-  return plural_(a.nuevas.length, 'fila nueva', 'filas nuevas') + ' (' + a.resumen.conCorreo + ' con correo); Cursantes y Revisión actualizadas en ' +
-    plural_(a.actualizar.length, 'fila existente', 'filas existentes') + '.';
+  const colDocente = a.col['Docente'] + 1, colCorreo = a.col['Correo'] + 1;
+  formulas.forEach(f => hoja.getRange(f, colCorreo).setFormula(formulaCorreoPrep_(a1_(f - 1, colDocente - 1))));
+  const ultimaFila = hoja.getLastRow();
+  if (ultimaFila >= 2) {
+    const lista = SpreadsheetApp.newDataValidation().requireValueInRange(docentes.getRange('A2:A'), true).setAllowInvalid(false)
+      .setHelpText('Elegir un docente de la hoja ' + P_.HOJA_DOCENTES + '. El correo se completa solo.').build();
+    hoja.getRange(2, colDocente, ultimaFila - 1, 1).setDataValidation(lista);
+  }
+  return plural_(a.nuevas.length, 'fila nueva', 'filas nuevas') + '; Cursantes y Revisión actualizadas en ' + plural_(a.actualizar.length, 'fila existente', 'filas existentes') +
+    '; fórmula del correo en ' + plural_(formulas.length, 'fila', 'filas') + '; lista de docentes en la columna Docente.';
+}
+
+/** Correo de la nómina para el docente de esa celda; vacío si no está elegido o no figura. */
+function formulaCorreoPrep_(celdaDocente) {
+  return '=IFERROR(VLOOKUP(' + celdaDocente + ',' + PREPARACION.HOJA_DOCENTES + '!$A:$B,2,FALSE),"")';
 }
 
 function escribirInformePrep_(admin, informe) {
   const hoja = admin.getSheetByName(PREPARACION.HOJA_INFORME) || admin.insertSheet(PREPARACION.HOJA_INFORME);
   hoja.clearContents();
   hoja.getRange(1, 1, informe.filas.length, PREPARACION.INFORME.length).setValues(informe.filas.map(f => f.map(textoPrep_)));
-  hoja.getRange(informe.encabezado + 1, 1, 1, PREPARACION.INFORME.length).setFontWeight('bold');
+  [1, informe.encabezadoTipos + 1, informe.encabezado + 1].forEach(f => hoja.getRange(f, 1, 1, PREPARACION.INFORME.length).setFontWeight('bold'));
 }
 
 // Texto con apóstrofo inicial, como el Registro: Sheets lo guarda tal cual (ni fórmulas, ni números, ni fechas).

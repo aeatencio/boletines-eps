@@ -54,6 +54,7 @@ class Hoja {
   getLastRow() { for (let r = this.v.length; r > 0; r--) if (this.v[r - 1].some(x => x !== "")) return r; return 0; }
   getLastColumn() { return this.ancho(); }
   getRange(f, c, nf, nc) {
+    if (typeof f === "string") return { a1: f, hoja: this }; // sólo como referencia (por ejemplo, de una lista desplegable)
     nf = nf || 1; nc = nc || 1;
     const h = this;
     const bloque = crudo => Array.from({ length: nf }, (_, i) => Array.from({ length: nc }, (_, j) => {
@@ -82,7 +83,10 @@ class Hoja {
         m.forEach((r, i) => r.forEach((x, j) => h.poner(f + i, c + j, x)));
         return rango;
       },
-      setFontWeight: () => rango
+      setFontWeight: () => rango,
+      // #32: fórmula del correo y lista de docentes del borrador de asignaciones.
+      setFormula: x => { h.asegurar(f, c); h.v[f - 1][c - 1] = String(x); return rango; },
+      setDataValidation: regla => { h.validaciones = (h.validaciones || []).concat([{ fila: f, col: c, filas: nf, cols: nc, regla }]); return rango; }
     };
     return rango;
   }
@@ -91,7 +95,7 @@ class Hoja {
     this.asegurar(r, fila.length);
     fila.forEach((x, j) => this.poner(r, j + 1, x));
   }
-  // #32: escrituras por lista de celdas A1 (como Sheet.getRangeList), protecciones de rango y borrado de la hoja.
+  // #32: escrituras por lista de celdas A1 (como Sheet.getRangeList) y borrado de la hoja.
   getRangeList(a1s) {
     const celdas = a1s.map(a1 => {
       const m = /^([A-Z]+)(\d+)$/.exec(a1);
@@ -100,13 +104,6 @@ class Hoja {
     });
     const escribir = x => { celdas.forEach(({ f, c }) => { this.intentos++; this.asegurar(f, c); this.poner(f, c, x); this.escrituras.push({ fila: f - 1, col: c - 1, valor: this.ver(this.v[f - 1][c - 1]) }); }); };
     return { setValue: x => escribir(x), clearContent: () => escribir("") };
-  }
-  getProtections() {
-    return (this.protecciones || []).map(p => ({
-      getRange: () => ({ getRow: () => p.filas[0] + 1, getLastRow: () => p.filas[1] + 1, getColumn: () => p.columnas[0] + 1, getLastColumn: () => p.columnas[1] + 1 }),
-      getEditors: () => p.editores.map(e => ({ getEmail: () => e })),
-      isWarningOnly: () => !!p.advertencia
-    }));
   }
   clearContents() { this.v = [[""]]; }
 }
@@ -297,7 +294,12 @@ function servidor(opciones) {
   const globales = {
     console: consola,
     Date: RelojDate,
-    SpreadsheetApp: { openById: libro, flush: () => {}, ProtectionType: { RANGE: "RANGE", SHEET: "SHEET" } },
+    SpreadsheetApp: {
+      openById: libro, flush: () => {},
+      // #32: regla de lista desplegable tomada de un rango (sólo se guarda; la evaluación no se simula).
+      newDataValidation: () => { const r = {}; const b = { requireValueInRange: (rango, ver) => { r.rango = rango; r.ver = ver; return b; }, setAllowInvalid: x => { r.permiteInvalidos = x; return b; },
+        setHelpText: t => { r.ayuda = t; return b; }, build: () => r }; return b; }
+    },
     LockService: { getScriptLock: () => estado.s.lock, getUserLock: () => estado.userLock },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in estado.props ? estado.props[k] : null), setProperty: (k, v) => { estado.props[k] = String(v); } }) },
     Utilities: {
