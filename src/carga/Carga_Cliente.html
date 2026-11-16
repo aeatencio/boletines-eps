@@ -1,0 +1,459 @@
+<script>
+/**
+ * Carga docente EPS (#27) · lógica de la página, sin DOM ni servicios: situación de la Calificación, modelo de la
+ * consulta y cola de guardado por campo. Carga_Pagina la incluye; tests/carga-interfaz.js la prueba en Node.
+ *
+ * Reglas de la cola (una entrada por campo: período + fuente + orientación + materia + DNI + campo):
+ *  - cada decisión del docente es una operación nueva: identificador nuevo, «esperado» = último valor de la grilla
+ *    conocido para ese campo, «nuevo» = el valor elegido. El pedido se congela al crearlo y cada reenvío (automático
+ *    o manual) manda exactamente el mismo pedido: nunca se cambia el contenido de una operación;
+ *  - a lo sumo una operación por campo en curso. Si el docente cambia el valor mientras tanto, sólo cuenta el último
+ *    y se decide al terminar la anterior, con el valor que haya informado el servidor como «esperado»;
+ *  - «reintentar» y una falla de comunicación se reintentan solos con la misma operación; «incierto» se vuelve a
+ *    consultar con la misma operación (el núcleo garantiza que eso nunca vuelve a escribir);
+ *  - «Guardado» sólo con la respuesta «guardado». «coincide» informa que la grilla ya muestra ese valor, sin
+ *    confirmar el guardado. «conflicto» e «incierto» nunca se reenvían solos: vuelve a cargar el docente;
+ *  - sin respuesta del servidor, el resultado es desconocido: un cambio posterior del docente espera a que la
+ *    operación pendiente se resuelva, reenviándola tal cual. Si todas las respuestas fueron «reintentar», la
+ *    operación nunca intentó escribir y el cambio posterior la reemplaza;
+ *  - un campo bloqueado (ventana cerrada, materia reasignada, grilla cambiada) no envía nada nuevo; lo que ya salió
+ *    lo resuelve el servidor.
+ */
+var CargaCliente = (function () {
+  'use strict';
+
+  var CAMPOS = [
+    { id: 'calificacion', nombre: 'Calificación', corto: 'Calificación' },
+    { id: 'calidad', nombre: 'Calidad de las producciones', corto: 'Calidad' },
+    { id: 'participacion', nombre: 'Participación', corto: 'Participación' },
+    { id: 'observaciones', nombre: 'Observaciones', corto: 'Observaciones' }
+  ];
+  var PENDIENTE = 'CURSA';
+  var NO_CURSA = 'NO CURSA';
+  var ADMINISTRATIVOS = ['ACREDITÓ', 'EQUIVALENCIA'];
+  // Alcance de un rechazo del servidor: qué deja de poder guardarse.
+  var ALCANCE = {
+    acceso: 'todo', registro: 'todo',
+    ventana: 'periodo', fuente: 'periodo', configuracion: 'periodo', periodo: 'periodo',
+    asignacion: 'materia',
+    cursada: 'estudiante', grilla: 'estudiante',
+    calificacion: 'campo'
+  };
+  var LOCALES = ['valor', 'pedido', 'operacion'];
+
+  // ------------------------------------------------------------ valores (mismas reglas que Carga_Nucleo.gs)
+
+  function txt(v) { return v === null || v === undefined ? '' : String(v).trim(); }
+  function norm(v) { return txt(v).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim(); }
+  function canonico(lista, v) { var n = norm(v); for (var i = 0; i < (lista || []).length; i++) if (norm(lista[i]) === n) return lista[i]; return null; }
+
+  /** 'no cursa' · 'pendiente' (CURSA) · 'valorada' · 'administrativo' (ACREDITÓ, EQUIVALENCIA) · 'a revisar'. */
+  function situacion(escala, valor) {
+    var v = norm(valor);
+    if (!v || v === NO_CURSA) return 'no cursa';
+    if (v === PENDIENTE) return 'pendiente';
+    if (canonico(escala, valor)) return 'valorada';
+    if (canonico(ADMINISTRATIVOS, valor)) return 'administrativo';
+    return 'a revisar';
+  }
+  function calificacionEditable(s) { return s === 'pendiente' || s === 'valorada'; }
+
+  /** Lo que mostrará la celda si se guarda este valor (como normalizarNuevo_). */
+  function visto(campo, v) { return campo === 'observaciones' ? txt(v).replace(/\s+/g, ' ') : txt(v); }
+  /** Sin cambio a efectos de la carga. En Calificación, la grafía no cuenta («avanzado» = «Avanzado»). */
+  function igual(campo, a, b) {
+    if (a === null || b === null) return false;
+    return campo === 'calificacion' ? norm(a) === norm(b) : visto(campo, a) === visto(campo, b);
+  }
+  /** Texto para el docente: CURSA es «Pendiente»; vacío, «sin dato». */
+  function mostrar(campo, v) {
+    if (v === null || v === undefined) return 'desconocido';
+    if (campo === 'calificacion' && norm(v) === PENDIENTE) return 'Pendiente';
+    return txt(v) === '' ? 'sin dato' : txt(v);
+  }
+
+  function claveCampo(base) {
+    return [base.periodo, base.fuente, base.orientacion, base.materia, base.dni, base.campo].join('|');
+  }
+
+  /** Identificador de operación: 64 bits aleatorios más la hora; cumple CARGA.OPERACION (/^[A-Za-z0-9_-]{8,80}$/). */
+  function nuevoIdOperacion(azar) {
+    var bytes = new Uint8Array(8);
+    if (azar) azar(bytes);
+    else if (typeof crypto !== 'undefined' && crypto.getRandomValues) crypto.getRandomValues(bytes);
+    else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+    var hex = '';
+    for (var j = 0; j < bytes.length; j++) hex += (bytes[j] < 16 ? '0' : '') + bytes[j].toString(16);
+    return 'w' + Date.now().toString(36) + '-' + hex;
+  }
+
+  // ------------------------------------------------------------ modelo de la consulta
+
+  /**
+   * Modelo de la respuesta de cargaConsultar: períodos (cada uno con su fuente y su cierre), materias con id estable
+   * período|orientación|materia, y estudiantes con su grupo y la clave de cada campo. No mezcla períodos: la misma
+   * materia en 2º cuatrimestre y en anual son dos materias distintas del modelo, con claves distintas.
+   */
+  function modelo(consulta) {
+    var periodos = (consulta.periodos || []).map(function (p) {
+      var materias = (p.materias || []).map(function (m) {
+        var id = [p.periodo, m.orientacion, m.clave].join('|');
+        var estudiantes = (m.estudiantes || []).map(function (e) {
+          var claves = {};
+          CAMPOS.forEach(function (c) {
+            claves[c.id] = claveCampo({ periodo: p.periodo, fuente: p.fuente, orientacion: m.orientacion, materia: m.clave, dni: e.dni, campo: c.id });
+          });
+          return {
+            dni: e.dni, nombre: e.nombre, grupo: e.grupo || '', otroGrupo: !!e.grupo && e.grupo !== m.nivel,
+            problema: e.problema || '', valores: Object.assign({}, e.campos), editable: Object.assign({}, e.editable), claves: claves
+          };
+        });
+        return { id: id, periodo: p.periodo, fuente: p.fuente, orientacion: m.orientacion, nivel: m.nivel, materia: m.materia, clave: m.clave,
+          problema: m.problema || '', estudiantes: estudiantes };
+      });
+      return {
+        periodo: p.periodo, fuente: p.fuente, desde: p.desde, hasta: p.hasta, cierre: p.cierre ? Date.parse(p.cierre) : null,
+        escala: (p.escala || []).slice(), opciones: Object.assign({ calidad: [], participacion: [] }, p.opciones), problema: p.problema || '', materias: materias
+      };
+    });
+    return { docente: consulta.docente || '', al: Date.parse(consulta.al), periodos: periodos,
+      maxObservaciones: (consulta.limites && consulta.limites.observaciones) || 1000 };
+  }
+
+  /** Base del pedido de un campo (todo menos operación, esperado y nuevo). */
+  function base(periodo, materia, estudiante, campo) {
+    return { periodo: periodo.periodo, fuente: periodo.fuente, orientacion: materia.orientacion, materia: materia.clave, dni: estudiante.dni, campo: campo };
+  }
+
+  /** Conteo de una materia con los valores vigentes de Calificación (valorDe(estudiante) → valor). */
+  function contar(periodo, materia, valorDe) {
+    var c = { total: 0, pendiente: 0, valorada: 0, administrativo: 0, 'a revisar': 0, 'no cursa': 0 };
+    materia.estudiantes.forEach(function (e) {
+      var s = situacion(periodo.escala, valorDe(e));
+      c[s]++;
+      if (s !== 'no cursa') c.total++;
+    });
+    return c;
+  }
+
+  /** Apellido y nombre, sin acentos ni mayúsculas. */
+  function compararNombres(a, b) { return norm(a.nombre) < norm(b.nombre) ? -1 : norm(a.nombre) > norm(b.nombre) ? 1 : 0; }
+
+  /** Primero las calificaciones pendientes; dentro de cada grupo, por apellido. */
+  function ordenar(periodo, estudiantes, valorDe) {
+    return estudiantes.slice().sort(function (a, b) {
+      var pa = situacion(periodo.escala, valorDe(a)) === 'pendiente' ? 0 : 1;
+      var pb = situacion(periodo.escala, valorDe(b)) === 'pendiente' ? 0 : 1;
+      return pa - pb || compararNombres(a, b);
+    });
+  }
+
+  function alcanceRechazo(codigo) { return ALCANCE[codigo] || (LOCALES.indexOf(codigo) >= 0 ? 'local' : 'campo'); }
+
+  /**
+   * Indicador global de la barra: { texto, clase, avisos }. resumen: cola.resumen(); sinGuardar: campos editados en
+   * la página y todavía no enviados (Observaciones mientras se escribe). «Todo guardado» sólo si no hay nada en
+   * curso, nada que necesite atención y nada sin enviar. avisos: cuántos cambios lleva el filtro «Con avisos».
+   */
+  function indicadorGlobal(resumen, sinGuardar, huboGuardados) {
+    var avisos = resumen.sinConfirmar + resumen.conflicto + resumen.noGuardado;
+    var plural = function (n, uno, varios) { return n + ' ' + (n === 1 ? uno : varios); };
+    if (resumen.enCurso) return { texto: 'Guardando ' + plural(resumen.enCurso, 'cambio…', 'cambios…'), clase: 'curso', avisos: avisos };
+    if (avisos) return { texto: '⚠ ' + plural(avisos, 'cambio necesita', 'cambios necesitan') + ' atención', clase: 'aviso', avisos: avisos };
+    if (sinGuardar) return { texto: '✎ ' + plural(sinGuardar, 'cambio', 'cambios') + ' sin guardar', clase: 'aviso', avisos: 0 };
+    if (huboGuardados) return { texto: '✓ Todo guardado', clase: 'ok', avisos: 0 };
+    return { texto: '', clase: '', avisos: 0 };
+  }
+
+  // ------------------------------------------------------------ cola de guardado
+
+  /**
+   * op: {
+   *   enviar(pedido) → Promise<respuesta> (rechaza ante una falla de comunicación),
+   *   esperar(ms) → Promise, nuevoId() → string, ahora() → ms,
+   *   alCambiar(clave, campo), alRechazo(clave, respuesta, pedido),
+   *   esperas, esperasIncierto, maxEnVuelo
+   * }
+   * Estados de un campo: listo · en-espera · enviando · reintentando · guardado · coincide · conflicto · incierto ·
+   * sin-confirmar (sin respuesta del servidor) · sin-enviar (todas las respuestas fueron «reintentar») ·
+   * rechazado · no-enviado (bloqueado antes de salir).
+   */
+  function crearCola(op) {
+    var ESPERAS = op.esperas || [1000, 3000, 8000];
+    var ESPERAS_INCIERTO = op.esperasIncierto || [2000, 5000];
+    var MAX_EN_VUELO = op.maxEnVuelo || 3;
+    var campos = {};
+    var enVuelo = 0;
+    var turnos = [];
+
+    function avisar(c) { if (op.alCambiar) op.alCambiar(c.clave, c); }
+    function pedirLugar() {
+      if (enVuelo < MAX_EN_VUELO) { enVuelo++; return Promise.resolve(); }
+      return new Promise(function (ok) { turnos.push(ok); });
+    }
+    function soltarLugar() {
+      var siguiente = turnos.shift();
+      if (siguiente) siguiente(); else enVuelo--;
+    }
+
+    /** Alta o actualización de un campo con el valor de una consulta enviada en el instante «desde». */
+    function registrar(clave, b, valor, desde) {
+      var c = campos[clave];
+      if (!c) {
+        c = campos[clave] = {
+          clave: clave, base: Object.freeze(Object.assign({}, b)), confirmado: valor, estado: 'listo', pedido: null, ultimo: null,
+          enviado: false, soloReintentar: true, siguiente: null, propuesto: null, mensaje: '', codigo: '', previo: null, actual: null,
+          bloqueado: null, hora: null, respondido: 0, envios: 0
+        };
+        return c;
+      }
+      c.bloqueado = null;
+      // Una respuesta posterior al envío de la consulta es más nueva que ella: no se pisa.
+      if (!c.pedido && c.siguiente === null && !(desde !== undefined && c.respondido > desde)) {
+        if (c.confirmado !== valor) {
+          c.confirmado = valor;
+          // «Guardado» o «coincide» ya no describen la celda: la cambió otra persona. Los avisos pendientes de
+          // decisión (conflicto, incierto, rechazo) se conservan, ahora con el valor vigente.
+          if (c.estado === 'guardado' || c.estado === 'coincide') { c.estado = 'listo'; c.mensaje = ''; }
+          avisar(c);
+        }
+      }
+      return c;
+    }
+
+    function cambiar(clave, valor) {
+      var c = campos[clave];
+      if (!c || c.bloqueado) return false;
+      if (c.pedido) {
+        if (c.estado === 'sin-enviar') { // nunca intentó escribir: el cambio nuevo la reemplaza
+          c.pedido = null;
+        } else {
+          c.siguiente = valor;
+          // Resultado desconocido: antes del valor nuevo se resuelve la operación pendiente, tal cual.
+          if (c.estado === 'sin-confirmar') correr(c);
+          avisar(c);
+          return true;
+        }
+      }
+      if (c.confirmado === null) { // «incierto» sin valor actual: primero se vuelve a consultar esa operación
+        c.siguiente = valor;
+        verificar(clave);
+        return true;
+      }
+      c.propuesto = null;
+      if (igual(c.base.campo, valor, c.confirmado)) {
+        // Elegir el valor vigente no es un cambio. Resuelve un aviso (el docente acepta lo que tiene la grilla),
+        // pero no borra un «Guardado» o un «coincide» que siguen siendo ciertos.
+        if (c.estado !== 'guardado' && c.estado !== 'coincide') { c.estado = 'listo'; c.mensaje = ''; c.codigo = ''; c.previo = null; }
+        avisar(c);
+        return true;
+      }
+      nueva(c, valor);
+      return true;
+    }
+
+    function nueva(c, valor) {
+      c.pedido = Object.freeze(Object.assign({}, c.base, { operacion: op.nuevoId(), esperado: c.confirmado, nuevo: valor }));
+      c.ultimo = c.pedido;
+      c.enviado = false;
+      c.soloReintentar = true;
+      c.envios = 0;
+      c.mensaje = ''; c.codigo = ''; c.previo = null; c.actual = null;
+      correr(c);
+    }
+
+    function correr(c) {
+      var pedido = c.pedido;
+      if (c.corriendo) return;
+      c.corriendo = true;
+      c.estado = c.enviado ? 'reintentando' : 'en-espera';
+      avisar(c);
+      ciclo(c, pedido).then(function (r) {
+        c.corriendo = false;
+        // El lugar se libera después de resolver: un rechazo (p. ej., ventana cerrada) bloquea lo que espera turno
+        // antes de que salga.
+        try { if (r) resolver(c, pedido, r); } finally { soltarLugar(); }
+      });
+    }
+
+    /** Envía hasta tener una respuesta final. Termina con el lugar tomado; correr lo libera después de resolver. */
+    function ciclo(c, pedido) {
+      var reintentos = 0, observaciones = 0;
+      var maxObservaciones = c.verificando ? 0 : ESPERAS_INCIERTO.length; // «Verificar» pedido por el docente: una sola consulta
+      function paso() {
+        return pedirLugar().then(function () {
+          if (c.pedido !== pedido) return null;
+          if (c.bloqueado && !c.enviado) return { estado: 'no-enviado', motivo: c.bloqueado };
+          c.estado = c.enviado ? 'reintentando' : 'enviando';
+          c.enviado = true;
+          c.envios++;
+          avisar(c);
+          var envio;
+          try { envio = Promise.resolve(op.enviar(pedido)); } catch (e) { envio = Promise.reject(e); }
+          return envio.then(function (r) {
+            return r && typeof r === 'object' && typeof r.estado === 'string' ? r : { estado: 'desconocido', motivo: 'Respuesta inválida del servidor.' };
+          }, function (e) {
+            return { estado: 'desconocido', motivo: 'Sin respuesta del servidor' + (e && e.message ? ' (' + e.message + ')' : '') + '.' };
+          }).then(function (r) {
+            if (r.estado !== 'reintentar') c.soloReintentar = false;
+            var espera = null;
+            if ((r.estado === 'reintentar' || r.estado === 'desconocido') && reintentos < ESPERAS.length) espera = ESPERAS[reintentos++];
+            else if (r.estado === 'incierto' && observaciones < maxObservaciones) espera = ESPERAS_INCIERTO[observaciones++];
+            if (espera === null) return r;
+            soltarLugar(); // durante la espera, otros campos pueden enviar
+            c.estado = 'reintentando';
+            c.mensaje = r.motivo || '';
+            avisar(c);
+            return op.esperar(espera).then(paso);
+          });
+        });
+      }
+      return paso();
+    }
+
+    function resolver(c, pedido, r) {
+      c.respondido = op.ahora();
+      c.codigo = r.codigo || '';
+      c.previo = r.previo || null;
+      c.mensaje = r.motivo || '';
+      var actual = typeof r.actual === 'string' ? r.actual : null;
+      c.actual = actual;
+      c.pedido = null;
+      c.verificando = false;
+      switch (r.estado) {
+        case 'guardado':
+          c.confirmado = actual !== null ? actual : visto(c.base.campo, pedido.nuevo);
+          c.estado = 'guardado'; c.hora = op.ahora(); c.propuesto = null; c.mensaje = '';
+          break;
+        case 'coincide':
+          c.confirmado = actual !== null ? actual : visto(c.base.campo, pedido.nuevo);
+          c.estado = 'coincide'; c.propuesto = null; c.mensaje = '';
+          break;
+        case 'conflicto':
+          if (actual !== null) c.confirmado = actual;
+          c.estado = 'conflicto'; c.propuesto = pedido.nuevo;
+          break;
+        case 'incierto':
+          // La operación terminó: repetirla sólo observa. Sin valor actual, no se sabe qué tiene la grilla.
+          c.confirmado = actual;
+          c.estado = 'incierto'; c.propuesto = pedido.nuevo;
+          break;
+        case 'rechazado':
+          c.estado = 'rechazado'; c.propuesto = pedido.nuevo;
+          break;
+        case 'no-enviado':
+          c.estado = 'no-enviado'; c.propuesto = pedido.nuevo;
+          break;
+        default: // 'reintentar' o 'desconocido' después de los reintentos automáticos: la operación sigue abierta
+          c.pedido = pedido;
+          c.estado = c.soloReintentar ? 'sin-enviar' : 'sin-confirmar';
+          c.propuesto = pedido.nuevo;
+      }
+      avisar(c);
+      if (r.estado === 'rechazado' && op.alRechazo) op.alRechazo(c.clave, r, pedido);
+      continuar(c);
+    }
+
+    /** El valor que el docente eligió mientras tanto, según cómo terminó la operación anterior. */
+    function continuar(c) {
+      if (c.siguiente === null) return;
+      var v = c.siguiente;
+      if (c.bloqueado) { c.siguiente = null; c.propuesto = v; avisar(c); return; }
+      var sigue = c.estado === 'guardado' || c.estado === 'coincide' || c.estado === 'sin-enviar' ||
+        (c.estado === 'rechazado' && alcanceRechazo(c.codigo) === 'local') || (c.estado === 'incierto' && c.confirmado !== null && c.ultimoVerificado);
+      if (c.estado === 'sin-confirmar') return; // se decide cuando se resuelva (reintento manual o cambio nuevo)
+      c.siguiente = null;
+      c.ultimoVerificado = false;
+      if (sigue) { if (c.estado === 'sin-enviar') c.pedido = null; cambiar(c.clave, v); return; }
+      // conflicto, incierto o rechazo: no se envía solo; queda propuesto para que decida el docente
+      c.propuesto = v;
+      avisar(c);
+    }
+
+    /** Reenvía la operación abierta, exactamente igual. */
+    function reintentar(clave) {
+      var c = campos[clave];
+      if (!c || !c.pedido || c.corriendo) return false;
+      if (c.estado !== 'sin-confirmar' && c.estado !== 'sin-enviar') return false;
+      correr(c);
+      return true;
+    }
+
+    /** «incierto»: vuelve a consultar la misma operación (el servidor sólo observa; nunca vuelve a escribir). */
+    function verificar(clave) {
+      var c = campos[clave];
+      if (!c || c.pedido || !c.ultimo || c.estado !== 'incierto') return false;
+      c.pedido = c.ultimo;
+      c.ultimoVerificado = c.siguiente !== null;
+      c.verificando = true;
+      correr(c);
+      return true;
+    }
+
+    /** Conflicto, incierto o rechazo local: el docente vuelve a cargar su valor, como operación nueva. */
+    function usarPropuesto(clave) {
+      var c = campos[clave];
+      if (!c || c.bloqueado || c.pedido || c.propuesto === null || c.confirmado === null) return false;
+      var v = c.propuesto;
+      c.propuesto = null;
+      return cambiar(clave, v);
+    }
+
+    /** El docente acepta el valor de la grilla. */
+    function descartar(clave) {
+      var c = campos[clave];
+      if (!c || c.pedido) return false;
+      c.propuesto = null; c.siguiente = null;
+      c.estado = 'listo'; c.mensaje = ''; c.codigo = ''; c.previo = null;
+      avisar(c);
+      return true;
+    }
+
+    /** Bloquea los campos que cumplen el filtro: nada nuevo sale; lo que ya salió lo resuelve el servidor. */
+    function bloquear(filtro, motivo) {
+      Object.keys(campos).forEach(function (k) {
+        var c = campos[k];
+        if (!filtro(c.base, c)) return;
+        c.bloqueado = motivo;
+        if (c.siguiente !== null) { c.propuesto = c.siguiente; c.siguiente = null; c.mensaje = motivo; }
+        if (c.pedido && !c.enviado && c.estado === 'en-espera') return avisar(c); // el ciclo la descarta al tomar turno
+        if (c.estado === 'sin-enviar' && c.pedido) { c.pedido = null; c.estado = 'no-enviado'; c.mensaje = motivo; }
+        avisar(c);
+      });
+    }
+
+    function campo(clave) { return campos[clave] || null; }
+    function hayPendientes() {
+      return Object.keys(campos).some(function (k) { var c = campos[k]; return !!c.pedido || c.siguiente !== null; });
+    }
+    function resumen() {
+      var r = { enCurso: 0, sinConfirmar: 0, conflicto: 0, noGuardado: 0 };
+      Object.keys(campos).forEach(function (k) {
+        var e = campos[k].estado;
+        if (e === 'en-espera' || e === 'enviando' || e === 'reintentando') r.enCurso++;
+        else if (e === 'sin-confirmar' || e === 'incierto') r.sinConfirmar++;
+        else if (e === 'conflicto') r.conflicto++;
+        else if (e === 'rechazado' || e === 'no-enviado' || e === 'sin-enviar') r.noGuardado++;
+      });
+      return r;
+    }
+    function necesitaAtencion(clave) {
+      var c = campos[clave];
+      return !!c && ['conflicto', 'incierto', 'sin-confirmar', 'sin-enviar', 'rechazado', 'no-enviado'].indexOf(c.estado) >= 0;
+    }
+
+    return {
+      registrar: registrar, cambiar: cambiar, reintentar: reintentar, verificar: verificar, usarPropuesto: usarPropuesto,
+      descartar: descartar, bloquear: bloquear, campo: campo, hayPendientes: hayPendientes, resumen: resumen,
+      necesitaAtencion: necesitaAtencion
+    };
+  }
+
+  return {
+    CAMPOS: CAMPOS, PENDIENTE: PENDIENTE, txt: txt, norm: norm, canonico: canonico, situacion: situacion,
+    calificacionEditable: calificacionEditable, visto: visto, igual: igual, mostrar: mostrar, claveCampo: claveCampo,
+    nuevoIdOperacion: nuevoIdOperacion, modelo: modelo, base: base, contar: contar, ordenar: ordenar,
+    alcanceRechazo: alcanceRechazo, indicadorGlobal: indicadorGlobal, crearCola: crearCola
+  };
+})();
+</script>
