@@ -1,8 +1,10 @@
-# Puesta en marcha de la carga docente
+# Carga docente: puesta en marcha y operación
 
-Manual operativo del Equipo EPS para instalar, probar, habilitar y mantener la carga docente (`src/carga/`). Las reglas funcionales (ventanas, enlaces, correos, Registro) están en el [README](../README.md#carga-docente-en-desarrollo). Este manual sólo dice qué hacer, en qué orden y cómo comprobarlo.
+Manual operativo del Equipo EPS para instalar, probar, habilitar y operar la carga docente (`src/carga/`). Las reglas funcionales (ventanas, enlaces, correos, Registro) están en el [README](../README.md#carga-docente). Este manual sólo dice qué hacer, en qué orden y cómo comprobarlo.
 
-**Estado (#29).** Nada de la carga se ejecutó todavía en Google real. Los resultados esperados salen del código y de las pruebas locales; los de las etapas B a D, además, están ensayados con dobles de Google en `tests/carga-recorrido.js`, que falla si el código deja de coincidir con este manual. La marca **[G]** señala comportamientos de Google que el código no controla: la prueba integrada (etapa C) los tiene que observar y anotar.
+**Cómo usarlo.** Las etapas A a D son para instalar la carga sobre recursos nuevos y probarla antes de que la use nadie. Para cada ventana de carga se repite la etapa E, con lo que indica F7; durante la ventana y después del cierre, la etapa F. Los ejemplos usan el caso de la primera ventana institucional, 2º cuatrimestre y anual.
+
+**Resultados esperados.** Salen del código y de las pruebas locales; los de las etapas B a D, además, están ensayados con dobles de Google en `tests/carga-recorrido.js`, que falla si el código deja de coincidir con este manual. La marca **[G]** señala comportamientos de Google que el código no controla: sólo se observan en Google real, y la prueba integrada (etapa C) los tiene que observar y anotar (anexo 1).
 
 **Regla general.** Si un resultado no coincide con el esperado, parar, anotarlo en el acta (anexo 2) y resolverlo antes de seguir. No corregir datos a mano para que «dé bien».
 
@@ -81,7 +83,7 @@ Se preparan a partir de la del 1º cuatrimestre (*Archivo > Hacer una copia*, **
 
 En el generador, completar `Control!B13` (2º cuatrimestre) y `B14` (anual) con la URL o el ID de cada grilla. `B11` (1º cuatrimestre) y `B12` (3º bimestre) tienen que seguir apuntando a sus grillas: la preparación las usa.
 
-#### A3.1 Preparación automática de cursadas y asignaciones (#32)
+#### A3.1 Preparación automática de cursadas y asignaciones
 
 Las reglas de la tabla anterior no se aplican a mano: lo hace `prepararPeriodosCarga`, después de A5 a A7 (necesita el proyecto y la planilla de administración) y **antes de cargar `Ventanas`** de 2º cuatrimestre o anual: con una fila de esos períodos en `Ventanas`, no modifica nada. Respeta las ediciones que el Equipo EPS ya hizo en los borradores.
 
@@ -137,7 +139,7 @@ Pasos, con la cuenta propietaria, desde el editor del proyecto:
 4. Borrar el `Código.gs` inicial. Reemplazar el contenido de `appsscript.json` por el de `src/carga/appsscript.json`.
 5. Guardar.
 
-**Comprobar**: el editor guarda sin errores y lista 9 archivos `.gs`, 2 `.html` y `appsscript.json`. En una instalación hecha antes de #32, agregar los dos archivos `Carga_Preparacion*` (no cambian la app web: son funciones del editor). El manifiesto tiene zona `America/Argentina/Buenos_Aires`.
+**Comprobar**: el editor guarda sin errores y lista 9 archivos `.gs`, 2 `.html` y `appsscript.json`. El manifiesto tiene zona `America/Argentina/Buenos_Aires`.
 
 ### A6. Propiedades del script
 
@@ -180,7 +182,7 @@ No hay que cargar feriados: están en el código (`Carga_Calendario.gs`). Si la 
    | «Cualquier persona con una cuenta de Google» (*Anyone with Google account*) | `ANYONE` | Google pide iniciar sesión con alguna cuenta antes de abrir |
 
    En las dos, la app se ejecuta como la cuenta propietaria, la credencial de la app es el enlace individual firmado (sin un enlace vigente no se ve ni se guarda nada) y las funciones del editor siguen reservadas a la cuenta propietaria. La diferencia es el requisito previo de Google: con `ANYONE`, Google exige además iniciar sesión con alguna cuenta antes de abrir la página; con `ANYONE_ANONYMOUS`, no. Esa sesión no identifica al docente: la app no la usa, y para cuentas de otra organización, como las `@bue.edu.ar`, ni siquiera puede leer su correo (comprobado en una prueba previa con esas cuentas). A cambio, el inicio de sesión agrega fricción: dentro de la app de Gmail en el celular, o con varias cuentas iniciadas en el navegador.
-   - **Elegida**: «Cualquier persona» (`ANYONE_ANONYMOUS`), la del manifiesto. **[G]** Falta comprobar en Google real que la organización la ofrezca y que abra bien (B3 y C2.6).
+   - **Elegida**: «Cualquier persona» (`ANYONE_ANONYMOUS`), la del manifiesto. **[G]** Que la organización la ofrezca y que abra bien se comprueba en B3 y C2.6.
    - **Si el diálogo no la ofrece** (política de la organización): «Cualquier persona con una cuenta de Google»: la app sigue usando el mismo enlace firmado como credencial, y Google exige además iniciar sesión. En ese caso, cambiar `"access"` a `"ANYONE"` en el `appsscript.json` del proyecto y avisar para actualizarlo en el repositorio, de modo que el manifiesto que se pegue en el futuro coincida con lo elegido. **[G]** Después de cada actualización (F6), comprobar en *Gestionar implementaciones* que la modalidad de acceso siga siendo la elegida.
 4. *Implementar*. Copiar la **URL de la aplicación web** (termina en `/exec`) y guardarla en la propiedad `URL_CARGA`. Anotar en la ficha la URL, el ID de la implementación y la modalidad elegida.
 
@@ -352,7 +354,7 @@ Después de las 9:15: en `Correos`, fila del día 3 para A con `Tipo` `cierre`. 
 |---|---|---|
 | D1 | `desactivarCorreosCarga` | «Activadores de correos borrados: 1.»; *Activadores* vacío |
 | D2 | Borrar las filas de la prueba en `Ventanas` y `Asignaciones` (que queden sólo los encabezados) y la de A en `Enlaces` | Hojas como en A8. Borrar la fila de `Enlaces` es seguro: los enlaces de la prueba son del tramo que empezó el día 1 y no vuelven a valer cuando empieza una ventana con otro «Desde» |
-| D3 | En `Registro` y `Correos`, **no borrar ni editar** las filas de la prueba. En una columna agregada a la derecha («Nota EPS»), marcarlas «Prueba integrada #29» | El registro de auditoría queda completo e identificado |
+| D3 | En `Registro` y `Correos`, **no borrar ni editar** las filas de la prueba. En una columna agregada a la derecha («Nota EPS»), marcarlas «Prueba integrada» | El registro de auditoría queda completo e identificado |
 | D4 | Para cada celda que figura en las filas de A del Registro, comparar su valor actual con el `Anterior` de la primera fila de esa celda. En la grilla, *Archivo > Historial de versiones*, comparar con la versión «Antes de la prueba integrada…» | Todas con su valor original. En el historial, las celdas de E1 y E2 en M sólo tienen, después de esa versión, los cambios de la prueba (incluido el de C2.13). Si alguna difiere, restaurarla a mano y anotarlo |
 | D5 | Generador y Drive | `Control!B5` como estaba; el libro y la carpeta de PDF de la prueba, en la papelera; ningún otro archivo tocado |
 | D6 | `verificarCargaDocente` | Como en B1: sin ventanas ni grillas, y sólo «Los correos no están activados» |
@@ -376,7 +378,7 @@ Si el correo cae en Spam o es rechazado, la causa probable es la autenticación 
 
 | Id | Hacer | Esperado / comprobar |
 |---|---|---|
-| E1 | Ejecutar `prepararPeriodosCarga` una última vez (A3.1, sin ventanas cargadas). En `Asignaciones (borrador)`, copiar las columnas `Orientación` a `Correo` de las filas con docente y pegarlas en `Asignaciones` con *Pegado especial > Solo valores* (así un cambio posterior de la nómina no cambia accesos sin que se vea) | Una fila por orientación y materia, con un único docente; materia como en el encabezado de la grilla (mayúsculas y acentos no importan; letras y números sí); nivel de su sección; correo institucional del docente. En el borrador, `Revisión` vacía en todas las filas |
+| E1 | Con la preparación automática (A3.1, 2º cuatrimestre y anual): ejecutar `prepararPeriodosCarga` una última vez, sin ventanas cargadas. En `Asignaciones (borrador)`, copiar las columnas `Orientación` a `Correo` de las filas con docente y pegarlas en `Asignaciones` con *Pegado especial > Solo valores* (así un cambio posterior de la nómina no cambia accesos sin que se vea) | Una fila por orientación y materia, con un único docente; materia como en el encabezado de la grilla (mayúsculas y acentos no importan; letras y números sí); nivel de su sección; correo institucional del docente. En el borrador, `Revisión` vacía en todas las filas |
 | E2 | Revisar la primera línea de `verificarCargaDocente` | `Calendario de feriados` incluye el año de la ventana, de su día de cierre y de los 7 días siguientes. Si no, actualizar el calendario (F8) antes de seguir. Revisar también que no haya feriados nuevos decretados para esas fechas |
 | E3 | Cargar en `Ventanas` las filas de 2º cuatrimestre y anual con las fechas autorizadas, **al menos un día hábil antes del «Desde»** | La carga abre sola a las 0:00 de «Desde». Hasta entonces nadie tiene enlace |
 | E4 | `verificarCargaDocente` | Las dos ventanas `(futura)`, con el día de cierre esperado; grillas con `0 cargadas` y `0 a revisar` (salvo valores intencionales); **ningún problema**, salvo «Los correos no están activados». En especial, ninguna materia con «cursantes y ningún docente asignado», salvo que sea intencional (nadie podrá cargarla) |
@@ -430,16 +432,16 @@ Si E4 muestra problemas que no se pueden resolver antes del «Desde», correr la
 
 - Automático: a las 8:00 del primer día hábil posterior a `Hasta`, nadie puede escribir, aunque tenga la página abierta. Ese día, entre las 8:00 y las 9:00, sale el correo de cierre a todos los asignados; si no sale, se recupera en los 7 días siguientes.
 - **Comprobar**: en el Registro, ninguna fila con fecha posterior al cierre; en `Correos`, una fila `cierre` por docente.
-- Después: `desactivarCorreosCarga` (opcional; sin ventanas abiertas no envía nada). Las correcciones fuera de término las hace el Equipo EPS en la grilla. Los boletines se generan y exportan como siempre (README, *Puesta en funcionamiento*), desde las mismas grillas.
+- Después: `desactivarCorreosCarga` (opcional; sin ventanas abiertas no envía nada). Las correcciones fuera de término las hace el Equipo EPS en la grilla. Los boletines se generan y exportan como siempre ([README, *Generador de boletines*](../README.md#generador-de-boletines)), desde las mismas grillas.
 
 ### F6. Actualizar el código
 
 Preferentemente sin ventanas abiertas:
 
 1. Anotar el commit nuevo en la ficha.
-2. Pegar los archivos cambiados de `src/carga/` y guardar. **El activador usa enseguida el código guardado; la app web, no** hasta el paso 3.
+2. Pegar los archivos cambiados de `src/carga/` (y crear los nuevos, con los nombres de la tabla de A5) y guardar. **El activador usa enseguida el código guardado; la app web, no** hasta el paso 3. Con una ventana abierta, hacerlo fuera de la franja de 8:00 a 9:00, en la que corre el activador.
 3. *Implementar > Gestionar implementaciones*, editar la implementación existente, *Versión: Nueva versión*, *Implementar*. **No** crear una implementación nueva: cambiaría la URL y los enlaces ya enviados apuntarían a la anterior.
-4. Repetir B1 y B3 (y, si cambió algo del guardado, una prueba corta como C2.9, C2.10 y C2.18, antes de abrir).
+4. Repetir B1 y B3. Con una ventana abierta, B1 no da «(ninguna)»: lista las ventanas, `(abierta)`, y sus grillas, como en E4, y no tiene que mostrar problemas nuevos. Si cambió algo de los correos, `previsualizarCorreosCarga` muestra qué se enviaría, sin enviar nada. Si cambió algo del guardado, hacer una prueba corta como C2.9, C2.10 y C2.18 antes de abrir.
 
 ### F7. Períodos y ciclos siguientes
 
@@ -465,9 +467,9 @@ Los feriados forman parte del código: `src/carga/Carga_Calendario.gs`, una entr
 
 ---
 
-## Anexo 1. Pendiente de verificación con Google real
+## Anexo 1. Comprobaciones en Google real
 
-Ninguno de estos puntos se comprobó. La etapa C cubre los marcados con su paso:
+Las pruebas locales no pueden comprobar estos puntos: dependen de Google, de la organización o del uso real. Cada instalación los comprueba en el paso indicado y anota el resultado en el acta (anexo 2). El seguimiento de la instalación institucional está en [#29](https://github.com/aeatencio/boletines-eps/issues/29).
 
 | Punto | Paso |
 |---|---|
@@ -482,9 +484,9 @@ Ninguno de estos puntos se comprobó. La etapa C cubre los marcados con su paso:
 | Cuota real de MailApp con el número real de docentes, y duración de la ejecución diaria | E8 |
 | Latencia y contención con muchos docentes a la vez | Primeros días de la ventana real (F1) |
 | Bimestres en Google | F7 |
-| Calendario instalado: la primera línea de `verificarCargaDocente` muestra 2026 y el cierre de la prueba cae donde se espera | B1, B4 |
+| Calendario instalado: la primera línea de `verificarCargaDocente` muestra el año de la ventana y el cierre de la prueba cae donde se espera | B1, B4 |
 | Estado `incierto` del servidor | No se puede provocar; sólo pruebas locales |
-| Preparación (#32): escritura por `getRangeList`, lista desplegable y fórmula del correo en Sheets real, duración con las grillas reales, y que el informe coincida con lo que el Equipo EPS sabe de los borradores | A3.1 |
+| Preparación automática: escritura por `getRangeList`, lista desplegable y fórmula del correo en Sheets real, duración con las grillas reales, y que el informe coincida con lo que el Equipo EPS sabe de los borradores | A3.1 |
 
 ## Anexo 2. Acta de la prueba
 
