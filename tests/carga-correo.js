@@ -102,7 +102,7 @@ prueba("apertura el primer día hábil (lunes 7/12, la ventana abrió el sábado
     igual(m.length, 1, c);
     cierto(/abrió 2º cuatrimestre y Anual/.test(m[0].subject), m[0].subject);
     cierto(m[0].htmlBody.includes("2º cuatrimestre · abrió la carga") && m[0].htmlBody.includes("Anual · abrió la carga"));
-    cierto(m[0].body.includes("Estado de las grillas al lunes 7/12/2026, 8:12") && m[0].body.includes("Cierra el lunes 14/12/2026 a las 8:00."), m[0].body.slice(0, 400));
+    cierto(m[0].body.includes("Estado de las grillas al lunes 7/12/2026, 8:12") && m[0].body.includes("El plazo para completar la carga es el viernes 11/12. Como margen, el sistema seguirá abierto hasta el lunes 14/12 a las 8:00; después ya no se podrán hacer cambios."), m[0].body.slice(0, 400));
     igual(m[0].name, "Equipo EPS");
     cierto(m[0].htmlBody.startsWith('<div') && m[0].htmlBody.includes(D.URL_APP + "?k="));
     const v = S.ctx.cargaConsultar(credencialDe(m[0]));
@@ -129,7 +129,7 @@ prueba("seguimiento: sólo a quien tiene pendientes; se suspende al quedar al d�
   S.en("2026-12-09T08:05");
   let r = S.correr();
   igual(r.enviados.map(x => [x.correo, x.tipos]), [[MATE, ["seguimiento"]]]);
-  cierto(/calificaciones pendientes, cierra el 14\/12/.test(para(S, MATE)[1].subject), para(S, MATE)[1].subject);
+  cierto(/^Carga de valoraciones EPS: plazo viernes 11\/12 · \d+ calificaciones pendientes$/.test(para(S, MATE)[1].subject), para(S, MATE)[1].subject);
   ponerCursa(S, PAN, "EPSI", "Matemática III");
   S.en("2026-12-10T08:05");
   r = S.correr();
@@ -154,7 +154,7 @@ prueba("cierre: el lunes 14/12 después de las 8:00, a todos los asignados (tamb
   igual(r.enviados.map(x => [x.correo, x.tipos]).sort(), [[LENGUA, ["cierre"]], [MATE, ["cierre"]]].sort());
   const m = para(S, LENGUA)[1];
   cierto(/cerró 2º cuatrimestre y Anual, resumen final/.test(m.subject), m.subject);
-  cierto(m.htmlBody.includes("Cerró el lunes 14/12/2026 a las 8:00.") && /no certifica que la carga esté completa/.test(m.body));
+  cierto(m.htmlBody.includes("Cerró el lunes 14/12 a las 8:00.") && /no certifica que la carga esté completa/.test(m.body));
   igual(credencialDe(m), "", "sin enlace después del cierre");
   // Al día siguiente, nada más.
   S.en("2026-12-15T08:20");
@@ -191,6 +191,67 @@ prueba("ventanas distintas el mismo día (cierra 2C, sigue anual): un solo corre
   cierto(m.htmlBody.includes("2º cuatrimestre · resumen final") && m.htmlBody.includes("Anual · carga abierta"), m.subject);
   cierto(credencialDe(m), "el enlace sigue, por anual");
   igual(S.mails().filter(x => x.to === MATE).length, 2);
+});
+
+prueba("#33 plazo y margen, con el calendario de noviembre de 2026 (Hasta viernes 20/11; sábado, domingo y el feriado del lunes 23/11 de margen; cierre martes 24/11 a las 8:00): el asunto lleva el plazo; el cuerpo lo explica una vez, con el margen y su hora; sin correos en el margen", () => {
+  const S = entorno();
+  S.s.admin.Ventanas.v = [VENTANAS[0], [P2C, "2026-11-16", "2026-11-20"], [PAN, "2026-11-16", "2026-11-20"]];
+  const frase = "El plazo para completar la carga es el viernes 20/11. Como margen, el sistema seguirá abierto hasta el martes 24/11 a las 8:00; después ya no se podrán hacer cambios.";
+  S.en("2026-11-16T08:35");
+  igual(S.correr().enviados.length, 2);
+  const m = para(S, MATE)[0];
+  cierto(/^Carga de valoraciones EPS: abrió 2º cuatrimestre y Anual · plazo viernes 20\/11 · \d+ calificaciones pendientes$/.test(m.subject), m.subject);
+  cierto(!/24\/11/.test(m.subject), "el asunto no lleva el cierre del sistema");
+  igual([m.body.split(frase).length - 1, m.htmlBody.split(frase).length - 1], [1, 1], "una sola vez en texto y en HTML, aunque haya dos períodos");
+  cierto(m.body.indexOf(frase) < m.body.indexOf("Abrir mi carga"), "arriba, antes del enlace");
+  cierto(m.htmlBody.includes('<p style="margin:0 0 8px">' + frase + '</p>'), "un párrafo propio en el HTML");
+  [m.subject, m.body, m.htmlBody].forEach(x => cierto(!/[Cc]ierra el/.test(x), "ninguna parte presenta el día del cierre como un día de carga: " + x.slice(0, 200)));
+  // Seguimiento y último día del plazo.
+  S.en("2026-11-17T08:35");
+  S.correr();
+  igual(/^Carga de valoraciones EPS: plazo viernes 20\/11 · \d+ calificaciones pendientes$/.test(para(S, MATE).slice(-1)[0].subject), true, para(S, MATE).slice(-1)[0].subject);
+  S.en("2026-11-20T08:10");
+  S.correr();
+  const u = para(S, MATE).slice(-1)[0];
+  cierto(/^Carga de valoraciones EPS: plazo hoy, viernes 20\/11 · \d+ calificaciones pendientes$/.test(u.subject), u.subject);
+  cierto(u.body.includes("El plazo para completar la carga vence hoy, viernes 20/11. Como margen, el sistema seguirá abierto hasta el martes 24/11 a las 8:00;"), u.body.slice(0, 500));
+  // El margen no tiene días hábiles: no hay correos entre el plazo y el cierre.
+  const antes = S.mails().length;
+  ["2026-11-21T08:30", "2026-11-22T08:30", "2026-11-23T08:30"].forEach(t => { S.en(t); cierto(/no es día hábil/.test(S.correr().motivo), t); });
+  S.en("2026-11-24T07:59");
+  S.correr();
+  igual(S.mails().length, antes);
+  // Cierre: dice cuándo cerró, sin volver sobre el plazo.
+  S.en("2026-11-24T08:20");
+  S.correr();
+  const c = para(S, MATE).slice(-1)[0];
+  igual(c.subject, "Carga de valoraciones EPS: cerró 2º cuatrimestre y Anual, resumen final");
+  igual(c.body.split("Cerró el martes 24/11 a las 8:00.").length - 1, 2, "una vez por período cerrado");
+  cierto(!/plazo/i.test(c.body), "sin plazo en el cierre");
+  // Un plazo ya vencido no debería llegar a un correo (no hay días hábiles en el margen), pero se redacta bien.
+  const g = { hasta: "2026-11-20", cierre: new Date("2026-11-24T08:00:00-03:00"), periodos: [P2C] };
+  igual([S.ctx.plazoAsunto_(g, "2026-11-21", false), S.ctx.plazoAsunto_(g, "2026-11-19", true)], ["venció el plazo (viernes 20/11)", "plazo viernes 20/11 (2º cuatrimestre)"]);
+  igual(S.ctx.plazoFrase_(g, "2026-11-21", true), "El plazo para completar la carga de 2º cuatrimestre venció el viernes 20/11. Como margen, el sistema seguirá abierto hasta el martes 24/11 a las 8:00; después ya no se podrán hacer cambios.");
+});
+
+prueba("#33 períodos con plazos distintos (2C hasta el viernes 11/12, anual hasta el martes 15/12, que cierra el miércoles 16/12 a las 8:00, sin fin de semana de por medio): un plazo por período, nombrado; el asunto, el más próximo; con un período cerrado en el mismo correo, el abierto se nombra", () => {
+  const S = entorno();
+  S.s.admin.Ventanas.v = [VENTANAS[0], [P2C, "2026-12-05", "2026-12-11"], [PAN, "2026-12-05", "2026-12-15"]];
+  S.en("2026-12-07T08:05");
+  S.correr();
+  const m = para(S, MATE)[0];
+  cierto(/^Carga de valoraciones EPS: abrió 2º cuatrimestre y Anual · plazo viernes 11\/12 \(2º cuatrimestre\) · \d+ calificaciones pendientes$/.test(m.subject), m.subject);
+  cierto(m.body.includes("El plazo para completar la carga de 2º cuatrimestre es el viernes 11/12. Como margen, el sistema seguirá abierto hasta el lunes 14/12 a las 8:00;"), m.body.slice(0, 700));
+  cierto(m.body.includes("El plazo para completar la carga de Anual es el martes 15/12. Como margen, el sistema seguirá abierto hasta el miércoles 16/12 a las 8:00;"), m.body.slice(0, 700));
+  cierto(/== 2º cuatrimestre · abrió la carga ==\n\d+ calificaciones pendientes\.\n/.test(m.body) && /== Anual · abrió la carga ==\n\d+ calificaciones pendientes\.\n/.test(m.body), "con dos períodos abiertos, los pendientes de cada uno");
+  // 2C cerró el lunes 14/12 (ese día no corrió: se recupera el martes 15/12, último día del plazo de anual).
+  S.en("2026-12-15T08:05");
+  S.correr();
+  const u = para(S, MATE).slice(-1)[0];
+  cierto(/^Carga de valoraciones EPS: plazo hoy, martes 15\/12 \(Anual\) · \d+ calificaciones pendientes · cerró 2º cuatrimestre, resumen final$/.test(u.subject), u.subject);
+  cierto(u.body.includes("El plazo para completar la carga de Anual vence hoy, martes 15/12. Como margen, el sistema seguirá abierto hasta el miércoles 16/12 a las 8:00;"), u.body.slice(0, 600));
+  cierto(u.body.includes("== 2º cuatrimestre · resumen final ==\nCerró el lunes 14/12 a las 8:00.\n"), "la sección cerrada dice cuándo cerró");
+  cierto(/== Anual · carga abierta ==\n\n/.test(u.body), "con un solo período abierto, sus pendientes van sólo arriba");
 });
 
 // ================================================================ 3. asignaciones y enlaces

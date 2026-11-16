@@ -94,7 +94,7 @@ paso("C2.2 / C2.3: enviar: una fila «enviado», «apertura», acceso «<día 1>
   igual(f.map(x => [x["Estado"], x["Tipo"], x["Acceso"], x["Correo"]]), [["enviado", "apertura", DIA[1] + "|v1", A]]);
   const m = mails()[0];
   igual(m.name, "Equipo EPS");
-  cierto(/^Carga de valoraciones EPS: abrió 2º cuatrimestre y Anual · \d+ calificaciones pendientes, cierra el 19\/11$/.test(m.subject), m.subject);
+  cierto(/^Carga de valoraciones EPS: abrió 2º cuatrimestre y Anual · plazo miércoles 18\/11 · \d+ calificaciones pendientes$/.test(m.subject), m.subject);
   t.k1 = credencial(m);
   cierto(t.k1, "el correo trae el enlace");
 });

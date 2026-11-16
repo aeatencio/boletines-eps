@@ -227,6 +227,15 @@
     }
     /** «miércoles 18/11 a las 8:00», en hora de Buenos Aires. */
     function textoCierre(ms) { var p = partes(ms); return p.weekday + ' ' + p.day + '/' + p.month + ' a las ' + Number(p.hour) + ':' + p.minute; }
+    /** «viernes 20/11»: un día civil de la ventana ('2026-11-20'; el mediodía UTC es ese mismo día en Buenos Aires). */
+    function textoDia(iso) { var p = partes(Date.parse(iso + 'T12:00:00Z')); return p.weekday + ' ' + p.day + '/' + p.month; }
+    var fmtFecha = new Intl.DateTimeFormat('es-AR', { timeZone: ZONA, year: 'numeric', month: '2-digit', day: '2-digit' });
+    /** '2026-11-20': el día de hoy en Buenos Aires, según el reloj del servidor. */
+    function hoyLocal() {
+      var r = {};
+      fmtFecha.formatToParts(new Date(relojServidor())).forEach(function (p) { r[p.type] = p.value; });
+      return r.year + '-' + r.month + '-' + r.day;
+    }
     function hora(ms) { var p = partes(ms); return Number(p.hour) + ':' + p.minute; }
     function faltan(ms) {
       var min = Math.max(0, Math.round(ms / 60000));
@@ -547,8 +556,13 @@
         if (!p || !p.cierre) return;
         var resta = p.cierre - relojServidor();
         if (S.cerrados[p.periodo] || resta <= 0) { n.className = 'cierre cerrada'; n.textContent = 'Cerró el ' + textoCierre(p.cierre); return; }
-        n.className = 'cierre' + (resta < 24 * 3600000 ? ' cerca' : '');
-        n.textContent = 'Cierra el ' + textoCierre(p.cierre) + ' · ' + faltan(resta);
+        // El plazo para completar la carga («Hasta») y, aparte, el momento exacto en que el sistema deja de aceptar
+        // cambios (#33): lo que sigue al plazo es sólo un margen, y el día del cierre no es un día de carga. La cuenta
+        // regresiva aparece cuando ese cierre es lo que cuenta: en el margen o en sus últimas 24 horas.
+        var hoy = hoyLocal(), vencido = !!p.hasta && hoy > p.hasta, cerca = vencido || resta < 24 * 3600000;
+        n.className = 'cierre' + (cerca ? ' cerca' : '');
+        n.textContent = (p.hasta ? (vencido ? 'El plazo venció el ' : 'Plazo: ' + (hoy === p.hasta ? 'hoy, ' : '')) + textoDia(p.hasta) + ' · el sistema cierra el '
+          : 'Cierra el ') + textoCierre(p.cierre) + (cerca ? ' (' + faltan(resta) + ')' : '');
       });
     }
     function contarAvisos(mat) {

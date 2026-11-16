@@ -69,11 +69,14 @@ function diasEntre_(desde, hasta) { return Math.round((Date.parse(hasta + 'T00:0
 
 function horaLocal_(instante) { return new Date(instante.getTime() + Number(CARGA.DESFASE.slice(0, 3)) * 3600000); }
 
-/** 'lunes 7/12/2026' */
-function fechaTexto_(dia) {
+/** 'lunes 7/12' */
+function diaMesTexto_(dia) {
   const f = new Date(dia + 'T12:00:00Z');
-  return CORREO.DIAS[f.getUTCDay()] + ' ' + f.getUTCDate() + '/' + (f.getUTCMonth() + 1) + '/' + f.getUTCFullYear();
+  return CORREO.DIAS[f.getUTCDay()] + ' ' + f.getUTCDate() + '/' + (f.getUTCMonth() + 1);
 }
+
+/** 'lunes 7/12/2026' */
+function fechaTexto_(dia) { return diaMesTexto_(dia) + '/' + dia.slice(0, 4); }
 
 /** 'lunes 7/12/2026, 8:05' (hora de Buenos Aires) */
 function fechaHoraTexto_(instante) {
@@ -271,10 +274,41 @@ function listaY_(l) { return l.length < 2 ? l.join('') : l.slice(0, -1).join(', 
 
 function plural_(n, uno, varios) { return n + ' ' + (n === 1 ? uno : varios); }
 
-/** 'cierra el lunes 14/12/2026 a las 8:00' o 'cerró el …' */
-function plazoTexto_(s) {
-  const dia = fechaLocalDe_(s.cierre);
-  return (s.evento === 'cierre' ? 'Cerró el ' : 'Cierra el ') + fechaTexto_(dia) + ' a las ' + CARGA.HORA_CIERRE.replace(/^0/, '') + '.';
+function horaCierreTexto_() { return CARGA.HORA_CIERRE.replace(/^0/, ''); }
+
+/** 'martes 24/11 a las 8:00' */
+function cierreTexto_(cierre) { return diaMesTexto_(fechaLocalDe_(cierre)) + ' a las ' + horaCierreTexto_(); }
+
+/**
+ * Plazos de las secciones abiertas (#33), agrupados por fechas y del más próximo al más lejano:
+ * [{ hasta, cierre, periodos[] }]. El «Hasta» de la ventana es el plazo para completar la carga; lo que sigue hasta el
+ * cierre del sistema (8:00 del primer día hábil posterior) es sólo un margen, y el día del cierre no es un día de carga.
+ */
+function plazos_(abiertas) {
+  const grupos = [];
+  abiertas.slice().sort((a, b) => a.hasta < b.hasta ? -1 : a.hasta > b.hasta ? 1 : a.cierre - b.cierre).forEach(s => {
+    const g = grupos.find(x => x.hasta === s.hasta && x.cierre.getTime() === s.cierre.getTime());
+    if (g) g.periodos.push(s.periodo); else grupos.push({ hasta: s.hasta, cierre: s.cierre, periodos: [s.periodo] });
+  });
+  return grupos;
+}
+
+/** Para el asunto: 'plazo viernes 20/11', 'plazo hoy, viernes 20/11' o 'plazo viernes 11/12 (2º cuatrimestre)'. */
+function plazoAsunto_(g, dia, nombrar) {
+  const fecha = diaMesTexto_(g.hasta);
+  return (dia > g.hasta ? 'venció el plazo (' + fecha + ')' : 'plazo ' + (dia === g.hasta ? 'hoy, ' : '') + fecha) +
+    (nombrar ? ' (' + listaY_(g.periodos) + ')' : '');
+}
+
+/**
+ * Para el cuerpo: 'El plazo para completar la carga es el viernes 20/11. Como margen, el sistema seguirá abierto hasta
+ * el martes 24/11 a las 8:00; después ya no se podrán hacer cambios.' Con nombrar, «la carga de 2º cuatrimestre».
+ */
+function plazoFrase_(g, dia, nombrar) {
+  const fecha = diaMesTexto_(g.hasta);
+  return 'El plazo para completar la carga' + (nombrar ? ' de ' + listaY_(g.periodos) : '') +
+    (dia > g.hasta ? ' venció el ' + fecha : dia === g.hasta ? ' vence hoy, ' + fecha : ' es el ' + fecha) +
+    '. Como margen, el sistema seguirá abierto hasta el ' + cierreTexto_(g.cierre) + '; después ya no se podrán hacer cambios.';
 }
 
 const ORDEN_SITUACION_ = { pendiente: 0, 'a revisar': 1, valorada: 2, administrativo: 3 };
@@ -296,13 +330,16 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   const pendientes = abiertas.reduce((n, s) => n + s.pendientes, 0);
   const completar = abiertas.reduce((n, s) => n + s.completar, 0);
 
+  // Plazos (#33): con más de un juego de fechas, o con un período que cierra en el mismo correo, se nombran los períodos.
+  const plazos = plazos_(abiertas);
+  const nombrar = plazos.length > 1 || cerradas.length > 0;
+
   const partes = [];
   if (aperturas.length) partes.push('abrió ' + listaY_(aperturas));
-  if (abiertas.length && pendientes) {
-    const proximo = abiertas.map(s => s.cierre).sort((a, b) => a - b)[0];
-    const l = horaLocal_(proximo);
-    partes.push(plural_(pendientes, 'calificación pendiente', 'calificaciones pendientes') + ', cierra el ' + l.getUTCDate() + '/' + (l.getUTCMonth() + 1));
-  } else if (abiertas.length && completar) partes.push(plural_(completar, 'valoración por completar', 'valoraciones por completar'));
+  // En el asunto, sólo el plazo más próximo (el cierre del sistema va en el cuerpo): breve, y lo primero que se lee.
+  if (plazos.length) partes.push(plazoAsunto_(plazos[0], envio.dia, nombrar));
+  if (abiertas.length && pendientes) partes.push(plural_(pendientes, 'calificación pendiente', 'calificaciones pendientes'));
+  else if (abiertas.length && completar) partes.push(plural_(completar, 'valoración por completar', 'valoraciones por completar'));
   if (cerradas.length) partes.push('cerró ' + listaY_(cerradas.map(s => s.periodo)) + ', resumen final');
   if (envio.tipos.includes('enlace')) partes.push('tu nuevo enlace');
   if (!partes.length) partes.push('estado de tu carga');
@@ -313,9 +350,14 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   if (envio.tipos.includes('enlace')) intro.push('Tu enlace de acceso cambió: usá el de este correo. El anterior ya no funciona.');
   if (abiertas.length) intro.push(pendientes ? 'Tenés ' + plural_(pendientes, 'calificación pendiente', 'calificaciones pendientes') + '.' : 'No tenés calificaciones pendientes.');
   if (abiertas.length && completar) intro.push(plural_(completar, 'desaprobación tiene', 'desaprobaciones tienen') + ' Calidad, Participación u Observaciones sin completar.');
+  plazos.forEach(g => intro.push(plazoFrase_(g, envio.dia, nombrar)));
   if (cerradas.length) intro.push('Cerró la carga de ' + listaY_(cerradas.map(s => s.periodo)) + '. Abajo está el resumen final de lo que figuraba guardado en las grillas.');
   const estadoAl = 'Estado de las grillas al ' + fechaHoraTexto_(ahora) + ' (hora de Buenos Aires).';
 
+  // El plazo de las secciones abiertas va una sola vez, arriba (intro); la sección cerrada dice cuándo cerró.
+  // Los pendientes de cada período, sólo si hay más de uno abierto (si no, ya están arriba).
+  const lineaSeccion = s => s.evento === 'cierre' ? 'Cerró el ' + cierreTexto_(s.cierre) + '.'
+    : abiertas.length > 1 ? plural_(s.pendientes, 'calificación pendiente', 'calificaciones pendientes') + '.' : '';
   const titulo = s => s.periodo + ' · ' + (s.evento === 'cierre' ? 'resumen final' : s.evento === 'apertura' ? 'abrió la carga' : 'carga abierta');
   const nombreGrupo = (e, m) => e.nombre + (e.grupo && e.grupo !== m.nivel ? ' (' + e.grupo + ')' : '');
   const visibles = m => {
@@ -335,7 +377,7 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   if (enlaceUrl) h.push('<p style="margin:16px 0"><a href="' + esc_(enlaceUrl) + '" style="background:#0b57d0;color:#ffffff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold">Abrir mi carga</a></p>');
   envio.secciones.forEach(s => {
     h.push('<h2 style="font-size:17px;margin:24px 0 2px">' + esc_(titulo(s)) + '</h2>');
-    h.push('<p style="margin:0 0 8px;color:#444">' + esc_(plazoTexto_(s)) + (s.evento !== 'cierre' ? ' ' + esc_(plural_(s.pendientes, 'pendiente', 'pendientes')) + '.' : '') + '</p>');
+    if (lineaSeccion(s)) h.push('<p style="margin:0 0 8px;color:#444">' + esc_(lineaSeccion(s)) + '</p>');
     h.push('<table cellspacing="0" style="border-collapse:collapse;font-size:13px"><tr><th ' + td + '>Materia</th><th ' + tdn + '>Valoradas</th><th ' + tdn + '>Pendientes</th><th ' + tdn + '>Equipo EPS</th><th ' + tdn + '>A revisar</th></tr>');
     s.materias.forEach(m => {
       const c = cuenta(m);
@@ -364,7 +406,8 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   const t = ['Hola, ' + envio.docente + '.', ''].concat(intro, [estadoAl, '']);
   if (enlaceUrl) t.push('Abrir mi carga: ' + enlaceUrl, '');
   envio.secciones.forEach(s => {
-    t.push('== ' + titulo(s) + ' ==', plazoTexto_(s));
+    t.push('== ' + titulo(s) + ' ==');
+    if (lineaSeccion(s)) t.push(lineaSeccion(s));
     s.materias.forEach(m => {
       const c = cuenta(m);
       t.push('', '- ' + m.orientacion + ' ' + m.nivel + ' · ' + m.materia + ': ' + (c ? c[0] + ' valoradas, ' + c[1] + ' pendientes, ' + c[2] + ' del Equipo EPS, ' + c[3] + ' a revisar' : m.problema));

@@ -536,6 +536,40 @@ prueba("REGRESIÓN r1 (página): la barra usa indicadorGlobal con los cambios si
   cierto(/delete S\.sucias\[clave\][\s\S]*programarPintura\(\)/.test(guardarObs), "al enviar Observaciones no se repinta la barra");
 });
 
+prueba("#33 (página): cada período muestra su plazo («Hasta», «hoy» el último día) y, aparte, la hora en que cierra el sistema; la cuenta regresiva, sólo en el margen (plazo vencido) o en las últimas 24 horas; después del cierre, «Cerró el …»", () => {
+  const S = D.servidor();
+  S.s.admin.Ventanas.v = [["Período", "Desde", "Hasta"], [D.P2C, "2026-11-16", "2026-11-20"], [D.PAN, "2026-11-16", "2026-12-15"]];
+  S.reloj.desfase = Date.parse("2026-11-16T10:00:00-03:00") - Date.now();
+  const P = pagina(S, D.DOCENTES.matematica.correo);
+  igual(P.consultar().estado, "ok");
+  // Las funciones reales de la página, con un DOM mínimo: un nodo [data-cierre] por período.
+  const fuente = D.leer("src/carga/Carga_Pagina.html");
+  const bloque = fuente.match(/    function relojServidor\(\)[\s\S]*?(?=    function comillas\()/)[0];
+  const pintar = fuente.match(/    function pintarCierres\(\) \{[\s\S]*?\n    \}\n/)[0];
+  const nodos = P.modelo.periodos.map(p => ({ periodo: p.periodo, className: "", textContent: "", getAttribute: () => p.periodo }));
+  const ctx = vm.createContext({ Intl, Date, Math, Number, String, Array,
+    ZONA: "America/Argentina/Buenos_Aires", S: { desfase: 0, cerrados: {} }, document: { querySelectorAll: () => nodos },
+    buscarPeriodo: n => P.modelo.periodos.find(p => p.periodo === n) });
+  vm.runInContext(bloque + pintar + "this.pintarCierres = pintarCierres;", ctx);
+  const en = local => { ctx.S.desfase = Date.parse(local + ":00-03:00") - Date.now(); ctx.pintarCierres(); return nodos.map(n => [n.className, n.textContent]); };
+
+  const hoy24 = "Plazo: hoy, viernes 20/11 · el sistema cierra el martes 24/11 a las 8:00";
+  igual(en("2026-11-16T10:00"), [
+    ["cierre", "Plazo: viernes 20/11 · el sistema cierra el martes 24/11 a las 8:00"],
+    ["cierre", "Plazo: martes 15/12 · el sistema cierra el miércoles 16/12 a las 8:00"]], "sin cuenta regresiva mientras corre el plazo");
+  igual([en("2026-11-20T00:00")[0], en("2026-11-20T23:59")[0]], [["cierre", hoy24], ["cierre", hoy24]], "el día del plazo, entero");
+  igual(en("2026-11-21T00:00")[0], ["cierre cerca", "El plazo venció el viernes 20/11 · el sistema cierra el martes 24/11 a las 8:00 (faltan 3 días)"], "margen");
+  igual(en("2026-11-24T07:30")[0], ["cierre cerca", "El plazo venció el viernes 20/11 · el sistema cierra el martes 24/11 a las 8:00 (faltan 30 minutos)"]);
+  igual(en("2026-11-24T08:00"), [
+    ["cierre cerrada", "Cerró el martes 24/11 a las 8:00"],
+    ["cierre", "Plazo: martes 15/12 · el sistema cierra el miércoles 16/12 a las 8:00"]]);
+  // Sin margen de días (Hasta martes, cierre miércoles 8:00): la cuenta regresiva aparece en las últimas 24 horas.
+  igual(en("2026-12-15T07:59")[1], ["cierre", "Plazo: hoy, martes 15/12 · el sistema cierra el miércoles 16/12 a las 8:00"]);
+  igual(en("2026-12-15T09:00")[1], ["cierre cerca", "Plazo: hoy, martes 15/12 · el sistema cierra el miércoles 16/12 a las 8:00 (faltan 23 h 0 min)"]);
+  // El cierre que muestra es el que aplica el servidor al guardar.
+  igual(P.modelo.periodos[0].cierre, Date.parse("2026-11-24T08:00:00-03:00"));
+});
+
 seccion("4. Cola + servidor real (Carga_Web.gs → Carga_Google.gs → Carga_Nucleo.gs) con dobles de Google");
 
 /**

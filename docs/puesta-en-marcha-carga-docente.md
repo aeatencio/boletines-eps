@@ -270,7 +270,7 @@ Cada paso tiene un identificador para el acta.
 |---|---|---|
 | C2.1 | `previsualizarCorreosCarga` | Una línea `"correo":"simulado"` por cuenta de prueba, con `"tipos":["apertura"]` y `"periodos":["2º cuatrimestre (apertura)","Anual (apertura)"]`. Ningún otro destinatario |
 | C2.2 | `enviarCorreosCarga`, desde el editor | La ejecución termina sin error; `"enviados"` es el número de cuentas de prueba. En `Correos`, una fila por cuenta: `Estado` `enviado`, `Tipo` `apertura`, `Acceso` `<día 1>\|v1` |
-| C2.3 | **[G]** En el buzón de A (buscar también en Spam) | Llega a la bandeja de entrada, remitente «Equipo EPS» con la dirección de la cuenta propietaria y asunto «Carga de valoraciones EPS: abrió 2º cuatrimestre y Anual · N calificaciones pendientes, cierra el d/m». En *⋮ > Mostrar original*, anotar SPF, DKIM y DMARC, la carpeta y la demora |
+| C2.3 | **[G]** En el buzón de A (buscar también en Spam) | Llega a la bandeja de entrada, remitente «Equipo EPS» con la dirección de la cuenta propietaria y asunto «Carga de valoraciones EPS: abrió 2º cuatrimestre y Anual · plazo <día 2> · N calificaciones pendientes», con el día escrito como «miércoles 18/11». Arriba del cuerpo: «El plazo para completar la carga es el <día 2>. Como margen, el sistema seguirá abierto hasta el <día 3> a las 8:00; después ya no se podrán hacer cambios.» En *⋮ > Mostrar original*, anotar SPF, DKIM y DMARC, la carpeta y la demora |
 | C2.4 | `enviarCorreosCarga` otra vez | No se envía nada (`"yaRecibieron"` = número de cuentas de prueba) y `Correos` no cambia |
 
 **Acceso**
