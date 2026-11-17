@@ -313,10 +313,41 @@ function plazoFrase_(g, dia, nombrar) {
 
 const ORDEN_SITUACION_ = { pendiente: 0, 'a revisar': 1, valorada: 2, administrativo: 3 };
 
-function calificacionTexto_(e) {
+/**
+ * Calificación de un estudiante tal como la lee el docente (#35): ACREDITÓ y EQUIVALENCIA dicen quién las pone. Un
+ * valor fuera de los previstos para el período no se califica de inválido (la carga sólo sabe que no lo reconoce): se
+ * dice que el docente no puede cambiarlo y que lo revisa con el Equipo EPS, que administra la grilla. En un período
+ * cerrado (cerrada), una desaprobación incompleta se informa como estado, sin pedir algo que ya no se puede hacer.
+ */
+function calificacionTexto_(e, cerrada) {
   if (e.situacion === 'pendiente') return 'Pendiente';
-  const extra = e.situacion === 'administrativo' ? ' (Equipo EPS)' : e.situacion === 'a revisar' ? ' (a revisar con el Equipo EPS)' : '';
-  return e.calificacion + extra + (e.completar ? ' · completar Calidad, Participación u Observaciones' : '');
+  const extra = e.situacion === 'administrativo' ? ' (la establece el Equipo EPS)'
+    : e.situacion === 'a revisar' ? ' (la carga no reconoce este valor: revisalo con el Equipo EPS)' : '';
+  const completar = !e.completar ? '' : cerrada ? ' · Calidad, Participación u Observaciones sin completar' : ' · completar Calidad, Participación u Observaciones';
+  return e.calificacion + extra + completar;
+}
+
+/**
+ * Estado de una materia en el resumen del correo (#35), sólo con lo que pide algo al docente: las calificaciones
+ * pendientes (o que no queda ninguna), las desaprobaciones por completar y los valores a revisar con el Equipo EPS.
+ * Las calificaciones cargadas, ACREDITÓ y EQUIVALENCIA no piden nada: se ven en la lista de la materia. En un
+ * período cerrado (cerrada) ya no se puede cargar nada: lo pendiente y lo incompleto se informan como el estado en
+ * que quedó; revisar un valor con el Equipo EPS, en cambio, todavía se puede.
+ * [{ texto, tipo: 'pendiente' | 'listo' | 'atencion' | 'registro' }]
+ */
+function estadoMateria_(m, cerrada) {
+  const partes = [m.conteo.pendiente
+    ? { texto: cerrada ? plural_(m.conteo.pendiente, 'calificación quedó pendiente', 'calificaciones quedaron pendientes')
+      : plural_(m.conteo.pendiente, 'calificación pendiente', 'calificaciones pendientes'), tipo: 'pendiente' }
+    : { texto: 'sin calificaciones pendientes', tipo: 'listo' }];
+  if (m.completar) {
+    partes.push(cerrada
+      ? { texto: plural_(m.completar, 'desaprobación quedó', 'desaprobaciones quedaron') + ' con Calidad, Participación u Observaciones sin completar', tipo: 'registro' }
+      : { texto: plural_(m.completar, 'desaprobación por completar', 'desaprobaciones por completar'), tipo: 'atencion' });
+  }
+  const n = m.conteo['a revisar'];
+  if (n) partes.push({ texto: n === 1 ? '1 calificación con un valor no reconocido (revisalo con el Equipo EPS)' : n + ' calificaciones con valores no reconocidos (revisalos con el Equipo EPS)', tipo: 'atencion' });
+  return partes;
 }
 
 /**
@@ -329,6 +360,7 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   const aperturas = abiertas.filter(s => s.evento === 'apertura').map(s => s.periodo);
   const pendientes = abiertas.reduce((n, s) => n + s.pendientes, 0);
   const completar = abiertas.reduce((n, s) => n + s.completar, 0);
+  const noValidas = abiertas.reduce((n, s) => n + s.materias.reduce((k, m) => k + (m.conteo ? m.conteo['a revisar'] : 0), 0), 0);
 
   // Plazos (#33): con más de un juego de fechas, o con un período que cierra en el mismo correo, se nombran los períodos.
   const plazos = plazos_(abiertas);
@@ -339,7 +371,7 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   // En el asunto, sólo el plazo más próximo (el cierre del sistema va en el cuerpo): breve, y lo primero que se lee.
   if (plazos.length) partes.push(plazoAsunto_(plazos[0], envio.dia, nombrar));
   if (abiertas.length && pendientes) partes.push(plural_(pendientes, 'calificación pendiente', 'calificaciones pendientes'));
-  else if (abiertas.length && completar) partes.push(plural_(completar, 'valoración por completar', 'valoraciones por completar'));
+  else if (abiertas.length && completar) partes.push(plural_(completar, 'desaprobación por completar', 'desaprobaciones por completar'));
   if (cerradas.length) partes.push('cerró ' + listaY_(cerradas.map(s => s.periodo)) + ', resumen final');
   if (envio.tipos.includes('enlace')) partes.push('tu nuevo enlace');
   if (!partes.length) partes.push('estado de tu carga');
@@ -348,8 +380,14 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   const intro = [];
   if (aperturas.length) intro.push('Ya podés cargar las valoraciones de ' + listaY_(aperturas) + '.');
   if (envio.tipos.includes('enlace')) intro.push('Tu enlace de acceso cambió: usá el de este correo. El anterior ya no funciona.');
-  if (abiertas.length) intro.push(pendientes ? 'Tenés ' + plural_(pendientes, 'calificación pendiente', 'calificaciones pendientes') + '.' : 'No tenés calificaciones pendientes.');
-  if (abiertas.length && completar) intro.push(plural_(completar, 'desaprobación tiene', 'desaprobaciones tienen') + ' Calidad, Participación u Observaciones sin completar.');
+  // Lo que todavía se puede hacer es de los períodos abiertos: si en el mismo correo otro período cerró (y su resumen
+  // muestra lo que quedó pendiente), se dice de cuáles se habla.
+  const periodosAbiertos = listaY_(abiertas.map(s => s.periodo));
+  const en = cerradas.length ? ' en ' + periodosAbiertos : '', de = cerradas.length ? ' de ' + periodosAbiertos : '';
+  if (abiertas.length) intro.push(pendientes ? 'Tenés ' + plural_(pendientes, 'calificación pendiente', 'calificaciones pendientes') + en + '.' : 'No tenés calificaciones pendientes' + en + '.');
+  if (abiertas.length && completar) intro.push(plural_(completar, 'desaprobación', 'desaprobaciones') + de + (completar === 1 ? ' tiene' : ' tienen') + ' Calidad, Participación u Observaciones sin completar.');
+  if (noValidas) intro.push(plural_(noValidas, 'calificación', 'calificaciones') + de + (noValidas === 1 ? ' tiene' : ' tienen') + ' en la grilla un valor que la carga no reconoce, así que no ' +
+    (noValidas === 1 ? 'podés cambiarla: revisala' : 'podés cambiarlas: revisalas') + ' con el Equipo EPS.');
   plazos.forEach(g => intro.push(plazoFrase_(g, envio.dia, nombrar)));
   if (cerradas.length) intro.push('Cerró la carga de ' + listaY_(cerradas.map(s => s.periodo)) + '. Abajo está el resumen final de lo que figuraba guardado en las grillas.');
   const estadoAl = 'Estado de las grillas al ' + fechaHoraTexto_(ahora) + ' (hora de Buenos Aires).';
@@ -357,18 +395,19 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   // El plazo de las secciones abiertas va una sola vez, arriba (intro); la sección cerrada dice cuándo cerró.
   // Los pendientes de cada período, sólo si hay más de uno abierto (si no, ya están arriba).
   const lineaSeccion = s => s.evento === 'cierre' ? 'Cerró el ' + cierreTexto_(s.cierre) + '.'
-    : abiertas.length > 1 ? plural_(s.pendientes, 'calificación pendiente', 'calificaciones pendientes') + '.' : '';
+    : abiertas.length < 2 ? '' : s.pendientes ? plural_(s.pendientes, 'calificación pendiente', 'calificaciones pendientes') + '.' : 'Sin calificaciones pendientes.';
   const titulo = s => s.periodo + ' · ' + (s.evento === 'cierre' ? 'resumen final' : s.evento === 'apertura' ? 'abrió la carga' : 'carga abierta');
   const nombreGrupo = (e, m) => e.nombre + (e.grupo && e.grupo !== m.nivel ? ' (' + e.grupo + ')' : '');
   const visibles = m => {
     const l = m.estudiantes.slice().sort((a, b) => ORDEN_SITUACION_[a.situacion] - ORDEN_SITUACION_[b.situacion] || (b.completar ? 1 : 0) - (a.completar ? 1 : 0) || a.nombre.localeCompare(b.nombre, 'es'));
     return resumido ? l.filter(e => e.situacion === 'pendiente' || e.situacion === 'a revisar' || e.completar) : l;
   };
-  const cuenta = m => m.conteo ? [m.conteo.valorada, m.conteo.pendiente, m.conteo.administrativo, m.conteo['a revisar']] : null;
+  const nombreMateria = m => m.orientacion + ' ' + m.nivel + ' · ' + m.materia;
+  const ESTILO_ESTADO = { pendiente: 'font-weight:bold', listo: 'color:#1e6b34', atencion: 'color:#8a5300', registro: 'color:#444' };
 
-  // ---- HTML (estilos en línea: los clientes de correo ignoran <style>)
+  // ---- HTML (estilos en línea: los clientes de correo ignoran <style>). Sin tablas de varias columnas: en un
+  // teléfono no entran (#35). El resumen de cada período es una lista, una materia por renglón.
   const td = 'style="padding:4px 8px;border-bottom:1px solid #e3e3e3;text-align:left"';
-  const tdn = 'style="padding:4px 8px;border-bottom:1px solid #e3e3e3;text-align:right"';
   const h = [];
   h.push('<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:#1f1f1f;max-width:680px">');
   h.push('<p>Hola, ' + esc_(envio.docente) + '.</p>');
@@ -378,28 +417,24 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
   envio.secciones.forEach(s => {
     h.push('<h2 style="font-size:17px;margin:24px 0 2px">' + esc_(titulo(s)) + '</h2>');
     if (lineaSeccion(s)) h.push('<p style="margin:0 0 8px;color:#444">' + esc_(lineaSeccion(s)) + '</p>');
-    h.push('<table cellspacing="0" style="border-collapse:collapse;font-size:13px"><tr><th ' + td + '>Materia</th><th ' + tdn + '>Valoradas</th><th ' + tdn + '>Pendientes</th><th ' + tdn + '>Equipo EPS</th><th ' + tdn + '>A revisar</th></tr>');
-    s.materias.forEach(m => {
-      const c = cuenta(m);
-      h.push('<tr><td ' + td + '>' + esc_(m.orientacion + ' ' + m.nivel + ' · ' + m.materia) + '</td>' + (c
-        ? c.map((n, i) => '<td ' + tdn + '>' + (i === 1 && n ? '<b>' + n + '</b>' : n) + '</td>').join('')
-        : '<td colspan="4" style="padding:4px 8px;border-bottom:1px solid #e3e3e3;color:#b3261e">' + esc_(m.problema) + '</td>') + '</tr>');
-    });
-    h.push('</table>');
+    h.push('<ul style="margin:4px 0 8px;padding-left:20px">' + s.materias.map(m => '<li style="margin:0 0 4px">' + esc_(nombreMateria(m)) + ': ' + (m.conteo
+      ? estadoMateria_(m, s.evento === 'cierre').map(x => '<span style="' + ESTILO_ESTADO[x.tipo] + '">' + esc_(x.texto) + '</span>').join(' · ')
+      : '<span style="color:#b3261e">' + esc_(m.problema) + '</span>') + '</li>').join('') + '</ul>');
     s.materias.filter(m => !m.problema && m.estudiantes.length).forEach(m => {
       const l = visibles(m);
-      h.push('<h3 style="font-size:14px;margin:16px 0 4px">' + esc_(m.orientacion + ' ' + m.nivel + ' · ' + m.materia) + '</h3>');
-      if (m.completar) h.push('<p style="margin:0 0 4px;color:#8a5300">' + esc_(plural_(m.completar, 'desaprobación sin', 'desaprobaciones sin') + ' Calidad, Participación u Observaciones completas.') + '</p>');
+      h.push('<h3 style="font-size:14px;margin:16px 0 4px">' + esc_(nombreMateria(m)) + '</h3>');
       if (!l.length) { h.push('<p style="margin:0;color:#555">Nada que requiera atención.</p>'); return; }
       h.push('<table cellspacing="0" style="border-collapse:collapse;font-size:13px">' + l.map(e => '<tr><td ' + td + '>' + esc_(nombreGrupo(e, m)) + '</td><td ' + td + '>' +
-        (e.situacion === 'pendiente' ? '<b>Pendiente</b>' : esc_(calificacionTexto_(e))) + '</td></tr>').join('') + '</table>');
+        (e.situacion === 'pendiente' ? '<b>Pendiente</b>' : esc_(calificacionTexto_(e, s.evento === 'cierre'))) + '</td></tr>').join('') + '</table>');
     });
   });
   const pie = [];
-  if (resumido) pie.push('El detalle completo no entra en un correo: este sólo lista lo que requiere atención. Todo lo demás está en la carga.');
+  // Sin enlace (sólo cierres), la carga no se puede abrir desde el correo: no se la ofrece.
+  if (resumido) pie.push('El detalle completo no entra en un correo: este sólo lista ' + (enlaceUrl ? 'lo que requiere atención. Todo lo demás está en la carga.'
+    : 'lo que quedó pendiente o sin completar y los valores a revisar.'));
   if (enlaceUrl) pie.push('El enlace es personal y sirve durante toda esta carga: no reenvíes este correo. Si creés que alguien más lo usó, avisá al Equipo EPS para reemplazarlo.');
   if (cerradas.length) pie.push('El resumen final no certifica que la carga esté completa. Las correcciones fuera de término se gestionan con el Equipo EPS.');
-  pie.push('ACREDITÓ y EQUIVALENCIA los establece el Equipo EPS. Este correo se envía como máximo una vez por día hábil.');
+  pie.push('Este correo se envía como máximo una vez por día hábil.');
   h.push('<p style="color:#666;font-size:12px;margin-top:24px">' + pie.map(esc_).join('<br>') + '</p></div>');
 
   // ---- texto
@@ -409,9 +444,8 @@ function redactarCorreo_(envio, ahora, enlaceUrl, resumido) {
     t.push('== ' + titulo(s) + ' ==');
     if (lineaSeccion(s)) t.push(lineaSeccion(s));
     s.materias.forEach(m => {
-      const c = cuenta(m);
-      t.push('', '- ' + m.orientacion + ' ' + m.nivel + ' · ' + m.materia + ': ' + (c ? c[0] + ' valoradas, ' + c[1] + ' pendientes, ' + c[2] + ' del Equipo EPS, ' + c[3] + ' a revisar' : m.problema));
-      if (!m.problema) visibles(m).forEach(e => t.push('    ' + nombreGrupo(e, m) + ': ' + calificacionTexto_(e)));
+      t.push('', '- ' + nombreMateria(m) + ': ' + (m.conteo ? estadoMateria_(m, s.evento === 'cierre').map(x => x.texto).join(' · ') : m.problema));
+      if (!m.problema) visibles(m).forEach(e => t.push('    ' + nombreGrupo(e, m) + ': ' + calificacionTexto_(e, s.evento === 'cierre')));
     });
     t.push('');
   });

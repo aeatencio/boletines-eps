@@ -328,7 +328,8 @@ prueba("cada correo lista a todos los cursantes de sus materias con su Calificac
   const v = S.ctx.consultarCarga_(MATE);
   v.periodos.forEach(p => p.materias.forEach(m => {
     m.estudiantes.forEach(e => cierto(mate.includes(S.ctx.esc_(e.nombre)), e.nombre));
-    cierto(mate.includes(S.ctx.esc_(m.orientacion + " " + m.nivel + " · " + m.materia) + "</td><td style=\"padding:4px 8px;border-bottom:1px solid #e3e3e3;text-align:right\">" + m.conteo.valorada + "<"), m.materia);
+    const pendientes = m.conteo.pendiente ? m.conteo.pendiente + (m.conteo.pendiente === 1 ? " calificación pendiente" : " calificaciones pendientes") : "sin calificaciones pendientes";
+    cierto(mate.includes("<li style=\"margin:0 0 4px\">" + S.ctx.esc_(m.orientacion + " " + m.nivel + " · " + m.materia) + ": <span style=\"" + (m.conteo.pendiente ? "font-weight:bold" : "color:#1e6b34") + "\">" + pendientes + "</span>"), m.materia);
   }));
 });
 
@@ -352,7 +353,8 @@ prueba("mejora no bloqueante: una desaprobación (≤5, o «En proceso» en los 
   const r = S.correr();
   igual(r.enviados.find(x => x.correo === LENGUA).tipos, ["seguimiento"]);
   const m = para(S, LENGUA)[1];
-  cierto(/1 valoración por completar/.test(m.subject) && m.htmlBody.includes("4 · completar Calidad, Participación u Observaciones"), m.subject);
+  cierto(/1 desaprobación por completar/.test(m.subject) && m.htmlBody.includes("4 · completar Calidad, Participación u Observaciones"), m.subject);
+  cierto(/- EPSI EPS1 · Lengua y Literatura I: [^\n]*1 desaprobación por completar/.test(m.body), "el resumen de la materia lo dice");
   cierto(!/\bBuena\b|\bActiva\b/.test(m.htmlBody + m.body));
   c.poner("Observación completa", 3);
   S.en("2026-12-10T08:05");
@@ -360,6 +362,72 @@ prueba("mejora no bloqueante: una desaprobación (≤5, o «En proceso» en los 
   const d = S.ctx.desaprobada_;
   igual([d("3º bimestre", { situacion: "valorada", campos: { calificacion: "En proceso" } }), d("3º bimestre", { situacion: "valorada", campos: { calificacion: "Suficiente" } }),
     d("Anual", { situacion: "valorada", campos: { calificacion: "6" } }), d("Anual", { situacion: "valorada", campos: { calificacion: "5" } })], [true, false, false, true]);
+});
+
+prueba("#35 resumen legible en un teléfono: un renglón por materia con lo que pide algo al docente (pendientes, valores no reconocidos), sin tabla de conteos ni categorías internas; ACREDITÓ y EQUIVALENCIA dicen quién las pone; un valor no reconocido no se declara inválido y se revisa con el Equipo EPS; en un período cerrado, «quedaron pendientes»", () => {
+  const S = entorno();
+  S.en("2026-12-07T08:05"); S.correr();
+  const m = para(S, MATE)[0];
+  [m.htmlBody, m.body].forEach(x => cierto(!/valoradas|a revisar|del Equipo EPS,|válid/i.test(x), "categorías internas o invalidez: " + (x.match(/valoradas|a revisar|del Equipo EPS,|válid/i) || [])[0]));
+  cierto(!/<th\b/.test(m.htmlBody), "sin encabezados de tabla");
+  (m.htmlBody.match(/<tr>.*?<\/tr>/g) || []).forEach(f => cierto((f.match(/<td\b/g) || []).length <= 2, "a lo sumo dos columnas: " + f.slice(0, 120)));
+  cierto(/: ACREDITÓ \(la establece el Equipo EPS\)\n/.test(m.body) && /: Equivalencia \(la establece el Equipo EPS\)\n/.test(m.body), "quién pone ACREDITÓ y EQUIVALENCIA");
+  cierto(m.body.includes(": Muy bien (la carga no reconoce este valor: revisalo con el Equipo EPS)\n"), "qué hacer con un valor no reconocido");
+  const v = S.ctx.consultarCarga_(MATE);
+  let noValidas = 0;
+  v.periodos.forEach(p => p.materias.forEach(x => {
+    noValidas += x.conteo["a revisar"];
+    const partes = [x.conteo.pendiente + (x.conteo.pendiente === 1 ? " calificación pendiente" : " calificaciones pendientes")];
+    if (x.conteo["a revisar"]) partes.push(x.conteo["a revisar"] === 1 ? "1 calificación con un valor no reconocido (revisalo con el Equipo EPS)" : x.conteo["a revisar"] + " calificaciones con valores no reconocidos (revisalos con el Equipo EPS)");
+    cierto(m.body.includes("\n- " + x.orientacion + " " + x.nivel + " · " + x.materia + ": " + partes.join(" · ") + "\n"), x.materia + ": " + partes.join(" · "));
+  }));
+  cierto(noValidas > 1 && m.body.includes("\n" + noValidas + " calificaciones tienen en la grilla un valor que la carga no reconoce, así que no podés cambiarlas: revisalas con el Equipo EPS.\n"), "aviso arriba");
+  // Dos períodos abiertos y nada pendiente (enlace nuevo a un docente al día): «Sin calificaciones pendientes.», no «0 …».
+  alDia(S, LENGUA);
+  S.s.admin.Enlaces.v.push([LENGUA, 2]);
+  S.en("2026-12-09T08:05"); S.correr();
+  const l = para(S, LENGUA)[1];
+  igual([l.body.split("\nSin calificaciones pendientes.\n").length - 1, /\b0 calificaciones/.test(l.body)], [2, false], l.body.slice(0, 900));
+  cierto(/: sin calificaciones pendientes/.test(l.body));
+  // Cierre: lo pendiente ya no se puede cargar.
+  S.en("2026-12-14T08:20"); S.correr();
+  const c = para(S, MATE).slice(-1)[0];
+  cierto(/: \d+ calificaciones quedaron pendientes/.test(c.body) && !/: \d+ calificaciones pendientes/.test(c.body), c.body.slice(0, 900));
+});
+
+prueba("#35 período cerrado: lo que quedó se informa como estado, sin pedir lo que ya no se puede hacer (ni «por completar» ni «completar …»); revisar un valor con el Equipo EPS sigue; con un período abierto en el mismo correo, lo que todavía se puede hacer dice de qué período es", () => {
+  const S = entorno();
+  S.s.admin.Ventanas.v = [VENTANAS[0], [P2C, "2026-12-05", "2026-12-09"], [PAN, "2026-12-05", "2026-12-18"]];
+  S.en("2026-12-07T08:05"); S.correr();
+  alDia(S, LENGUA);
+  const c = celdasMateria(S, P2C, "EPSI", "Lengua y Literatura I").find(x => S.ctx.situacionCalificacion_(P2C, x.valor) === "valorada");
+  c.poner("4"); c.poner("", 1); c.poner("", 2); c.poner("", 3);
+  // Mixto: 2C cerró el jueves 10/12 a las 8:00; anual sigue.
+  S.en("2026-12-10T08:30"); S.correr();
+  const m = para(S, LENGUA).slice(-1)[0];
+  const [abierta, cerrada] = m.body.split("== 2º cuatrimestre · resumen final ==");
+  cierto(cerrada && /: \d+ · completar Calidad/.test(m.body) === false, "la fila del cerrado no pide completar");
+  cierto(/Lengua y Literatura I: [^\n]*1 desaprobación quedó con Calidad, Participación u Observaciones sin completar/.test(cerrada) && !/por completar/.test(cerrada), cerrada.slice(0, 500));
+  cierto(/: 4 · Calidad, Participación u Observaciones sin completar\n/.test(cerrada), "estado de la fila");
+  cierto(/\(la carga no reconoce este valor: revisalo con el Equipo EPS\)/.test(cerrada), "revisar con el Equipo EPS sigue siendo posible");
+  cierto(abierta.includes("\nNo tenés calificaciones pendientes en Anual.\n") && abierta.includes("\n1 calificación de Anual tiene en la grilla un valor que la carga no reconoce, así que no podés cambiarla: revisala con el Equipo EPS.\n"), abierta.slice(0, 700));
+  cierto(!/desaprobaci/.test(m.subject) && !/desaprobaci/.test(abierta), "la desaprobación incompleta es de 2C, ya cerrado: no se pide arriba ni en el asunto");
+  // Sólo cierres: lo mismo en HTML, en gris y sin «por completar».
+  S.en("2026-12-21T08:20"); S.correr();
+  const f = para(S, LENGUA).slice(-1)[0];
+  cierto(/cerró Anual, resumen final$/.test(f.subject), f.subject);
+  igual(S.ctx.estadoMateria_({ conteo: { pendiente: 0, "a revisar": 0 }, completar: 2 }, true), [{ texto: "sin calificaciones pendientes", tipo: "listo" },
+    { texto: "2 desaprobaciones quedaron con Calidad, Participación u Observaciones sin completar", tipo: "registro" }]);
+  igual(S.ctx.calificacionTexto_({ situacion: "valorada", calificacion: "3", completar: true }, true), "3 · Calidad, Participación u Observaciones sin completar");
+  igual(S.ctx.calificacionTexto_({ situacion: "valorada", calificacion: "3", completar: true }, false), "3 · completar Calidad, Participación u Observaciones");
+  // Resumen final recortado por tamaño: sin enlace, el pie no remite a la carga.
+  const T = entorno();
+  T.en("2026-12-07T08:05"); T.correr();
+  vm.runInContext("CORREO.MAX_HTML = 3000", T.ctx);
+  T.en("2026-12-14T08:20"); T.correr();
+  const g = para(T, MATE).slice(-1)[0];
+  cierto(credencialDe(g) === "" && g.body.includes("El detalle completo no entra en un correo: este sólo lista lo que quedó pendiente o sin completar y los valores a revisar.") &&
+    !/está en la carga/.test(g.body), g.body.slice(-500));
 });
 
 prueba("tamaño: un correo de un docente con muchas materias queda lejos del recorte de Gmail; si superara el límite, el detalle sólo lista lo que requiere atención", () => {
